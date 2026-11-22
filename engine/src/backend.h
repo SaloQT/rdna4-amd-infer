@@ -63,6 +63,7 @@ struct backend {
   size_t (*snap_io)(backend *b, int k, int out, void *buf, uint32_t pos);
   size_t snap_f32b;
   void (*kv_io)(backend *b, int out, uint32_t p0, uint32_t n, void *buf);
+  void (*kv_trim)(backend *b, uint32_t keep_pos); /* GPU: unmap high VMM KV chunks past keep_pos (IE_KV_SHRINK=0: off) */
   size_t kv_rowb;
   int snap_in_ram; /* 1 when snapshots live in host RAM (IE_SNAP_HOST!=0): disk 'e' reads need no hipHostMalloc */
   /* Probabilistic DSpark proposal hook (NULL when greedy temp <= 0 -> 0-bit change). */

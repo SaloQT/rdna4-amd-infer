@@ -901,6 +901,7 @@ static u32 ink_qtile_min(void) {
 }
 static size_t gpu_snap_io(backend *bk, int k, int out, void *buf, uint32_t pos);
 static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf);
+static void gpu_kv_trim(backend *bk, uint32_t keep_pos);
 static void *gpu_host_alloc(backend *bk, size_t n);
 static void gpu_host_free(backend *bk, void *p);
 static void kv_ensure(gpu_backend *b, u32 need);
@@ -1598,6 +1599,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
   b->base.snap = gpu_snap;
   b->base.snap_io = gpu_snap_io;
   b->base.kv_io = gpu_kv_io;
+  b->base.kv_trim = gpu_kv_trim;
   b->base.snap_f32b = (size_t)m->n_rec * m->n_vh * m->sd * m->sd * 4;
   b->base.host_alloc = gpu_host_alloc;
   b->base.host_free = gpu_host_free;
@@ -3472,6 +3474,90 @@ static void ds_kv_ensure(gpu_backend *b, u32 need) {
   }
   const size_t rows = bytes / b->ds.kv_rowb;
   b->ds.kv_rows = rows < full_cap ? (u32)rows : full_cap;
+}
+
+static int kv_shrink_on(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_KV_SHRINK");
+    v = !(e && e[0] == '0');
+  }
+  return v;
+}
+
+static size_t kv_shrink(gpu_backend *b, u32 keep) {
+  const graph *g = b->g;
+  if (b->kv_grow != 1 || !kv_shrink_on() || !H.MemUnmap || !H.MemRelease) return 0;
+  uint64_t want = (uint64_t)(keep > 1u ? keep : 1u) + (uint64_t)b->kv_step;
+  want = ((want + b->kv_step - 1u) / b->kv_step) * b->kv_step;
+  if (want > g->n_ctx) want = g->n_ctx;
+  size_t bytes = (((size_t)want + KV_SLACK) * b->kvrowb + 4 + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
+  if (bytes > b->kv_va) bytes = b->kv_va;
+  if (bytes >= b->kv_mapped) return 0;
+  const size_t na = b->m->n_kvl ? b->m->n_kvl : 1u;
+  size_t freed = 0;
+  for (size_t a = 0; a < na * 2u; a++) {
+    if (g->kv_len[a >> 1] < g->n_ctx) continue;
+    char *base = (char *)(a & 1u ? b->vcl[a >> 1] : b->kcl[a >> 1]);
+    for (size_t off = bytes; off < b->kv_mapped; off += b->kv_chunk) {
+      void **h = &b->kv_h[a * b->kv_nchunk + off / b->kv_chunk];
+      HIP(H.MemUnmap(base + off, b->kv_chunk));
+      HIP(H.MemRelease(*h));
+      *h = NULL;
+      freed += b->kv_chunk;
+    }
+  }
+  b->kv_mapped = bytes;
+  const size_t rows = bytes > 4 ? (bytes - 4) / b->kvrowb : 0u;
+  b->kv_cap = rows > KV_SLACK ? (u32)(rows - KV_SLACK < g->n_ctx ? rows - KV_SLACK : g->n_ctx) : 0u;
+  return freed;
+}
+
+static size_t ds_kv_shrink(gpu_backend *b, u32 keep) {
+  if (!b->ds.ready || !b->ds.kv_grow || !kv_shrink_on() || !H.MemUnmap || !H.MemRelease) return 0;
+  const u32 full_cap = b->g->n_ctx + 16u;
+  uint64_t want = (uint64_t)(keep > 1u ? keep : 1u) + (uint64_t)b->ds.kv_step;
+  want = ((want + b->ds.kv_step - 1u) / b->ds.kv_step) * b->ds.kv_step;
+  if (want > full_cap) want = full_cap;
+  size_t bytes = ((size_t)want * b->ds.kv_rowb + b->ds.kv_chunk - 1) / b->ds.kv_chunk * b->ds.kv_chunk;
+  if (bytes > b->ds.kv_va) bytes = b->ds.kv_va;
+  if (bytes >= b->ds.kv_mapped) return 0;
+  size_t freed = 0;
+  for (u32 a = 0; a < 16u; a++) {
+    if (!b->ds.kv_vm[a >> 1]) continue;
+    char *base = (char *)(a & 1u ? b->ds.vc[a >> 1] : b->ds.kc[a >> 1]);
+    for (size_t off = bytes; off < b->ds.kv_mapped; off += b->ds.kv_chunk) {
+      void **h = &b->ds.kv_h[a * b->ds.kv_nchunk + off / b->ds.kv_chunk];
+      HIP(H.MemUnmap(base + off, b->ds.kv_chunk));
+      HIP(H.MemRelease(*h));
+      *h = NULL;
+      freed += b->ds.kv_chunk;
+    }
+  }
+  b->ds.kv_mapped = bytes;
+  const size_t rows = bytes / b->ds.kv_rowb;
+  b->ds.kv_rows = rows < full_cap ? (u32)rows : full_cap;
+  return freed;
+}
+
+static void gpu_kv_trim(backend *bk, uint32_t keep_pos) {
+  gpu_backend *b = (gpu_backend *)bk;
+  if (!kv_shrink_on()) return;
+  if (b->kv_grow != 1 && !(b->ds.ready && b->ds.kv_grow)) return;
+  ds_ctx_drain(b);
+  if (b->snap_cs) HIP(H.StreamSynchronize(b->snap_cs));
+  HIP(H.StreamSynchronize(cur_stream));
+  const size_t f0 = kv_shrink(b, keep_pos);
+  const size_t f1 = ds_kv_shrink(b, keep_pos);
+  if (f0 + f1) {
+    size_t fr = 0, tot = 0;
+    if (H.MemGetInfo && H.MemGetInfo(&fr, &tot) == 0)
+      fprintf(stderr, "gpu: KV cache shrunk to %u pos (freed %.0f MB VRAM; %.0f MB free)\n",
+              b->kv_cap, (double)(f0 + f1) / 1e6, (double)fr / 1e6);
+    else
+      fprintf(stderr, "gpu: KV cache shrunk to %u pos (freed %.0f MB VRAM)\n",
+              b->kv_cap, (double)(f0 + f1) / 1e6);
+  }
 }
 
 /* The row of token t in a buffer: its own, or the last one if the buffer keeps fewer rows (graph_cap_logits). */

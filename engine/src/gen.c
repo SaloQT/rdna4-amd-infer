@@ -3839,7 +3839,7 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
     const char *eme = getenv("IE_EPHEMERAL_MAX");
     const uint32_t ephem_max = eme && atoi(eme) > 0 ? (uint32_t)atoi(eme) : 2048u;
     const uint32_t ephem_cap = ephem_max > 4096u ? ephem_max : 4096u;
-    if (ephem_on && best_ck_pos >= 2048u && L < best_ck_pos / 4u && n_prompt <= ephem_max && n_prompt < best_ck_pos / 2u) {
+    if (ephem_on && best_ck_pos >= 2048u && L < best_ck_pos / 4u && n_prompt <= ephem_max && n_prompt < best_ck_pos / 2u && p->max_new <= 1024u) {
       uint64_t req_max = (uint64_t)n_prompt + (uint64_t)p->max_new + (uint64_t)spec_room(p->draft) + 16ull;
       stash_n = req_max < (uint64_t)ephem_cap ? (uint32_t)req_max : ephem_cap;
       if (stash_n > c->kv_n) stash_n = c->kv_n;
@@ -3938,6 +3938,7 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
       if (mkind[k] == GEN_CK_SPLIT && p->sys_end && mk[k] < p->sys_end) dp_learn_add(c, p->sys_end - mk[k]);
   } else if (!ephem) c->n_ck = 0, c->kv_n = 0, free(c->kv_imgs), c->kv_imgs = NULL, c->kv_n_imgs = 0; /* a run without the cache changes all positions */
   if (b->run) { /* GPU: chunks */
+    if (!ephem && b->kv_trim) b->kv_trim(b, n_prompt > S ? n_prompt : S);
     if (b->kv_io && n_prompt) b->kv_io(b, 0, n_prompt, 0, NULL); /* pre-map full prompt KV capacity once across all checkpoint segments */
     if (!S && mtp) b->copy_rows(b, g->mtp_h, 0, -1, 0, 1); /* h(-1) = 0 */
     if (!cache_run) first = prefill_range(b, g, prompt, 0, n_prompt, p->chunk, mtp, 1, &hrow, p->imgs, p->n_imgs, c->m->dim); /* as ie-run */
@@ -4023,6 +4024,7 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
           kv_put(c, 0, out, done);
           ck_save(c, done, GEN_CK_ANSWER, hbuf);
         }
+        if (b->kv_trim) b->kv_trim(b, c->kv_n);
       }
       free(stash_buf);
       st->n_ck = c->n_ck;
