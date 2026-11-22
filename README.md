@@ -1,8 +1,10 @@
 # <img src="docs/icons/chip.svg" width="24" height="24" align="absmiddle" alt=""/> rdna4-amd-infer: RX 9070 XT LLM Engine
 
-**Fast local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4 / `gfx1201`) with 186 zero-spill custom AMDGPU kernels.**
+**Fast local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4 / `gfx1201`) built on top of Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c), adding Windows 11 WDDM support (no system ROCm install) and 186 zero-spill custom AMDGPU kernels.**
 
-Pure C11 + AMDGPU `wave32`/WMMA · **No system ROCm install on Windows** · Linux ROCm ready · GGUF v3 · OpenAI-compatible `ie-serve` API · Exact parity verified.
+Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c) · Windows WDDM port + 186 custom `gfx1201` kernels + DSpark/shortlist/dashboard added here · Linux ROCm ready · GGUF v3 · OpenAI-compatible `ie-serve` API.
+
+> **Upstream Credit & License Note:** The base C11 runtime, formally verified core (`engine/core/ie_core.h`), base `gfx1201` kernels, and `ie-serve` architecture come from Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c) (and `engine/src/iq3s_grid.h` carries ggml's MIT header). Because upstream `hanw/amd.c` does not currently include a `LICENSE` file, this repository intentionally does **not** apply a separate open-source license over Han's upstream code. All credit for the base engine belongs to Han Wang; if upstream adds a license (or requests changes/removal of upstream files), this repo will follow immediately.
 
 <p align="center">
   <a href="https://saloqt.github.io/rdna4-amd-infer/">
@@ -135,9 +137,9 @@ cd engine && make
 
 | Path | Contents |
 |---|---|
-| [`engine/src/`](engine/src) | Pure C11 engine: GGUF v3, HIP loader, arena planner, DSpark/MTP/DFlash, disk cache, HTTP server, ViT vision |
-| [`engine/kernels/`](engine/kernels) | Base `gfx1201` kernels + **122 Inkling-2** kernels + **64 Saluki-27B** kernels + ViT kernels (`0/0` VGPR spills) |
-| [`engine/core/`](engine/core) & [`engine/laws/`](engine/laws) | Formally verified indexing/quantization core (`ie_core.h`) + law checks |
+| [`engine/src/`](engine/src) | Pure C11 engine (based on [`hanw/amd.c`](https://github.com/hanw/amd.c)): GGUF v3, HIP loader, arena planner, DSpark/MTP/DFlash, disk cache, HTTP server, ViT vision |
+| [`engine/kernels/`](engine/kernels) | Base `gfx1201` kernels (`hanw/amd.c`) + **122 Inkling-2** kernels + **64 Saluki-27B** kernels + ViT kernels (`0/0` VGPR spills) |
+| [`engine/core/`](engine/core) & [`engine/laws/`](engine/laws) | Formally verified indexing/quantization core (`ie_core.h`) + law checks from [`hanw/amd.c`](https://github.com/hanw/amd.c) |
 | [`engine/tools/`](engine/tools) & [`engine/tests/`](engine/tests) | Per-module build scripts, `objdump` checks, CPU unit, DRY, shortlist & cache tests |
 | [`engine/serve-inkling2.ps1`](engine/serve-inkling2.ps1) | Production Inkling-2-Mini launcher (Q4\_K DSpark, 0-VRAM shortlist, DRY loop penalty) |
 | [`engine/serve-saluki.ps1`](engine/serve-saluki.ps1) | Production Saluki-27B launcher (128K q8 KV, MTP7, ViT vision, disk prompt cache) |
@@ -166,8 +168,12 @@ cd engine && make
 </details>
 
 <details>
-<summary><img src="docs/icons/help.svg" width="14" height="14" align="absmiddle" alt=""/> <b>FAQ: RX 9070 XT Local LLM, Windows ROCm & 16GB VRAM</b></summary>
+<summary><img src="docs/icons/help.svg" width="14" height="14" align="absmiddle" alt=""/> <b>FAQ: Upstream Credit, License, RX 9070 XT & 16GB VRAM</b></summary>
 
+- **What is upstream (`hanw/amd.c`) vs. what was added here?**
+  The base C11 engine (`amd-infer`), formally verified core (`core/ie_core.h`), Lean laws, base `gfx1201` runtime/kernels, and base `ie-serve` HTTP server are by Han Wang ([`hanw/amd.c`](https://github.com/hanw/amd.c)). This repo adds the Windows 11 WDDM port (`build-win.sh` via user-space `rocm-sdk` wheels), native raw `IQ1_S`/`IQ1_M`/`IQ2_*`/`IQ3_XXS`/`Q2_K` quant loaders, 186 custom zero-spill `gfx1201` kernels (122 Inkling-2-Mini + 64 Saluki-27B), native DSpark + 0-VRAM `60K+4K` Band-B shortlist, ephemeral host-RAM prefix-cache immunity, `O(1)` hash-chain DRY loop penalty, compact SWA disk checkpoints, and the 37-round telemetry dashboard.
+- **Why is there no `LICENSE` file in this repo?**
+  Upstream [`hanw/amd.c`](https://github.com/hanw/amd.c) does not currently declare a license, so default copyright applies to the upstream code and this repo intentionally does not place an MIT/Apache license over it. If `hanw/amd.c` adds a license, this repo will adopt matching terms (or strip down to our newly written kernel/script files if requested).
 - **Do I need a system ROCm install on Windows to run LLMs on an RX 9070 XT?**
   No. `engine/build-win.sh` compiles native `gfx1201` AMDGPU `.hsaco` kernels using user-space `rocm-sdk` Python wheels (`amdclang`, `ld.lld`, `hipblas.dll`) on top of standard Windows Adrenalin drivers, with no system ROCm toolkit required.
 - **How do Inkling-2-Mini (26B `IQ3_XXS`) and Qwen3.8-27B (`IQ2-mix`, 128K context) fit inside 16 GB VRAM?**
@@ -183,6 +189,7 @@ cd engine && make
 <summary><img src="docs/icons/book.svg" width="14" height="14" align="absmiddle" alt=""/> <b>Research Papers & Open-Source Repos Behind These Kernels</b></summary>
 
 Full round-by-round citations are clickable inside the [Interactive Dashboard](https://saloqt.github.io/rdna4-amd-infer/) and [docs/research-summary.md](docs/research-summary.md):
+- **Base Engine:** [`hanw/amd.c`](https://github.com/hanw/amd.c) (Han Wang's from-scratch C11 `gfx1201` inference engine & formally verified core)
 - **ROCm & RDNA4 Kernels:** `ROCm/aiter` (`fmha_gfx1201`), `ROCm/composable_kernel`, AMD RDNA4 WMMA GEMM blogs, `ROCm/clr`
 - **Inference Engines:** `vllm-project/vllm`, `sgl-project/sglang` (RadixAttention, Inkling-2-Mini loop fusion), `ggml-org/llama.cpp` (PR #9702, PR #32065, `iq3s_grid.h`), `flashinfer-ai/flashinfer`, `turboderp-org/exllamav3`, `Dao-AILab/causal-conv1d`, `LMCache/LMCache`
 - **Speculative Decoding & MoE Papers:** DSpark (`arXiv:2607.05147`), Leviathan et al. (`arXiv:2211.17192`), FR-Spec (`arXiv:2502.14856`), MicroSpec (`arXiv:2605.26444`), SAM Decoding (`arXiv:2411.10666`), ForeSpark (`arXiv:2611.13442`), EAGLE-2 (`arXiv:2406.16858`), SonicMoE (`arXiv:2512.14080`), FlashInfer (`arXiv:2501.01005`), Mirage MPK (`arXiv:2512.22219`)
@@ -191,4 +198,4 @@ Full round-by-round citations are clickable inside the [Interactive Dashboard](h
 
 ---
 
-<sub>Built on Windows 11 + AMD Radeon RX 9070 XT (`gfx1201`). Model weights are not included: bring your own GGUFs.</sub>
+<sub>Built on Windows 11 + AMD Radeon RX 9070 XT (`gfx1201`) on top of [`hanw/amd.c`](https://github.com/hanw/amd.c). Model weights are not included: bring your own GGUFs.</sub>
