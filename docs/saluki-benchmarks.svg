@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 996" width="840" height="996" role="img" aria-label="Saluki-27B (Qwen3.8 IQ2-mix · 128K ctx · q8 KV · MTP7 · Vision)">
+  <defs>
+    <linearGradient id="radeonBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ed1c24"/>
+      <stop offset="55%" stop-color="#ff5733"/>
+      <stop offset="100%" stop-color="#ffaa00"/>
+    </linearGradient>
+    <linearGradient id="g_cyan" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#009ec2"/><stop offset="100%" stop-color="#00e5ff"/></linearGradient>
+    <linearGradient id="g_emerald" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#00b377"/><stop offset="100%" stop-color="#00f5a0"/></linearGradient>
+    <linearGradient id="g_amber" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#d98200"/><stop offset="100%" stop-color="#ffc43d"/></linearGradient>
+    <linearGradient id="g_orange" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#d94816"/><stop offset="100%" stop-color="#ff7a45"/></linearGradient>
+    <linearGradient id="g_crimson" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#c9182b"/><stop offset="100%" stop-color="#ff473d"/></linearGradient>
+    <linearGradient id="g_v0" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#2c313d"/><stop offset="100%" stop-color="#3a4152"/></linearGradient>
+    <linearGradient id="g_mid" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#4a5770"/><stop offset="100%" stop-color="#617294"/></linearGradient>
+  </defs>
+  <rect width="840" height="996" rx="6" fill="#090a0d" stroke="#232732" stroke-width="1"/>
+  <rect x="1" y="1" width="838" height="3" rx="1" fill="url(#radeonBar)"/>
+  <g transform="translate(24.0,21.0) scale(0.7917)" fill="none" stroke="#ff3b30" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></g>
+  <text x="50" y="37" fill="#f5f7fa" font-size="18" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Saluki-27B (Qwen3.8 IQ2-mix · 128K ctx · q8 KV · MTP7 · Vision)</text>
+  <text x="24" y="58" fill="#8c95a6" font-size="11.5" font-family="ui-monospace,Consolas,monospace">64 zero-spill gfx1201 kernels · mask 0x67e8de841ffffffff · 11 ABBA rounds · 7/7 exact parity</text>
+  <rect x="18" y="76" width="804" height="434" rx="4" fill="#111318" stroke="#232732"/>
+  <rect x="18" y="86" width="3" height="18" rx="1" fill="#ffaa00"/>
+  <g transform="translate(34.0,89.0) scale(0.6250)" fill="none" stroke="#ffaa00" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></g>
+  <text x="56" y="102" fill="#f5f7fa" font-size="13" font-weight="700" font-family="ui-monospace,Consolas,monospace">THROUGHPUT (higher is better · ABBA verified)</text>
+  <line x1="34" y1="112" x2="806" y2="112" stroke="#232732" stroke-width="1"/>
+  <text x="34" y="136" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">4.3K Cold Prefill (OpenCode agent)</text>
+  <text x="806" y="136" fill="#00d4ff" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">+66.5% prefill</text>
+  <rect x="98" y="146" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="146" width="272.1" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="156.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="156.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">707 tok/s (6.10 s)</text>
+  <rect x="98" y="166" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="166" width="452.9" height="12" rx="2" fill="url(#g_cyan)"/>
+  <text x="88" y="176.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="176.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">1,177 tok/s (3.67 s)</text>
+  <line x1="34" y1="194" x2="806" y2="194" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="212" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">23.3K Cold Prefill (OMP 18K agent)</text>
+  <text x="806" y="212" fill="#00d4ff" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">+81.3% prefill</text>
+  <rect x="98" y="222" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="222" width="249.8" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="232.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="232.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">685 tok/s (33.4 s)</text>
+  <rect x="98" y="242" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="242" width="452.9" height="12" rx="2" fill="url(#g_cyan)"/>
+  <text x="88" y="252.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="252.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">1,242 tok/s (18.8 s)</text>
+  <line x1="34" y1="270" x2="806" y2="270" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="288" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Sustained Agent Decode (7-req average)</text>
+  <text x="806" y="288" fill="#00e599" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">+15.3% sustained</text>
+  <rect x="98" y="298" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="298" width="392.8" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="308.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="308.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">98.7 tok/s</text>
+  <rect x="98" y="318" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="318" width="452.9" height="12" rx="2" fill="url(#g_emerald)"/>
+  <text x="88" y="328.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="328.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">113.8 tok/s</text>
+  <line x1="34" y1="346" x2="806" y2="346" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="364" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Peak Tool Decode (23K @ mtp 5.79)</text>
+  <text x="806" y="364" fill="#ff6b35" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">+16.8% peak</text>
+  <rect x="98" y="374" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="374" width="387.7" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="384.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="384.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">143.7 tok/s</text>
+  <rect x="98" y="394" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="394" width="452.9" height="12" rx="2" fill="url(#g_orange)"/>
+  <text x="88" y="404.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="404.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">167.9 tok/s</text>
+  <line x1="34" y1="422" x2="806" y2="422" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="440" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Runtime Rank-32 LoRA Decode</text>
+  <text x="806" y="440" fill="#ffaa00" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">~1.9x faster</text>
+  <rect x="98" y="450" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="450" width="239.2" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="460.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">Prev</text>
+  <text x="574" y="460.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">46-57 tok/s</text>
+  <rect x="98" y="470" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="470" width="452.9" height="12" rx="2" fill="url(#g_amber)"/>
+  <text x="88" y="480.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">Wave32</text>
+  <text x="574" y="480.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">87-108 tok/s</text>
+  <rect x="18" y="524" width="804" height="434" rx="4" fill="#111318" stroke="#232732"/>
+  <rect x="18" y="534" width="3" height="18" rx="1" fill="#ff3b30"/>
+  <g transform="translate(34.0,537.0) scale(0.6250)" fill="none" stroke="#ff3b30" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g>
+  <text x="56" y="550" fill="#f5f7fa" font-size="13" font-weight="700" font-family="ui-monospace,Consolas,monospace">TTFT, DISK RESTART &amp; 128K MEMORY (lower is better)</text>
+  <line x1="34" y1="560" x2="806" y2="560" stroke="#232732" stroke-width="1"/>
+  <text x="34" y="584" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">4.3K Cold Prompt TTFT</text>
+  <text x="806" y="584" fill="#00d4ff" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">-39.9% TTFT</text>
+  <rect x="98" y="594" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="594" width="452.9" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="604.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="604.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">6.10 s</text>
+  <rect x="98" y="614" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="614" width="272.5" height="12" rx="2" fill="url(#g_cyan)"/>
+  <text x="88" y="624.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="624.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">3.67 s</text>
+  <line x1="34" y1="642" x2="806" y2="642" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="660" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">23.3K Cold Prompt TTFT</text>
+  <text x="806" y="660" fill="#00d4ff" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">-43.7% (-14.6 s)</text>
+  <rect x="98" y="670" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="670" width="452.9" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="680.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="680.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">33.4 s</text>
+  <rect x="98" y="690" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="690" width="254.9" height="12" rx="2" fill="url(#g_cyan)"/>
+  <text x="88" y="700.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="700.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">18.8 s</text>
+  <line x1="34" y1="718" x2="806" y2="718" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="736" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Warm 23K Multi-Turn TTFT (23,234 cached)</text>
+  <text x="806" y="736" fill="#00e599" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">-31.6% warm TTFT</text>
+  <rect x="98" y="746" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="746" width="452.9" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="756.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R0</text>
+  <text x="574" y="756.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">377 ms</text>
+  <rect x="98" y="766" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="766" width="310.0" height="12" rx="2" fill="url(#g_emerald)"/>
+  <text x="88" y="776.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R11</text>
+  <text x="574" y="776.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">258-286 ms</text>
+  <line x1="34" y1="794" x2="806" y2="794" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="812" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Disk-Cache Restart TTFT (26.7K prompt)</text>
+  <text x="806" y="812" fill="#ff3b30" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">37.5x faster</text>
+  <rect x="98" y="822" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="822" width="452.9" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="832.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">Cold</text>
+  <text x="574" y="832.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">22.90 s cold</text>
+  <rect x="98" y="842" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="842" width="12.1" height="12" rx="2" fill="url(#g_crimson)"/>
+  <text x="88" y="852.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">Disk</text>
+  <text x="574" y="852.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">0.61 s disk</text>
+  <line x1="34" y1="870" x2="806" y2="870" stroke="#1b1f29" stroke-width="1"/>
+  <text x="34" y="888" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">128K Context KV Cache Size (fits 16 GB)</text>
+  <text x="806" y="888" fill="#ffaa00" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">-60% KV VRAM</text>
+  <rect x="98" y="898" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="898" width="452.9" height="12" rx="2" fill="url(#g_v0)"/>
+  <text x="88" y="908.5" fill="#7d8799" font-size="12" font-weight="500" text-anchor="end" font-family="ui-monospace,Consolas,monospace">FP16</text>
+  <text x="574" y="908.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">12.10 GB KV</text>
+  <rect x="98" y="918" width="462" height="12" rx="2" fill="#1a1e28"/>
+  <rect x="98" y="918" width="181.6" height="12" rx="2" fill="url(#g_amber)"/>
+  <text x="88" y="928.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">Q8</text>
+  <text x="574" y="928.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">4.85 GB KV · 0 ViT VRAM</text>
+  <text x="24" y="985" fill="#7d8799" font-size="11.5" font-family="ui-monospace,Consolas,monospace">RX 9070 XT (16 GB, WDDM) · R0 = our first amd-infer impl · 7/7 exact SHA</text>
+</svg>

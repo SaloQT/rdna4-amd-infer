@@ -1,0 +1,407 @@
+#!/usr/bin/env python3
+"""Write small random Llama / Qwen2 models as GGUF v3 files (own writer,
+numpy only). The shapes exercise the edge cases of the GEMV work split:
+  qwen2: dim 96 (3 blocks: fewer blocks than lanes), ffn 352 (11 blocks),
+         q/k/v biases, tied output (no output.weight), Q4_0 token_embd,
+         vocab 300 (not a multiple of 8 rows), GPT2 byte-level tokens.
+  llama: dim 1152 (36 blocks > 32: lanes do 2 steps), ffn 1376 (43 blocks),
+         F16 token_embd, separate Q4_0 output, one Q8_0 matrix (blk.1.attn_v),
+         SentencePiece tokens with <0xXX> byte tokens.
+usage: make_tiny_gguf.py OUT_DIR
+"""
+import struct
+import sys
+
+import numpy as np
+
+GGML_F32, GGML_F16, GGML_Q4_0, GGML_Q8_0, GGML_Q4_K, GGML_Q5_K, GGML_Q6_K, GGML_BF16 = 0, 1, 2, 8, 12, 13, 14, 30
+GGML_IQ3_S, GGML_IQ4_XS = 21, 23
+T_U32, T_I32, T_F32, T_BOOL, T_STR, T_ARR, T_U64, T_F64 = 4, 5, 6, 7, 8, 9, 10, 12
+ALIGN = 32
+
+
+def s_str(s):
+    b = s.encode("utf-8")
+    return struct.pack("<Q", len(b)) + b
+
+
+def s_val(t, v):
+    if t == T_U32:
+        return struct.pack("<I", v)
+    if t == T_I32:
+        return struct.pack("<i", v)
+    if t == T_F32:
+        return struct.pack("<f", v)
+    if t == T_F64:
+        return struct.pack("<d", v)
+    if t == T_U64:
+        return struct.pack("<Q", v)
+    if t == T_BOOL:
+        return struct.pack("<B", 1 if v else 0)
+    if t == T_STR:
+        return s_str(v)
+    raise ValueError(t)
+
+
+def write_gguf(path, kvs, tensors):
+    """kvs: list of (key, type, value) or (key, T_ARR, (elem_type, list));
+    tensors: list of (name, ne list, ggml type, raw bytes)."""
+    out = bytearray()
+    out += b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kvs))
+    for k, t, v in kvs:
+        out += s_str(k) + struct.pack("<I", t)
+        if t == T_ARR:
+            et, items = v
+            out += struct.pack("<IQ", et, len(items))
+            for it in items:
+                out += s_val(et, it)
+        else:
+            out += s_val(t, v)
+    off = 0
+    offs = []
+    for name, ne, typ, raw in tensors:
+        offs.append(off)
+        out += s_str(name) + struct.pack("<I", len(ne))
+        for d in ne:
+            out += struct.pack("<Q", d)
+        out += struct.pack("<IQ", typ, off)
+        off += (len(raw) + ALIGN - 1) // ALIGN * ALIGN
+    out += b"\0" * ((-len(out)) % ALIGN)
+    for (name, ne, typ, raw), o in zip(tensors, offs):
+        out += raw + b"\0" * ((-len(raw)) % ALIGN)
+    with open(path, "wb") as f:
+        f.write(out)
+
+
+def q4_0(rng, rows, cols, scale):
+    """Random Q4_0 matrix: random nibbles and f16 scales (exact values)."""
+    assert cols % 32 == 0
+    nb = cols // 32
+    d = (rng.uniform(0.5, 1.5, size=(rows, nb)) * scale).astype(np.float16)
+    q = rng.integers(0, 16, size=(rows, nb, 32), dtype=np.uint8)
+    blk = np.zeros((rows, nb, 18), dtype=np.uint8)
+    blk[:, :, 0:2] = d.view(np.uint8).reshape(rows, nb, 2)
+    blk[:, :, 2:] = q[:, :, :16] | (q[:, :, 16:] << 4)
+    return blk.tobytes()
+
+
+def q8_0(rng, rows, cols, scale):
+    nb = cols // 32
+    d = (rng.uniform(0.5, 1.5, size=(rows, nb)) * scale / 16).astype(np.float16)
+    q = rng.integers(-127, 128, size=(rows, nb, 32)).astype(np.int8)
+    blk = np.zeros((rows, nb, 34), dtype=np.uint8)
+    blk[:, :, 0:2] = d.view(np.uint8).reshape(rows, nb, 2)
+    blk[:, :, 2:] = q.view(np.uint8)
+    return blk.tobytes()
+
+
+def kq(rng, rows, cols, scale, typ):
+    """Random Q4_K / Q5_K / Q6_K matrix (cols % 256 == 0): random bytes with
+    small f16 scales (d, dmin), so the values are exact and bounded."""
+    nsb = rows * cols // 256
+    if typ == GGML_Q6_K:
+        b = rng.integers(0, 256, size=(nsb, 210), dtype=np.uint8)
+        b[:, 192:208] = rng.integers(-40, 40, size=(nsb, 16)).astype(np.int8).view(np.uint8)
+        b[:, 208:210] = np.full(nsb, scale / 32.0 / 40.0 * 4, np.float16).view(np.uint8).reshape(nsb, 2)
+        return b.tobytes()
+    bs = 144 if typ == GGML_Q4_K else 176
+    b = rng.integers(0, 256, size=(nsb, bs), dtype=np.uint8)
+    q = 32.0 if typ == GGML_Q5_K else 16.0
+    b[:, 0:2] = np.full(nsb, scale / q / 63.0 * 4, np.float16).view(np.uint8).reshape(nsb, 2)
+    b[:, 2:4] = np.full(nsb, scale / 63.0 * 2, np.float16).view(np.uint8).reshape(nsb, 2)
+    return b.tobytes()
+
+
+def iq(rng, rows, cols, scale, typ):
+    """Random IQ4_XS / IQ3_S matrix (cols % 256 == 0): random bytes, small f16 d."""
+    nsb = rows * cols // 256
+    if typ == GGML_IQ4_XS:  # d, scales_h, scales_l[4], qs[128]; weight = d (ls - 32) kv[q], |.| <= 32 * 127 d
+        b = rng.integers(0, 256, size=(nsb, 136), dtype=np.uint8)
+        b[:, 0:2] = np.full(nsb, scale / 4064.0 * 4, np.float16).view(np.uint8).reshape(nsb, 2)
+        return b.tobytes()
+    # IQ3_S: d, qs[64], qh[8], signs[32], scales[4]; weight = d (1 + 2 s) grid sign, |.| <= 31 * 15 d
+    b = rng.integers(0, 256, size=(nsb, 110), dtype=np.uint8)
+    b[:, 0:2] = np.full(nsb, scale / 465.0 * 3, np.float16).view(np.uint8).reshape(nsb, 2)
+    return b.tobytes()
+
+
+def anyq(rng, rows, cols, scale, typ):
+    if typ == GGML_Q8_0:
+        return q8_0(rng, rows, cols, scale)
+    if typ in (GGML_Q4_K, GGML_Q5_K, GGML_Q6_K):
+        return kq(rng, rows, cols, scale, typ)
+    if typ in (GGML_IQ4_XS, GGML_IQ3_S):
+        return iq(rng, rows, cols, scale, typ)
+    raise ValueError(typ)
+
+
+def f32(a):
+    return np.asarray(a, dtype=np.float32).tobytes()
+
+
+def bf16(a):
+    """BF16: the high 16 bits of each f32 (truncated)"""
+    return (np.asarray(a, dtype=np.float32).view(np.uint32) >> 16).astype(np.uint16).tobytes()
+
+
+def gpt2_vocab(n):
+    """GPT2 byte-level token strings: 256 single bytes, then some merges."""
+    bs = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+    cs = bs[:]
+    k = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + k)
+            k += 1
+    byte2u = {b: chr(c) for b, c in zip(bs, cs)}
+    toks = [byte2u[b] for b in range(256)]
+    words = [" the", " and", "ing", " of", "er", " is", " 你好", " rose", "\n\n", " AMD"]
+    i = 0
+    while len(toks) < n:
+        w = words[i % len(words)] + ("" if i < len(words) else str(i))
+        toks.append("".join(byte2u[b] for b in w.encode("utf-8")))
+        i += 1
+    return toks
+
+
+def spm_vocab(n):
+    toks = ["<unk>", "<s>", "</s>"] + ["<0x%02X>" % b for b in range(256)]
+    words = ["▁the", "▁and", "ing", "▁of", "er", "▁is", "▁rose", "▁AMD"]
+    i = 0
+    while len(toks) < n:
+        toks.append(words[i % len(words)] + ("" if i < len(words) else str(i)))
+        i += 1
+    return toks
+
+
+def make(path, arch, seed, n_layer, dim, ffn, n_head, n_kv, vocab, ctx, biases, tied, embd_type, q8_layer_v):
+    rng = np.random.default_rng(seed)
+    hd = dim // n_head
+    kvd = n_kv * hd
+    kvs = [
+        ("general.architecture", T_STR, arch),
+        ("general.name", T_STR, "tiny-" + arch),
+        ("general.alignment", T_U32, ALIGN),
+        (arch + ".block_count", T_U32, n_layer),
+        (arch + ".context_length", T_U32, ctx),
+        (arch + ".embedding_length", T_U32, dim),
+        (arch + ".feed_forward_length", T_U32, ffn),
+        (arch + ".attention.head_count", T_U32, n_head),
+        (arch + ".attention.head_count_kv", T_U32, n_kv),
+        (arch + ".attention.layer_norm_rms_epsilon", T_F32, 1e-6 if arch == "qwen2" else 1e-5),
+        (arch + ".rope.freq_base", T_F32, 1000000.0 if arch == "qwen2" else 10000.0),
+        ("general.some_f64", T_F64, 0.25),
+        ("general.some_bools", T_ARR, (T_BOOL, [True, False, True])),
+    ]
+    if arch == "qwen2":
+        toks = gpt2_vocab(vocab)
+        kvs += [("tokenizer.ggml.model", T_STR, "gpt2"), ("tokenizer.ggml.tokens", T_ARR, (T_STR, toks)),
+                ("tokenizer.ggml.token_type", T_ARR, (T_I32, [1] * vocab)),
+                ("tokenizer.ggml.merges", T_ARR, (T_STR, ["Ġ t", "h e"]))]
+    else:
+        toks = spm_vocab(vocab)
+        kvs += [("tokenizer.ggml.model", T_STR, "llama"), ("tokenizer.ggml.tokens", T_ARR, (T_STR, toks)),
+                ("tokenizer.ggml.scores", T_ARR, (T_F32, [0.0] * vocab)),
+                ("tokenizer.ggml.bos_token_id", T_U32, 1)]
+
+    T = []
+    if embd_type == GGML_Q4_0:
+        T.append(("token_embd.weight", [dim, vocab], GGML_Q4_0, q4_0(rng, vocab, dim, 0.15)))
+    else:
+        T.append(("token_embd.weight", [dim, vocab], GGML_F16,
+                  (rng.standard_normal((vocab, dim)) * 1.0).astype(np.float16).tobytes()))
+    for l in range(n_layer):
+        p = "blk.%d." % l
+        sc = lambda k: 0.2 / np.sqrt(k)
+        T.append((p + "attn_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        T.append((p + "attn_q.weight", [dim, dim], GGML_Q4_0, q4_0(rng, dim, dim, sc(dim))))
+        T.append((p + "attn_k.weight", [dim, kvd], GGML_Q4_0, q4_0(rng, kvd, dim, sc(dim))))
+        if l == q8_layer_v:
+            T.append((p + "attn_v.weight", [dim, kvd], GGML_Q8_0, q8_0(rng, kvd, dim, sc(dim))))
+        else:
+            T.append((p + "attn_v.weight", [dim, kvd], GGML_Q4_0, q4_0(rng, kvd, dim, sc(dim))))
+        if biases:
+            T.append((p + "attn_q.bias", [dim], GGML_F32, f32(0.3 * rng.standard_normal(dim))))
+            T.append((p + "attn_k.bias", [kvd], GGML_F32, f32(0.3 * rng.standard_normal(kvd))))
+            T.append((p + "attn_v.bias", [kvd], GGML_F32, f32(0.3 * rng.standard_normal(kvd))))
+        T.append((p + "attn_output.weight", [dim, dim], GGML_Q4_0, q4_0(rng, dim, dim, sc(dim))))
+        T.append((p + "ffn_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        T.append((p + "ffn_gate.weight", [dim, ffn], GGML_Q4_0, q4_0(rng, ffn, dim, sc(dim))))
+        T.append((p + "ffn_up.weight", [dim, ffn], GGML_Q4_0, q4_0(rng, ffn, dim, sc(dim))))
+        T.append((p + "ffn_down.weight", [ffn, dim], GGML_Q4_0, q4_0(rng, dim, ffn, sc(ffn))))
+    T.append(("output_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+    if not tied:
+        T.append(("output.weight", [dim, vocab], GGML_Q4_0, q4_0(rng, vocab, dim, 4 * sc(dim))))
+    write_gguf(path, kvs, T)
+    print("wrote", path)
+
+
+def make_k(path, seed, n_layer=2, dim=512, ffn=1536, n_head=8, n_kv=4, vocab=301, ctx=256):
+    """llama with K-quant matrices: Q4_K (embedding too), one Q5_K, Q6_K up
+    and output (gate and up of different kinds: not merged); blk.1.attn_k BF16."""
+    rng = np.random.default_rng(seed)
+    hd = dim // n_head
+    kvd = n_kv * hd
+    arch = "llama"
+    kvs = [("general.architecture", T_STR, arch), ("general.name", T_STR, "tiny-llama-k"), ("general.alignment", T_U32, ALIGN),
+           (arch + ".block_count", T_U32, n_layer), (arch + ".context_length", T_U32, ctx),
+           (arch + ".embedding_length", T_U32, dim), (arch + ".feed_forward_length", T_U32, ffn),
+           (arch + ".attention.head_count", T_U32, n_head), (arch + ".attention.head_count_kv", T_U32, n_kv),
+           (arch + ".attention.layer_norm_rms_epsilon", T_F32, 1e-5), (arch + ".rope.freq_base", T_F32, 10000.0),
+           ("tokenizer.ggml.model", T_STR, "llama"), ("tokenizer.ggml.tokens", T_ARR, (T_STR, spm_vocab(vocab))),
+           ("tokenizer.ggml.scores", T_ARR, (T_F32, [0.0] * vocab)), ("tokenizer.ggml.bos_token_id", T_U32, 1)]
+    sc = lambda k: 0.2 / np.sqrt(k)
+    T = [("token_embd.weight", [dim, vocab], GGML_Q4_K, kq(rng, vocab, dim, 1.0, GGML_Q4_K))]
+    for l in range(n_layer):
+        p = "blk.%d." % l
+        T.append((p + "attn_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        T.append((p + "attn_q.weight", [dim, dim], GGML_Q4_K, kq(rng, dim, dim, sc(dim), GGML_Q4_K)))
+        if l == 1:  # one BF16 matrix (Qwen3.8 fine-tunes store ssm_alpha / ssm_beta as BF16)
+            T.append((p + "attn_k.weight", [dim, kvd], GGML_BF16, bf16(sc(dim) * rng.standard_normal((kvd, dim)))))
+        else:
+            T.append((p + "attn_k.weight", [dim, kvd], GGML_Q4_K, kq(rng, kvd, dim, sc(dim), GGML_Q4_K)))
+        T.append((p + "attn_v.weight", [dim, kvd], GGML_Q5_K, kq(rng, kvd, dim, sc(dim), GGML_Q5_K)))
+        T.append((p + "attn_output.weight", [dim, dim], GGML_Q4_K, kq(rng, dim, dim, sc(dim), GGML_Q4_K)))
+        T.append((p + "ffn_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        T.append((p + "ffn_gate.weight", [dim, ffn], GGML_Q4_K, kq(rng, ffn, dim, sc(dim), GGML_Q4_K)))
+        T.append((p + "ffn_up.weight", [dim, ffn], GGML_Q6_K, kq(rng, ffn, dim, sc(dim), GGML_Q6_K)))
+        T.append((p + "ffn_down.weight", [ffn, dim], GGML_Q4_K, kq(rng, dim, ffn, sc(ffn), GGML_Q4_K)))
+    T.append(("output_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+    T.append(("output.weight", [dim, vocab], GGML_Q6_K, kq(rng, vocab, dim, 4 * sc(dim), GGML_Q6_K)))
+    write_gguf(path, kvs, T)
+    print("wrote", path)
+
+
+def make_flint(path, seed, dim=256, n_head=4, n_kv=2, hd=96, ffn=512, n_exp=8, n_used=3, eff=256, sff=512, vocab=300, ctx=64, win=4,
+               swp=None, types=None, n_dense=2):
+    """flint (Recursive): QK norm, learned sinks, sliding window (win) layers
+    with RoPE and full layers without, 2 dense layers, then sigmoid top-k MoE
+    with a shared expert. Every tensor type of the UD-Q4_K_XL file: Q8_0,
+    Q5_K, IQ4_XS, IQ3_S, Q4_K, Q6_K, BF16 (router); layer 4: gate and up
+    experts of different types and a router bias."""
+    rng = np.random.default_rng(seed)
+    a = "flint"
+    swp = swp or [False, False, True, True, False]
+    n_layer = len(swp)
+    kvs = [("general.architecture", T_STR, a), ("general.name", T_STR, "tiny-flint"), ("general.alignment", T_U32, ALIGN),
+           (a + ".block_count", T_U32, n_layer), (a + ".context_length", T_U32, ctx), (a + ".embedding_length", T_U32, dim),
+           (a + ".feed_forward_length", T_U32, ffn), (a + ".attention.head_count", T_U32, n_head),
+           (a + ".attention.head_count_kv", T_U32, n_kv), (a + ".rope.freq_base", T_F32, 10000.0),
+           (a + ".attention.layer_norm_rms_epsilon", T_F32, 1e-6), (a + ".expert_count", T_U32, n_exp),
+           (a + ".expert_used_count", T_U32, n_used), (a + ".expert_gating_func", T_U32, 2),
+           (a + ".attention.key_length", T_U32, hd), (a + ".attention.value_length", T_U32, hd),
+           (a + ".expert_feed_forward_length", T_U32, eff), (a + ".expert_shared_feed_forward_length", T_U32, sff),
+           (a + ".leading_dense_block_count", T_U32, n_dense), (a + ".expert_shared_count", T_U32, 2),
+           (a + ".expert_weights_norm", T_BOOL, True), (a + ".expert_weights_scale", T_F32, 1.0),
+           (a + ".attention.sliding_window", T_U32, win),
+           (a + ".attention.sliding_window_pattern", T_ARR, (T_BOOL, swp)),
+           (a + ".attention.rope_pattern", T_ARR, (T_BOOL, swp)),
+           ("tokenizer.ggml.model", T_STR, "gpt2"), ("tokenizer.ggml.tokens", T_ARR, (T_STR, gpt2_vocab(vocab))),
+           ("tokenizer.ggml.token_type", T_ARR, (T_I32, [1] * vocab)), ("tokenizer.ggml.merges", T_ARR, (T_STR, ["Ġ t", "h e"]))]
+    qd, kvd = n_head * hd, n_kv * hd
+    sc = lambda k: 0.5 / np.sqrt(k)
+    Q8, Q5, I4, I3, Q4K, Q6 = GGML_Q8_0, GGML_Q5_K, GGML_IQ4_XS, GGML_IQ3_S, GGML_Q4_K, GGML_Q6_K
+    # per layer: q, k, v, o, then dense (gate, up, down) or moe (gate_exps, up_exps, down_exps, gate_sh, up_sh, down_sh)
+    types = types or [(Q8, Q5, Q8, Q8, I4, I4, Q5),
+             (Q8, Q8, Q8, Q8, Q8, Q8, Q8),
+             (Q5, Q8, Q5, Q8, I4, I4, Q5, Q8, Q8, Q5),
+             (Q8, Q8, Q8, Q8, I3, I3, Q6, I4, I4, I4),
+             (Q8, Q8, Q8, Q8, Q4K, Q8, Q8, Q5, Q5, Q8)]
+    T = [("token_embd.weight", [dim, vocab], Q8, q8_0(rng, vocab, dim, 16.0))]
+    for l in range(n_layer):
+        p = "blk.%d." % l
+        t = types[l]
+        T.append((p + "attn_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        T.append((p + "attn_q_norm.weight", [hd], GGML_F32, f32(1 + 0.1 * rng.standard_normal(hd))))
+        T.append((p + "attn_k_norm.weight", [hd], GGML_F32, f32(1 + 0.1 * rng.standard_normal(hd))))
+        T.append((p + "attn_sinks.weight", [n_head], GGML_F32, f32(rng.uniform(-1, 3, n_head))))
+        T.append((p + "attn_q.weight", [dim, qd], t[0], anyq(rng, qd, dim, sc(dim), t[0])))
+        T.append((p + "attn_k.weight", [dim, kvd], t[1], anyq(rng, kvd, dim, sc(dim), t[1])))
+        T.append((p + "attn_v.weight", [dim, kvd], t[2], anyq(rng, kvd, dim, sc(dim), t[2])))
+        T.append((p + "attn_output.weight", [qd, dim], t[3], anyq(rng, dim, qd, sc(qd), t[3])))
+        T.append((p + "ffn_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        if l < n_dense:
+            T.append((p + "ffn_gate.weight", [dim, ffn], t[4], anyq(rng, ffn, dim, sc(dim), t[4])))
+            T.append((p + "ffn_up.weight", [dim, ffn], t[5], anyq(rng, ffn, dim, sc(dim), t[5])))
+            T.append((p + "ffn_down.weight", [ffn, dim], t[6], anyq(rng, dim, ffn, sc(ffn), t[6])))
+            continue
+        T.append((p + "ffn_gate_inp.weight", [dim, n_exp], GGML_BF16, bf16(3.0 / np.sqrt(dim) * rng.standard_normal((n_exp, dim)))))
+        if l == 4:
+            T.append((p + "exp_probs_b.bias", [n_exp], GGML_F32, f32(0.2 * rng.standard_normal(n_exp))))
+        T.append((p + "ffn_gate_exps.weight", [dim, eff, n_exp], t[4], anyq(rng, n_exp * eff, dim, sc(dim), t[4])))
+        T.append((p + "ffn_up_exps.weight", [dim, eff, n_exp], t[5], anyq(rng, n_exp * eff, dim, sc(dim), t[5])))
+        T.append((p + "ffn_down_exps.weight", [eff, dim, n_exp], t[6], anyq(rng, n_exp * dim, eff, sc(eff), t[6])))
+        T.append((p + "ffn_gate_shexp.weight", [dim, sff], t[7], anyq(rng, sff, dim, sc(dim), t[7])))
+        T.append((p + "ffn_up_shexp.weight", [dim, sff], t[8], anyq(rng, sff, dim, sc(dim), t[8])))
+        T.append((p + "ffn_down_shexp.weight", [sff, dim], t[9], anyq(rng, dim, sff, sc(sff), t[9])))
+    T.append(("output_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+    T.append(("output.weight", [dim, vocab], Q8, q8_0(rng, vocab, dim, 4 * sc(dim))))
+    write_gguf(path, kvs, T)
+    print("wrote", path)
+
+
+def make_ricursive(path, seed, dim=256, n_head=8, n_kv=2, hd=64, ffn=512, vocab=300, ctx=64, win=8,
+                   swp=None, escale=1.7, clamp=2.0):
+    """ricursive (Ripple): PeriNorm (post norms on the sublayer output), value
+    residual from the scaled embedding of every layer, gated attention whose
+    gate reads the normed input, per-head QK norm, sliding-window layers with
+    RoPE and global layers without, clamped SwiGLU. qd = n_head * hd differs
+    from dim as in the real model (its q_proj is 5120 -> 10240)."""
+    rng = np.random.default_rng(seed)
+    a = "ricursive"
+    swp = swp or [True, True, True, False]
+    n_layer = len(swp)
+    kvs = [("general.architecture", T_STR, a), ("general.name", T_STR, "tiny-ricursive"),
+           ("general.alignment", T_U32, ALIGN),
+           (a + ".block_count", T_U32, n_layer), (a + ".context_length", T_U32, ctx),
+           (a + ".embedding_length", T_U32, dim), (a + ".feed_forward_length", T_U32, ffn),
+           (a + ".attention.head_count", T_U32, n_head), (a + ".attention.head_count_kv", T_U32, n_kv),
+           (a + ".attention.key_length", T_U32, hd), (a + ".attention.value_length", T_U32, hd),
+           (a + ".rope.freq_base", T_F32, 10000.0), (a + ".rope.dimension_count", T_U32, hd),
+           (a + ".attention.layer_norm_rms_epsilon", T_F32, 1e-6),
+           (a + ".attention.sliding_window", T_U32, win),
+           (a + ".attention.sliding_window_pattern", T_ARR, (T_BOOL, swp)),
+           (a + ".embedding_scale", T_F32, escale), (a + ".swiglu_clamp", T_F32, clamp),
+           ("tokenizer.ggml.model", T_STR, "gpt2"),
+           ("tokenizer.ggml.tokens", T_ARR, (T_STR, gpt2_vocab(vocab))),
+           ("tokenizer.ggml.token_type", T_ARR, (T_I32, [1] * vocab)),
+           ("tokenizer.ggml.merges", T_ARR, (T_STR, ["Ġ t", "h e"]))]
+    qd, kvd = n_head * hd, n_kv * hd
+    sc = lambda k: 0.5 / np.sqrt(k)
+    Q8 = GGML_Q8_0
+    T = [("token_embd.weight", [dim, vocab], Q8, q8_0(rng, vocab, dim, 16.0))]
+    for l in range(n_layer):
+        p = "blk.%d." % l
+        for v in ["attn_norm", "post_attention_norm", "ffn_norm", "post_ffw_norm"]:
+            T.append((p + v + ".weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+        T.append((p + "attn_q_norm.weight", [hd], GGML_F32, f32(1 + 0.1 * rng.standard_normal(hd))))
+        T.append((p + "attn_k_norm.weight", [hd], GGML_F32, f32(1 + 0.1 * rng.standard_normal(hd))))
+        T.append((p + "attn_vres_lambda.weight", [1], GGML_F32, f32(rng.uniform(-1.5, 1.5, 1))))
+        T.append((p + "attn_q.weight", [dim, qd], Q8, q8_0(rng, qd, dim, sc(dim))))
+        T.append((p + "attn_k.weight", [dim, kvd], Q8, q8_0(rng, kvd, dim, sc(dim))))
+        T.append((p + "attn_v.weight", [dim, kvd], Q8, q8_0(rng, kvd, dim, sc(dim))))
+        T.append((p + "attn_gate.weight", [dim, qd], Q8, q8_0(rng, qd, dim, sc(dim))))
+        T.append((p + "attn_output.weight", [qd, dim], Q8, q8_0(rng, dim, qd, sc(qd))))
+        T.append((p + "ffn_gate.weight", [dim, ffn], Q8, q8_0(rng, ffn, dim, 2.5 * sc(dim))))
+        T.append((p + "ffn_up.weight", [dim, ffn], Q8, q8_0(rng, ffn, dim, 2.5 * sc(dim))))
+        T.append((p + "ffn_down.weight", [ffn, dim], Q8, q8_0(rng, dim, ffn, sc(ffn))))
+    T.append(("output_norm.weight", [dim], GGML_F32, f32(1 + 0.1 * rng.standard_normal(dim))))
+    T.append(("output.weight", [dim, vocab], Q8, q8_0(rng, vocab, dim, 4 * sc(dim))))
+    write_gguf(path, kvs, T)
+    print("wrote", path)
+
+
+def main():
+    out = sys.argv[1] if len(sys.argv) > 1 else "build"
+    make(out + "/tiny-qwen2.gguf", "qwen2", 1, n_layer=2, dim=96, ffn=352, n_head=6, n_kv=2, vocab=300, ctx=256,
+         biases=True, tied=True, embd_type=GGML_Q4_0, q8_layer_v=-1)
+    make(out + "/tiny-llama.gguf", "llama", 2, n_layer=2, dim=1152, ffn=1376, n_head=8, n_kv=4, vocab=301, ctx=256,
+         biases=False, tied=False, embd_type=GGML_F16, q8_layer_v=1)
+    make_k(out + "/tiny-llama-k.gguf", 4)
+    make_flint(out + "/tiny-flint.gguf", 5)
+    make_ricursive(out + "/tiny-ricursive.gguf", 6)
+
+
+if __name__ == "__main__":
+    main()

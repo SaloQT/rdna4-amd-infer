@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 214" width="840" height="214" role="img" aria-label="RX 9070 XT 16GB Matched Live Benchmark: Inkling-2-Mini 26B IQ3_XXS 189.3 tok/s snake decode and 3,792 tok/s 28.7K OMP prefill; Saluki-27B Qwen3.8 IQ2-mix 142.1 tok/s snake decode and 1,134 tok/s 23.8K OMP prefill">
+  <defs>
+    <linearGradient id="radeonBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ed1c24"/>
+      <stop offset="55%" stop-color="#ff5733"/>
+      <stop offset="100%" stop-color="#ffaa00"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="840" height="214" rx="6" fill="#090a0d" stroke="#232732" stroke-width="1"/>
+  <rect x="1" y="1" width="838" height="3" rx="1" fill="url(#radeonBar)"/>
+
+  <text x="18" y="25" fill="#f5f7fa" font-size="11.5" font-weight="700" font-family="ui-monospace,Consolas,monospace">RX 9070 XT 16GB · MATCHED BENCHMARK</text>
+  <text x="822" y="25" fill="#8c95a6" font-size="11" text-anchor="end" font-family="ui-monospace,Consolas,monospace">OMP cold prompt + "make a snake game in html" (medium)</text>
+
+  <!-- LEFT CARD: INKLING-2-MINI -->
+  <rect x="14" y="38" width="400" height="162" rx="4" fill="#111318" stroke="#232732"/>
+  <rect x="14" y="47" width="3" height="18" rx="1" fill="#00e599"/>
+  <text x="28" y="61" fill="#f5f7fa" font-size="14" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">INKLING-2-MINI</text>
+  <text x="400" y="60" fill="#00e599" font-size="11" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">26B IQ3_XXS · DSpark Q4_K</text>
+  <line x1="28" y1="71" x2="400" y2="71" stroke="#232732" stroke-width="1"/>
+
+  <text x="28" y="91" fill="#7d8799" font-size="10.5" font-weight="700" font-family="ui-monospace,Consolas,monospace">DECODE (SNAKE HTML)</text>
+  <text x="28" y="127" fill="#00e599" font-size="30" font-weight="700" font-family="ui-monospace,Consolas,monospace">189.3</text>
+  <text x="132" y="127" fill="#8c95a6" font-size="12" font-family="ui-monospace,Consolas,monospace">tok/s</text>
+  <text x="28" y="148" fill="#cbd2df" font-size="10.5" font-family="ui-monospace,Consolas,monospace">148.2 @ 30K OMP · 122 T=1</text>
+
+  <line x1="214" y1="79" x2="214" y2="156" stroke="#1d212b" stroke-width="1"/>
+
+  <text x="228" y="91" fill="#7d8799" font-size="10.5" font-weight="700" font-family="ui-monospace,Consolas,monospace">PREFILL (28.7K OMP)</text>
+  <text x="228" y="127" fill="#00d4ff" font-size="30" font-weight="700" font-family="ui-monospace,Consolas,monospace">3,792</text>
+  <text x="332" y="127" fill="#8c95a6" font-size="12" font-family="ui-monospace,Consolas,monospace">tok/s</text>
+  <text x="228" y="148" fill="#cbd2df" font-size="10.5" font-family="ui-monospace,Consolas,monospace">7.58s TTFT · 5,196 @ 4K</text>
+
+  <line x1="28" y1="163" x2="400" y2="163" stroke="#1b1f29" stroke-width="1"/>
+  <text x="28" y="182" fill="#8c95a6" font-size="10.5" font-family="ui-monospace,Consolas,monospace">f16 KV · 84ms warm 36K · 801 launches · 3.7 GB free</text>
+
+  <!-- RIGHT CARD: SALUKI-27B -->
+  <rect x="426" y="38" width="400" height="162" rx="4" fill="#111318" stroke="#232732"/>
+  <rect x="426" y="47" width="3" height="18" rx="1" fill="#ff6b35"/>
+  <text x="440" y="61" fill="#f5f7fa" font-size="14" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">SALUKI-27B</text>
+  <text x="812" y="60" fill="#ff6b35" font-size="11" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">Qwen3.8 IQ2-mix · MTP7</text>
+  <line x1="440" y1="71" x2="812" y2="71" stroke="#232732" stroke-width="1"/>
+
+  <text x="440" y="91" fill="#7d8799" font-size="10.5" font-weight="700" font-family="ui-monospace,Consolas,monospace">DECODE (SNAKE HTML)</text>
+  <text x="440" y="127" fill="#ff6b35" font-size="30" font-weight="700" font-family="ui-monospace,Consolas,monospace">142.1</text>
+  <text x="544" y="127" fill="#8c95a6" font-size="12" font-family="ui-monospace,Consolas,monospace">tok/s</text>
+  <text x="440" y="148" fill="#cbd2df" font-size="10.5" font-family="ui-monospace,Consolas,monospace">109.7 @ 30K · 166 write</text>
+
+  <line x1="626" y1="79" x2="626" y2="156" stroke="#1d212b" stroke-width="1"/>
+
+  <text x="640" y="91" fill="#7d8799" font-size="10.5" font-weight="700" font-family="ui-monospace,Consolas,monospace">PREFILL (23.8K OMP)</text>
+  <text x="640" y="127" fill="#ffaa00" font-size="30" font-weight="700" font-family="ui-monospace,Consolas,monospace">1,134</text>
+  <text x="744" y="127" fill="#8c95a6" font-size="12" font-family="ui-monospace,Consolas,monospace">tok/s</text>
+  <text x="640" y="148" fill="#cbd2df" font-size="10.5" font-family="ui-monospace,Consolas,monospace">21.0s TTFT · 1,242 clean</text>
+
+  <line x1="440" y1="163" x2="812" y2="163" stroke="#1b1f29" stroke-width="1"/>
+  <text x="440" y="182" fill="#8c95a6" font-size="10.5" font-family="ui-monospace,Consolas,monospace">q8 KV 128K · 126ms warm · 0.61s disk · 7.8 GB free</text>
+</svg>

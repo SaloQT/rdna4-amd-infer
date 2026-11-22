@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://saloqt.github.io/rdna4-amd-infer/sitemap.xml

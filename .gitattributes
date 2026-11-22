@@ -1,0 +1,3 @@
+*.inc linguist-language=C
+docs/* linguist-documentation
+docs/**/* linguist-documentation

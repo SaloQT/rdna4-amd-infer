@@ -1,0 +1,191 @@
+# amd-infer: from-scratch LLM decode engine for AMD RDNA4 (gfx1201).
+#   make        CPU engine + GPU host (build/ie-run), kernels (build/ie_kernels.hsaco)
+#   make test   laws test, tiny GGUF models, CPU vs numpy reference, objdump check
+#   make proofs Lean proofs (proofs/check.sh; needs CPP_LEAN, EDG_DIR, lean)
+
+CC      ?= gcc
+CXX     ?= g++
+CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -D_GNU_SOURCE
+LDLIBS  = -lm -ldl
+PYTHON  ?= python3
+
+GPU_CC     ?= clang
+GPU_LD     ?= ld.lld
+OBJDUMP    ?= llvm-objdump
+GPU_ARCH   ?= gfx1201
+GPU_CFLAGS = -x c -std=c11 -Wall -Wextra --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -nogpulib -O3
+
+B = build
+ENGINE_SRC = src/common.c src/gguf.c src/model.c src/plan.c src/cpu.c src/hip.c src/gen.c prof/sm_profiler.c
+SRC = $(ENGINE_SRC) src/main.c
+HDR = src/common.h src/gguf.h src/model.h src/backend.h src/gen.h core/ie_core.h core/ie_ext.h src/iq3s_grid.h $(B)/ie_mk_gen.h prof/sm_profiler.h
+CFLAGS += -I$(B)
+
+all: $(B)/ie-run $(B)/ie-serve $(B)/smp_demo $(B)/smp_demo.hsaco $(B)/ie_kernels.hsaco $(B)/ie_mk.hsaco $(B)/ie_mk_mtp.hsaco $(B)/ie_mk_flint.hsaco $(B)/ie_mk_flintl.hsaco $(B)/ie_mk_inkling.hsaco $(B)/ie_mk_inkling_ver.hsaco
+
+$(B):
+	mkdir -p $(B)
+
+$(B)/ie-run: $(SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
+
+# ie-serve: the OpenAI-compatible HTTP server (SERVE.md)
+SERVE_SRC = $(ENGINE_SRC) src/tok.c src/json.c src/chat.c src/serve.c
+SERVE_HDR = $(HDR) src/tok.h src/tok_unicode.h src/json.h src/chat.h
+$(B)/ie-serve: $(SERVE_SRC) $(SERVE_HDR) | $(B)
+	$(CC) $(CFLAGS) -o $@ $(SERVE_SRC) $(LDLIBS) -lpthread
+
+# The prompt cache of gen_run (also in make test, on the CPU)
+$(B)/cache_check: tools/cache_check.c $(ENGINE_SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS) -o $@ tools/cache_check.c $(ENGINE_SRC) $(LDLIBS)
+
+# The chat template: tools/chat_check.py TEMPLATE.txt build/chat_render (SERVE.md section 6)
+$(B)/chat_render: tools/chat_render.c src/chat.c src/json.c src/chat.h src/json.h | $(B)
+	$(CC) $(CFLAGS) -o $@ tools/chat_render.c src/chat.c src/json.c
+
+# The tokenizer against llama.cpp's tokenizer tests (needs a llama.cpp checkout):
+#   make tokcheck LLAMA_CPP=../llama.cpp
+LLAMA_CPP ?= ../llama.cpp
+$(B)/tok_check: tools/tok_check.c src/tok.c src/gguf.c src/common.c src/tok.h src/tok_unicode.h | $(B)
+	$(CC) $(CFLAGS) -o $@ tools/tok_check.c src/tok.c src/gguf.c src/common.c $(LDLIBS)
+# flint (tests/tok-flint.*: llama.cpp's test texts and more, the ids from
+# Hugging Face tokenizers with the model's tokenizer.json):
+#   make tokcheck-flint FLINT=path/to/flint.gguf (the model file, or a vocabulary-only GGUF)
+tokcheck-flint: $(B)/tok_check
+	./$(B)/tok_check $(FLINT) tests/tok-flint.inp tests/tok-flint.out
+tokcheck: $(B)/tok_check
+	./$(B)/tok_check $(LLAMA_CPP)/models/ggml-vocab-qwen2.gguf $(LLAMA_CPP)/models/ggml-vocab-qwen2.gguf.inp $(LLAMA_CPP)/models/ggml-vocab-qwen2.gguf.out
+	./$(B)/tok_check $(LLAMA_CPP)/models/ggml-vocab-qwen35.gguf $(LLAMA_CPP)/models/ggml-vocab-qwen35.gguf.inp $(LLAMA_CPP)/models/ggml-vocab-qwen35.gguf.out
+
+# GPU kernels: C -> LLVM IR. clang 18 does not accept the attribute
+# amdgpu_flat_work_group_size in C, so the IR gets
+# "amdgpu-flat-work-group-size"="256,256" (all kernels run with 256 threads).
+$(B)/ie_kernels.ll: kernels/ie_kernels.c $(wildcard kernels/*.inc) core/ie_core.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -S -emit-llvm -o $@.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+
+$(B)/ie_kernels.o: $(B)/ie_kernels.ll
+	$(GPU_CC) -nogpulib --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -O3 -c -o $@ $<
+
+$(B)/ie_kernels.hsaco: $(B)/ie_kernels.o
+	$(GPU_LD) -shared -o $@ $<
+
+# The megakernel (kernels/ie_mk.c, IE_MK=1): the kernels of a run as
+# functions of one persistent kernel. Two builds: ie_mk.hsaco (decode steps,
+# 192 VGPRs, no spills) and ie_mk_mtp.hsaco (verify runs and MTP drafts; the
+# multi-token GEMVs with 4 rows per wave: the 8-row ones make it spill).
+# At most 192 VGPRs and 16 KB of LDS: two workgroups per CU (128). tools/mk_gen.py writes the table of all these kernels (their
+# argument layout) for kernels/ie_mk.c and src/hip.c.
+MK_DECODE = ie_embed_q8,ie_embed_q4,ie_embed_f32,ie_rope_kv,ie_gemv_q4q8,ie_rmsnorm,ie_gemv_q4kq8,ie_gemv_q6kq8,ie_gemv_q8q8,ie_gemv_f32,ie_swiglu,ie_gdn1,ie_qkn_rope_kv,ie_attn_split,ie_attn_kv,ie_argmax,ie_copy_rows,ie_gemv_raw_q2k,ie_gemv_raw_iq2xxs,ie_gemv_raw_iq2xs,ie_gemv_raw_iq3xxs,ie_gemv_raw_iq1s,ie_gemv_raw_iq2s,ie_gemv_raw_iq1m,ie_gemv_raw_iq3s,ie_gemv_raw_q2k_tr,ie_gemv_raw_iq2xxs_tr,ie_gemv_raw_iq2xs_tr,ie_gemv_raw_iq3xxs_tr,ie_gemv_raw_iq1s_tr,ie_gemv_raw_iq2s_tr,ie_gemv_raw_iq1m_tr,ie_gemv_raw_iq3s_tr,ie_gemv_iq4xsq8
+# flint decode: ie_mk_flint.hsaco; ie_mk_flintl.hsaco with ie_attn_gq too, for
+# long positions (a call in the megakernel: about 0.4 ms per token slower
+# for all the other kernels, measured, so only where it pays)
+MK_FLINT = ie_embed_q8,ie_embed_q4,ie_embed_f32,ie_rmsnorm,ie_gemv_q4kq8,ie_gemv_q6kq8,ie_gemv_q8q8,ie_gemv_f32,ie_swiglu,ie_argmax,ie_copy_rows,ie_gemv_q5kq8,ie_gemv_iq4xsq8,ie_gexp,ie_moe_route,ie_moe_sum,ie_qkn_rope_kv2,ie_attn_sw
+MK_FLINTL = $(MK_FLINT),ie_attn_gq
+MK_MTP = ie_embed_q8,ie_rmsnorm,ie_rmsnorm_t,ie_quant_q8,ie_swiglu,ie_gdn1,ie_qkn_rope_kv,ie_attn_split,ie_attn_split_t,ie_attn_kv,ie_argmax,ie_gemv_q4q8,ie_gemv_q4kq8,ie_gemv_q6kq8,ie_gemv_q8q8,ie_gemv_f32,ie_gemv_f32_t,ie_gemv_q4kq8_tr,ie_gemv_q6kq8_tr,ie_gemv_q8q8_tr,ie_copy_rows,ie_gemv_raw_q2k,ie_gemv_raw_iq2xxs,ie_gemv_raw_iq2xs,ie_gemv_raw_iq3xxs,ie_gemv_raw_iq1s,ie_gemv_raw_iq2s,ie_gemv_raw_iq1m,ie_gemv_raw_iq3s,ie_gemv_raw_q2k_tr,ie_gemv_raw_iq2xxs_tr,ie_gemv_raw_iq2xs_tr,ie_gemv_raw_iq3xxs_tr,ie_gemv_raw_iq1s_tr,ie_gemv_raw_iq2s_tr,ie_gemv_raw_iq1m_tr,ie_gemv_raw_iq3s_tr,ie_gemv_iq4xsq8
+MK_INKLING = ie_embed_q8,ie_quant_q8,ie_gemv_q8q8,ie_gemv_q4kq8,ie_gemv_q6kq8,ie_gemv_f32,ie_add,ie_copy_rows,ie_kv_store,ie_gate,ie_moe_route,ie_logit_cap,ie_argmax,ie_inkling_rmsnorm_mt_r1,ie_inkling_attn_res_r1,ie_inkling_vclip_r1,ie_inkling_sconv_r1,ie_inkling_loop_gate_r1,ie_inkling_gemv_q8_small_r1,ie_inkling_gemv_q8_nb2_r1,ie_inkling_rel_attn_dec_r1,ie_inkling_gexp_raw_iq3xxs_r1,ie_inkling_gexp_raw_iq3xxs_r3,@ie_inkling_gexp_iq4nl_r1,ie_inkling_gexp_iq4nl_r3,ie_inkling_situ_r1,ie_inkling_moe_sum_r1,ie_inkling_lc_prenorm_q8_r2,ie_inkling_lc_wfg_gate_r2,ie_inkling_sconv_add_r2,ie_inkling_gate_q8_r2
+MK_INKLING_VER = ie_gemv_q8q8_tr,@ie_gemv_q8q8_ts,@ie_gemv_q8q8_t,ie_gemv_q4kq8_tr,ie_gemv_q6kq8_tr,ie_kv_store_t,ie_sconv_ring_store,ie_moe_route,ie_copy_rows,ie_add_t,ie_logit_cap,ie_argmax,ie_inkling_embed_q8_batch_r2,ie_inkling_rmsnorm_mt_r1,ie_inkling_attn_res_r1,ie_inkling_vclip_r1,ie_inkling_sconv_r1,ie_inkling_sconv_add_r2,ie_inkling_sconv_hist_r4,ie_inkling_lc_prenorm_q8_r2,ie_inkling_lc_wfg_gate_r2,ie_inkling_rel_attn_ver_r4,ie_inkling_gate_q8_r2,ie_inkling_gemv_f32_router_ver_r4,ie_inkling_moe_sort_r1,ie_inkling_gexp_raw_iq3xxs_ver_r4,ie_inkling_gexp_iq4nl_ver_r4,ie_inkling_situ_r1,ie_inkling_moe_sum_r1
+$(B)/ie_mk_gen.h: tools/mk_gen.py kernels/ie_mk.c kernels/ie_kernels.c $(wildcard kernels/ie_inkling_*.inc) Makefile | $(B)
+	$(PYTHON) tools/mk_gen.py kernels/ie_mk.c $@ DECODE=$(MK_DECODE) MTP=$(MK_MTP) FLINT=$(MK_FLINT) FLINTL=$(MK_FLINTL) INKLING=$(MK_INKLING) INKLING_VER=$(MK_INKLING_VER)
+# (clang 21 at -O3 writes "amdgpu-waves-per-eu"="8,16": at most 192 VGPRs,
+# so two workgroups per CU; the host checks the count with a launch at load)
+$(B)/ie_mk.ll: kernels/ie_mk.c kernels/ie_kernels.c core/ie_core.h $(B)/ie_mk_gen.h prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -DMKS_DECODE -S -emit-llvm -o $@.tmp $<
+	sed -E -e '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+$(B)/ie_mk_mtp.ll: kernels/ie_mk.c kernels/ie_kernels.c core/ie_core.h $(B)/ie_mk_gen.h prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -DMKS_MTP -S -emit-llvm -o $@.tmp $<
+	sed -E -e '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+$(B)/ie_mk_flint.ll: kernels/ie_mk.c kernels/ie_kernels.c core/ie_core.h $(B)/ie_mk_gen.h prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -DMKS_FLINT -S -emit-llvm -o $@.tmp $<
+	sed -E -e '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+$(B)/ie_mk_flintl.ll: kernels/ie_mk.c kernels/ie_kernels.c core/ie_core.h $(B)/ie_mk_gen.h prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -DMKS_FLINTL -S -emit-llvm -o $@.tmp $<
+	sed -E -e '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+$(B)/ie_mk_inkling.ll: kernels/ie_mk.c kernels/ie_kernels.c $(wildcard kernels/ie_inkling_*.inc) core/ie_core.h $(B)/ie_mk_gen.h prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -DMKS_INKLING -S -emit-llvm -o $@.tmp $<
+	sed -E -e '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+$(B)/ie_mk_inkling_ver.ll: kernels/ie_mk.c kernels/ie_kernels.c $(wildcard kernels/ie_inkling_*.inc) core/ie_core.h $(B)/ie_mk_gen.h prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -DMKS_INKLING_VER -S -emit-llvm -o $@.tmp $<
+	sed -E -e '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+$(B)/ie_mk.o $(B)/ie_mk_mtp.o $(B)/ie_mk_flint.o $(B)/ie_mk_flintl.o $(B)/ie_mk_inkling.o $(B)/ie_mk_inkling_ver.o: $(B)/%.o: $(B)/%.ll
+	$(GPU_CC) -nogpulib --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -O3 -c -o $@ $<
+$(B)/ie_mk.hsaco $(B)/ie_mk_mtp.hsaco $(B)/ie_mk_flint.hsaco $(B)/ie_mk_flintl.hsaco $(B)/ie_mk_inkling.hsaco $(B)/ie_mk_inkling_ver.hsaco: $(B)/%.hsaco: $(B)/%.o
+	$(GPU_LD) -shared -o $@ $<
+
+$(B)/laws_test: tests/laws_test.cpp laws/ie_laws.cpp core/ie_core.h core/lean_mem.h | $(B)
+	$(CXX) -std=c++17 -O2 -o $@ tests/laws_test.cpp
+
+TEST_SRC = src/common.c src/gguf.c src/model.c src/cpu.c
+$(B)/kernel_test: tests/kernel_test.c $(TEST_SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS) -o $@ tests/kernel_test.c $(TEST_SRC) $(LDLIBS)
+$(B)/ext_test: tests/ext_test.c core/ie_ext.h $(TEST_SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS) -o $@ tests/ext_test.c $(TEST_SRC) $(LDLIBS)
+$(B)/vocab_shortlist_test: tests/vocab_shortlist_test.c $(TEST_SRC) $(HDR) | $(B)
+	$(CC) $(CFLAGS) -o $@ tests/vocab_shortlist_test.c $(TEST_SRC) $(LDLIBS)
+
+MODELS = $(B)/tiny-qwen2.gguf $(B)/tiny-llama.gguf $(B)/tiny-llama-k.gguf $(B)/tiny-flint.gguf
+$(MODELS) &: tools/make_tiny_gguf.py | $(B)
+	$(PYTHON) tools/make_tiny_gguf.py $(B)
+
+test: all $(B)/laws_test $(B)/kernel_test $(B)/ext_test $(B)/vocab_shortlist_test $(B)/cache_check $(MODELS)
+	@echo "== laws_test (the laws of laws/ie_laws.cpp on random inputs)"
+	./$(B)/laws_test
+	@echo "== kernel_test (CPU GEMV vs plain dot products, repack vs GGUF)"
+	./$(B)/kernel_test
+	@echo "== ext_test (Q5_K, IQ4_XS: core/ie_ext.h, tested, not proved)"
+	./$(B)/ext_test
+	@echo "== vocab_shortlist_test (IE_DRAFT_VOCAB=64k loader)"
+	./$(B)/vocab_shortlist_test
+	@echo "== tiny qwen2: CPU backend vs numpy reference"
+	./$(B)/ie-run $(B)/tiny-qwen2.gguf --tokens 5,200,17,42,299,256 --n 10 --dump-logits $(B)/qwen2.logits
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-qwen2.gguf $(B)/qwen2.logits --mode q8 --tol-median 1e-5 --tol 2e-3
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-qwen2.gguf $(B)/qwen2.logits --mode float --tol 5e-2
+	@echo "== tiny llama: CPU backend vs numpy reference"
+	./$(B)/ie-run $(B)/tiny-llama.gguf --tokens 1,300,77,259,3 --n 10 --dump-logits $(B)/llama.logits
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-llama.gguf $(B)/llama.logits --mode q8 --tol-median 1e-5 --tol 2e-3
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-llama.gguf $(B)/llama.logits --mode float --tol 5e-2
+	@echo "== tiny llama-k (Q4_K, Q5_K, Q6_K): CPU backend vs numpy reference"
+	./$(B)/ie-run $(B)/tiny-llama-k.gguf --tokens 1,300,77,259,3 --n 10 --dump-logits $(B)/llamak.logits
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-llama-k.gguf $(B)/llamak.logits --mode q8 --tol-median 1e-5 --tol 2e-3
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-llama-k.gguf $(B)/llamak.logits --mode float --tol 5e-2
+	@echo "== tiny flint (MoE, sinks, sliding window ring, Q5_K, IQ4_XS, IQ3_S): CPU backend vs numpy reference"
+	@echo "   (5 layers: a rounding-boundary flip of one Q8 activation stays in the KV cache, so a looser q8 median)"
+	./$(B)/ie-run $(B)/tiny-flint.gguf --tokens 5,200,17,42,299,256 --n 30 --dump-logits $(B)/flint.logits
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-flint.gguf $(B)/flint.logits --mode q8 --tol-median 1e-4 --tol 5e-3
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) tools/ref_forward.py $(B)/tiny-flint.gguf $(B)/flint.logits --mode float --tol 5e-2
+	@echo "== prompt cache (gen_run): with and without the cache, the same answers (CPU)"
+	./$(B)/cache_check $(B)/tiny-qwen2.gguf
+	./$(B)/cache_check $(B)/tiny-llama-k.gguf
+	./$(B)/cache_check $(B)/tiny-flint.gguf
+	@echo "== GPU backend without a GPU: must fail with a clear message"
+	! ./$(B)/ie-run $(B)/tiny-qwen2.gguf --backend gpu --hsaco $(B)/ie_kernels.hsaco --n 1 2> $(B)/gpu.err
+	cat $(B)/gpu.err
+	@echo "== objdump: the GEMV kernel uses v_dot4_i32_iu8 and 128-bit global loads"
+	sh tools/check_objdump.sh $(B)/ie_kernels.hsaco
+	@echo "== make test: all passed"
+
+proofs:
+	sh proofs/check.sh
+
+clean:
+	rm -rf $(B) tools/__pycache__
+
+.PHONY: all test proofs clean tokcheck tokcheck-flint
+
+# prof/: the per-wave event profiler (sm_profiler.h, after leepoly/sm-profiler)
+# and its demo: build/smp_demo build/smp_demo.hsaco -> demo_trace.json
+$(B)/smp_demo: prof/demo.c prof/sm_profiler.c prof/sm_profiler.h | $(B)
+	$(CC) $(CFLAGS) -o $@ prof/demo.c prof/sm_profiler.c -ldl
+$(B)/smp_demo.hsaco: prof/demo_kernel.c prof/sm_profiler.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -S -emit-llvm -o $(B)/smp_demo.ll.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="1,1024" "target-cpu"/' $(B)/smp_demo.ll.tmp > $(B)/smp_demo.ll
+	$(GPU_CC) -nogpulib --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -O3 -c -o $(B)/smp_demo.o $(B)/smp_demo.ll
+	$(GPU_LD) -shared -o $@ $(B)/smp_demo.o
+	rm -f $(B)/smp_demo.ll.tmp
