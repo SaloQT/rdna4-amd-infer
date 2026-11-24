@@ -65,6 +65,7 @@ struct backend {
   void (*kv_io)(backend *b, int out, uint32_t p0, uint32_t n, void *buf);
   void (*kv_trim)(backend *b, uint32_t keep_pos); /* GPU: unmap high VMM KV chunks past keep_pos (IE_KV_SHRINK=0: off) */
   size_t kv_rowb;
+  uint32_t kv_fmt_tag; /* non-zero when global KV uses a specialized format/rotation (hashed into disk cache sig) */
   int snap_in_ram; /* 1 when snapshots live in host RAM (IE_SNAP_HOST!=0): disk 'e' reads need no hipHostMalloc */
   /* Probabilistic DSpark proposal hook (NULL when greedy temp <= 0 -> 0-bit change). */
   struct ie_ds_samp *ds_samp;
@@ -127,6 +128,8 @@ void gpu_trace_flush(void);
 /* Before model_load: start HIP and set ie_mat_sink, so that each matrix
  * goes to the GPU as soon as it is repacked (host memory: one layer). */
 void gpu_stream_init(void);
+/* R50 (H09): clamp --chunk > 512 to 768/512 if free VRAM lacks headroom for larger arena. */
+uint32_t gpu_chunk_clamp(uint32_t chunk, const model *m, uint32_t n_ctx);
 /* ie-lab (GPU): write part (a host matrix of w's kind holding rows r0 .. r0 + part->rows - 1 of w) into w's device
  * arrays. 0 (nothing written) if w was not streamed or its kind is not row-contiguous (Q4_0, Q8_0 and F32 are). */
 int gpu_patch_mat(backend *b, const mat *w, uint32_t r0, const mat *part);

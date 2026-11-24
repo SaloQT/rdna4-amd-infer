@@ -11,15 +11,20 @@
 # (bench\inkling2_serve_sweep.py); -Draft 0 is plain decode, -DsSplit:$false disables split head.
 # -DiskCache DIR keeps prompt checkpoints on disk (IE_DISK_CACHE), so a restarted server or a reopened chat continues
 # instead of re-reading the prompt (9.8K tokens: 0.9 s against 8.2 s), with or without DSpark.
-#   powershell -File engine\serve-inkling2.ps1 [-Kv f16|q8|q4] [-Ctx 98304] [-Port 8090] [-Draft 5] [-DryRun]
+#   powershell -File engine\serve-inkling2.ps1 [-Kv f16|q8|q4] [-Ctx 98304] [-Port 8090] [-Draft 5] [-GlobKv f16|q4|q4k|q4rot] [-DsGlobWin 0] [-MoeCacheSlots ''] [-DryRun]
+# For -Ctx > 131072 (e.g. -Ctx 262144) with -Kv f16, unoverridden defaults select the verified 256K + DSpark
+# profile (-Chunk 512, IE_INK_GLOB_KV=q4rot, IE_DS_GLOB_WIN=8192, IE_DS_ROPE_OTF=1, IE_MOE_CACHE_SLOTS=auto).
 param(
   [int]$Port = 8090,
   [int]$Ctx = 98304,
   [ValidateSet('f16', 'q8', 'q4')][string]$Kv = 'f16',
   [switch]$KvRot = $true,
+  [ValidateSet('f16', 'q4', 'q4k', 'q4rot')][string]$GlobKv = 'f16',
+  [int]$DsGlobWin = 0,
+  [string]$MoeCacheSlots = '',
   [string]$Name = 'inkling2-uncensored',
   [ValidateSet('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'high',
-  [int]$Chunk = 512,
+  [int]$Chunk = 1024,
   [int]$Draft = 5,
   [double]$DraftPmin = 0.6,
   [string]$Dspark,
@@ -72,6 +77,34 @@ if ($Kv -eq 'q8') {
   if ($KvRot) { $env:IE_KV_ROT = '1' }
 }
 
+$autoLongCtx = ($Ctx -gt 131072) -and ($Kv -eq 'f16')
+if ($autoLongCtx -and -not $PSBoundParameters.ContainsKey('Chunk')) {
+  $Chunk = 512
+}
+if ($PSBoundParameters.ContainsKey('GlobKv')) {
+  if ($GlobKv -eq 'f16') { Remove-Item Env:IE_INK_GLOB_KV -ErrorAction SilentlyContinue }
+  else { $env:IE_INK_GLOB_KV = $GlobKv }
+} elseif ($autoLongCtx -and [string]::IsNullOrEmpty($env:IE_INK_GLOB_KV)) {
+  $env:IE_INK_GLOB_KV = 'q4rot'
+}
+if ($PSBoundParameters.ContainsKey('DsGlobWin')) {
+  $env:IE_DS_GLOB_WIN = "$DsGlobWin"
+} elseif ($autoLongCtx -and $useDspark -and [string]::IsNullOrEmpty($env:IE_DS_GLOB_WIN)) {
+  $env:IE_DS_GLOB_WIN = '8192'
+}
+if ($autoLongCtx -and $useDspark -and [string]::IsNullOrEmpty($env:IE_DS_ROPE_OTF)) {
+  $env:IE_DS_ROPE_OTF = '1'
+}
+if ($PSBoundParameters.ContainsKey('MoeCacheSlots')) {
+  if ([string]::IsNullOrEmpty($MoeCacheSlots) -or $MoeCacheSlots -eq '0') {
+    Remove-Item Env:IE_MOE_CACHE_SLOTS -ErrorAction SilentlyContinue
+  } else {
+    $env:IE_MOE_CACHE_SLOTS = $MoeCacheSlots
+  }
+} elseif ($autoLongCtx -and [string]::IsNullOrEmpty($env:IE_MOE_CACHE_SLOTS)) {
+  $env:IE_MOE_CACHE_SLOTS = 'auto'
+}
+
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $dry = $DryMultiplier.ToString($inv)
 $tt = $ToolTemp.ToString($inv)
@@ -100,7 +133,11 @@ if ($useDspark) {
 $serveArgs += $pass
 
 if ($DryRun) {
-  Write-Output ("KV=$Kv IE_KV_Q8=$($env:IE_KV_Q8) IE_KV_Q4=$($env:IE_KV_Q4) | $exe " + ($serveArgs -join ' '))
+  $lc = ''
+  if ($env:IE_INK_GLOB_KV -or $env:IE_DS_GLOB_WIN -or $env:IE_DS_ROPE_OTF -or $env:IE_MOE_CACHE_SLOTS) {
+    $lc = " GLOB_KV=$($env:IE_INK_GLOB_KV) DS_WIN=$($env:IE_DS_GLOB_WIN) ROPE_OTF=$($env:IE_DS_ROPE_OTF) MOE_SLOTS=$($env:IE_MOE_CACHE_SLOTS)"
+  }
+  Write-Output ("KV=$Kv IE_KV_Q8=$($env:IE_KV_Q8) IE_KV_Q4=$($env:IE_KV_Q4)$lc | $exe " + ($serveArgs -join ' '))
   return
 }
 & $exe @serveArgs

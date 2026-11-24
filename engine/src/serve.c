@@ -76,7 +76,7 @@ static void usage(void) {
           "  --mmproj FILE       Qwen3.5/3.8 GGUF vision projector (enables image_url inputs)\n"
           "  --dflash FILE       with --draft: also a DFlash 2 drafter (GGUF); each step uses the faster drafter\n"
           "  --dspark FILE       with --draft: a DSpark drafter (GGUF, Inkling-2)\n"
-          "  --chunk N           prompt chunk, 1 to 512 (GPU; default 512; IE_CHUNK overrides)\n"
+          "  --chunk N           prompt chunk, 1 to 1024 (GPU; default 512; IE_CHUNK overrides)\n"
           "  --temp T --top-k K --top-p P   defaults when a request does not set them (thinking: the model file's\n"
           "                      general.sampling.*, else 0.6, 20, 0.95; no thinking: 0.7, 20, 0.8)\n"
           "  --think-temp T      the default temperature when thinking only (after --temp)\n"
@@ -326,8 +326,26 @@ static void pace_drain(void) {
   pthread_mutex_unlock(&PM);
 }
 
+static int pace_first_fast(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_PACE_FIRST_FAST");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R51 (H48): promoted default; IE_PACE_FIRST_FAST=0 opts out */
+  }
+  return v;
+}
 static void sse_send(job *j, sbuf *b) {
   if (PACE) { /* the sender thread writes it (takes the buffer) */
+    if (pace_first_fast() && PACE_DUE == 0.0) {
+      pthread_mutex_lock(&PM);
+      const int empty = (!PH && !PBUSY);
+      pthread_mutex_unlock(&PM);
+      if (empty) {
+        if (send_all(j->fd, b->p, b->n)) j->dead = 1;
+        sb_free(b);
+        return;
+      }
+    }
     pitem *it = malloc(sizeof *it);
     if (!it) ie_die("ie-serve: out of memory");
     *it = (pitem){b->p, b->n, j->fd, &j->dead, PACE_DUE, PBATCH, NULL};
@@ -845,7 +863,7 @@ static int on_tokens(void *ctx, const uint32_t *t, uint32_t n) {
     sb_add(&j->all, s, len);
     free(s);
     j->n_tok++;
-    if (pace) PACE_DUE = t0 + gap * i, flush_text(j, 0); /* one chunk per token */
+    if (pace) PACE_DUE = (pace_first_fast() && i == 0u) ? 0.0 : (t0 + gap * i), flush_text(j, 0); /* one chunk per token */
   }
   PACE_DUE = 0;
   if (!pace) flush_text(j, 0);
@@ -934,13 +952,28 @@ static void run_job(job *j) {
   }
   if (j->stream) {
     const char *h = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
-    if (send_all(j->fd, h, strlen(h))) {
-      for (size_t z = 0; z < j->n_img_urls; z++) vision_emb_free(&vembs[z]);
-      free(vembs), free(gimgs);
-      j->gp.imgs = NULL, j->gp.n_imgs = 0;
-      return;
+    if (pace_first_fast()) {
+      sbuf b = {0};
+      sb_puts(&b, h);
+      sse_begin(&b, j);
+      sb_puts(&b, ",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n");
+      const int serr = send_all(j->fd, b.p, b.n);
+      sb_free(&b);
+      if (serr) {
+        for (size_t z = 0; z < j->n_img_urls; z++) vision_emb_free(&vembs[z]);
+        free(vembs), free(gimgs);
+        j->gp.imgs = NULL, j->gp.n_imgs = 0;
+        return;
+      }
+    } else {
+      if (send_all(j->fd, h, strlen(h))) {
+        for (size_t z = 0; z < j->n_img_urls; z++) vision_emb_free(&vembs[z]);
+        free(vembs), free(gimgs);
+        j->gp.imgs = NULL, j->gp.n_imgs = 0;
+        return;
+      }
+      sse_chunk(j, NULL, 0, NULL); /* the role */
     }
-    sse_chunk(j, NULL, 0, NULL); /* the role */
   }
   j->think_end = j->think ? -1 : 0, j->tc_at = -1, j->rp = 8;
   j->tcs_pos = (size_t)-1, j->tcs_st = 0, j->tcs_k = 0, j->tcs_off = 0;
@@ -1152,8 +1185,8 @@ static void *engine_main(void *arg) {
   FLINT = M.arch == ARCH_FLINT;
   INKLING2 = M.arch == ARCH_INKLING2;
   if (!O.chunk && getenv("IE_CHUNK")) O.chunk = (uint32_t)atoi(getenv("IE_CHUNK"));
-  if (!O.chunk) O.chunk = 512u;
-  if (O.chunk < 1u || O.chunk > 512u) ie_die("--chunk: 1 to 512");
+  if (!O.chunk) O.chunk = INKLING2 ? 1024u : 512u;
+  if (O.chunk < 1u || O.chunk > 1024u) ie_die("--chunk: 1 to 1024");
   if (FLINT) { /* the end-of-generation tokens: <|end_of_text|>, <|user|>, <|observation|>, <|developer|> */
     THINK_ID = tok_find(TK, "<think>");
     const gguf_kv *eg = gguf_find(&G, "tokenizer.ggml.eog_token_ids");
@@ -1212,7 +1245,7 @@ static void *engine_main(void *arg) {
   fprintf(stderr, "ie-serve: default sampling: thinking temp %g, top_p %g, top_k %u; no thinking temp %g, top_p %g, top_k %u\n",
           SAMPLING[1].temp, SAMPLING[1].top_p, SAMPLING[1].top_k, SAMPLING[0].temp, SAMPLING[0].top_p, SAMPLING[0].top_k);
 
-  const uint32_t chunk = gpu ? O.chunk : 1;
+  const uint32_t chunk = gpu ? (O.chunk = gpu_chunk_clamp(O.chunk, &M, O.ctx)) : 1u;
   uint32_t gT = O.draft ? spec_verify_max() : 1u;
   if (O.draft + 1u > gT) gT = O.draft + 1u;
   if (chunk > gT) gT = chunk;
@@ -1742,7 +1775,7 @@ int main(int argc, char **argv) {
   if (O.reasoning_budget > O.ctx) ie_die("--reasoning-budget must fit the context");
   if (O.dflash && !O.draft) ie_die("--dflash needs --draft");
   if (O.dspark && O.dflash) ie_die("--dspark and --dflash are mutually exclusive");
-  if (O.chunk > 512) ie_die("--chunk: 1 to 512 (0: by the model)");
+  if (O.chunk > 1024) ie_die("--chunk: 1 to 1024 (0: by the model)");
   if (O.ctx < 16) ie_die("--ctx: at least 16");
   if (O.queue_max < 1) O.queue_max = 1;
   ie_net_init();

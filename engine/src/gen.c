@@ -451,6 +451,24 @@ static void df_capture(backend *b, const graph *g, const uint32_t *toks, uint32_
  * token q), h(-1) = 0, as llama.cpp). pa: perplexity of the prompt (needs
  * every row of logits). Returns the greedy token after the prompt; *hrow:
  * the row of g->h_out that holds h(n-1). */
+static int bal_chunk_on(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_BALANCED_CHUNK");
+    v = (e && *e) ? (atoi(e) != 0) : 0; /* R50 (H49): rejected on odd_tail (+17 ms at chunk=1024); opt-in via IE_BALANCED_CHUNK=1 */
+  }
+  return v;
+}
+static uint32_t next_chunk_len(uint32_t rem, uint32_t chunk) {
+  if (rem <= chunk) return rem;
+  if (bal_chunk_on() && chunk >= 128u && rem <= chunk + 64u) {
+    uint32_t t = ((rem + 1u) / 2u + 15u) & ~15u;
+    if (t > chunk) t = chunk;
+    if (t < 1u) t = 1u;
+    return t;
+  }
+  return chunk;
+}
 uint32_t prefill(backend *b, const graph *g, uint32_t vocab, const uint32_t *toks, uint32_t n, uint32_t chunk,
                         int mtp, ppl_acc *pa, uint32_t *hrow) {
   uint32_t *a = malloc(chunk * 4), last = 0, T = 1;
@@ -460,7 +478,7 @@ uint32_t prefill(backend *b, const graph *g, uint32_t vocab, const uint32_t *tok
   if (b->kv_io && n) b->kv_io(b, 0, n, 0, NULL); /* pre-map exact prompt KV capacity upfront in 1 idle VMM batch */
   if (mtp) b->copy_rows(b, g->mtp_h, 0, -1, 0, 1); /* h(-1) = 0 */
   for (uint32_t p0 = 0; p0 < n; p0 += T) {
-    T = n - p0 < chunk ? n - p0 : chunk;
+    T = next_chunk_len(n - p0, chunk);
     const int is_last = p0 + T >= n;
     b->all_logits = lg && p0 + T > pa->first; /* the model head for every row only where positions are scored */
     b->run(b, 0, toks + p0, T, p0, 1, (is_last || b->all_logits) ? a : NULL, NULL);
@@ -1874,7 +1892,7 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
       if (ds_prob_env < 0) ds_prob_env = !(getenv("IE_DS_PROB") && getenv("IE_DS_PROB")[0] == '0');
       const int use_ds_prob = ds_prob_env && rej_on && sp && sp->temp > 0.0f;
       ds_prob_nd = 0u;
-      /* R31: O(1) SAM Pre-Check — skip ds_draft (0.00 ms GPU!) on strong exact suffix match */
+      /* R31: O(1) SAM Pre-Check - skip ds_draft (0.00 ms GPU!) on strong exact suffix match */
       uint32_t sam_ml = 0u, sam_ld[16];
       uint32_t sam_nl = 0u;
       if (sam_on) {
@@ -2368,7 +2386,7 @@ static uint32_t prefill_range(backend *b, const graph *g, const uint32_t *toks, 
   b->all_logits = 0;
   if (b->kv_io && end > start) b->kv_io(b, 0, end, 0, NULL); /* pre-map up to end in 1 idle VMM batch */
   for (uint32_t p0 = start; p0 < end; p0 += T) {
-    T = end - p0 < chunk ? end - p0 : chunk;
+    T = next_chunk_len(end - p0, chunk);
     const int is_last = need_last && p0 + T >= end;
     int has_img = 0;
     if (n_imgs) {
@@ -2381,7 +2399,8 @@ static uint32_t prefill_range(backend *b, const graph *g, const uint32_t *toks, 
     b->run(b, 0, toks + p0, T, p0, 1, is_last ? a : NULL, NULL);
     b->accept(b, T - 1);
     if (is_last) last = a[T - 1];
-    if (g->df_feat >= 0 || g->ds_feat >= 0) b->run(b, 2, toks + p0, T, p0, 0, NULL, NULL); /* DFlash/DSpark context */
+    if (g->df_feat >= 0 || g->ds_feat >= 0)
+      b->run(b, 2, toks + p0, T, p0, (is_last && need_last == 2) ? 2 : 0, NULL, NULL); /* DFlash/DSpark context */
     if (g->df_cap >= 0) df_capture(b, g, toks + p0, T, p0);              /* IE_DF_CAPTURE */
     if (mtp) {
       if (T > 1) b->copy_rows(b, g->mtp_h, 1, g->h_out, 0, T - 1);
@@ -3054,6 +3073,10 @@ int gen_disk_open(gen_ctx *c, const char *dir, const char *sig, double limit_gb,
   d->limit = limit_gb > 0 ? (uint64_t)(limit_gb * 1e9) : UINT64_MAX; /* 0: no limit */
   const uint64_t shape[5] = {DCACHE_VERSION, d->block, d->rowb, d->snapb, c->m->n_kvl};
   d->sig = fnv64(fnv64(0xcbf29ce484222325ull, sig, strlen(sig)), shape, sizeof shape);
+  if (b->kv_fmt_tag) {
+    const uint64_t tag = (uint64_t)b->kv_fmt_tag;
+    d->sig = fnv64(d->sig, &tag, sizeof tag);
+  }
   uint64_t other = 0;
   dc_lay Lk;
   dc_layout(d, 'k', 0, 0, &Lk);
@@ -3785,6 +3808,34 @@ static uint32_t img_prefix_limit(const gen_img *a, uint32_t na, const gen_img *b
   return L;
 }
 
+static int ie_defer_cksave_mode(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_DEFER_CKSAVE");
+    v = (e && *e) ? atoi(e) : 1; /* R38 (H42): default 1 on Inkling-2; 0 opts out */
+  }
+  return v;
+}
+
+typedef struct {
+  gen_ctx *c;
+  gen_emit inner_emit;
+  void *inner_ctx;
+  uint32_t ck_pos;
+  int ck_hbuf;
+  int pending;
+} defer_ck_ctx;
+
+static int defer_ck_emit(void *vctx, const uint32_t *toks, uint32_t n) {
+  defer_ck_ctx *d = (defer_ck_ctx *)vctx;
+  const int stop = d->inner_emit ? d->inner_emit(d->inner_ctx, toks, n) : 0;
+  if (d->pending) {
+    d->pending = 0;
+    ck_save(d->c, d->ck_pos, GEN_CK_PROMPT, d->ck_hbuf);
+  }
+  return stop;
+}
+
 void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_params *p, gen_stats *st) {
   backend *b = c->b;
   const graph *g = c->g;
@@ -3937,6 +3988,7 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
     for (uint32_t k = 0; k < nm; k++) /* the system prompt differed from the last one here: learn the distance */
       if (mkind[k] == GEN_CK_SPLIT && p->sys_end && mk[k] < p->sys_end) dp_learn_add(c, p->sys_end - mk[k]);
   } else if (!ephem) c->n_ck = 0, c->kv_n = 0, free(c->kv_imgs), c->kv_imgs = NULL, c->kv_n_imgs = 0; /* a run without the cache changes all positions */
+  defer_ck_ctx dck = {c, p->emit, p->ctx, 0u, hbuf, 0};
   if (b->run) { /* GPU: chunks */
     if (!ephem && b->kv_trim) b->kv_trim(b, n_prompt > S ? n_prompt : S);
     if (b->kv_io && n_prompt) b->kv_io(b, 0, n_prompt, 0, NULL); /* pre-map full prompt KV capacity once across all checkpoint segments */
@@ -3949,9 +4001,20 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
         ck_save(c, mk[i], mkind[i], hbuf);
         from = mk[i];
       }
-      if (n_prompt - 1 > from) prefill_range(b, g, prompt, from, n_prompt - 1, p->chunk, mtp, 0, &hrow, p->imgs, p->n_imgs, c->m->dim);
-      if (ck_at(c, n_prompt - 1) < 0) ck_save(c, n_prompt - 1, GEN_CK_PROMPT, hbuf);
-      first = prefill_range(b, g, prompt, n_prompt - 1, n_prompt, p->chunk, mtp, 1, &hrow, p->imgs, p->n_imgs, c->m->dim);
+      const int defer_prompt_ck = c->m->arch == ARCH_INKLING2 && !mtp && !p->n_imgs &&
+                                  ie_defer_cksave_mode() >= 1 && n_prompt >= 2u &&
+                                  from < n_prompt - 1u && ck_at(c, n_prompt - 1u) < 0;
+      if (defer_prompt_ck) {
+        /* R38 (H42): fold final token into prefill chunk (-8 ms T=1 pass) and defer GEN_CK_PROMPT post-token-1 */
+        first = prefill_range(b, g, prompt, from, n_prompt, p->chunk, mtp, 2, &hrow, p->imgs, p->n_imgs, c->m->dim);
+        dck.ck_pos = n_prompt - 1u;
+        dck.ck_hbuf = hbuf;
+        dck.pending = 1;
+      } else {
+        if (n_prompt - 1 > from) prefill_range(b, g, prompt, from, n_prompt - 1, p->chunk, mtp, 0, &hrow, p->imgs, p->n_imgs, c->m->dim);
+        if (ck_at(c, n_prompt - 1) < 0) ck_save(c, n_prompt - 1, GEN_CK_PROMPT, hbuf);
+        first = prefill_range(b, g, prompt, n_prompt - 1, n_prompt, p->chunk, mtp, 1, &hrow, p->imgs, p->n_imgs, c->m->dim);
+      }
     }
     static int cache_dbg = -1;
     if (cache_dbg < 0) cache_dbg = getenv("IE_CACHE_DEBUG") != NULL;
@@ -4006,7 +4069,13 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
     memcpy(out, prompt, (size_t)n_prompt * 4);
     uint32_t done = 0, hr = 0;
     const uint32_t n = spec_generate(b, c->m, g, out, n_prompt, total, p->draft, -1, 0, first, hrow, sp, V, &st->gen_ms,
-                                     &st->steps, &st->acc, p->pmin, &st->drafted, p->emit, p->ctx, p->stops, p->n_stops, &done, &hr);
+                                     &st->steps, &st->acc, p->pmin, &st->drafted,
+                                     dck.pending ? defer_ck_emit : p->emit, dck.pending ? (void *)&dck : p->ctx,
+                                     p->stops, p->n_stops, &done, &hr);
+    if (dck.pending) {
+      dck.pending = 0;
+      ck_save(c, dck.ck_pos, GEN_CK_PROMPT, dck.ck_hbuf);
+    }
     st->n_out = n - n_prompt;
     st->dry_hits = sp->dry_hits;
     st->reasoning_limited = sp->reasoning_limited;
@@ -4048,7 +4117,12 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
   if (ov) ov[0] = first;
   st->n_out = 1;
   commit_output_token(sp, first);
-  if (!p->emit(p->ctx, &tok, 1)) {
+  const int stop0 = p->emit ? p->emit(p->ctx, &tok, 1) : 0;
+  if (dck.pending) {
+    dck.pending = 0;
+    ck_save(c, dck.ck_pos, GEN_CK_PROMPT, dck.ck_hbuf);
+  }
+  if (!stop0) {
     static int host_topk_step = -1;
     if (host_topk_step < 0) host_topk_step = getenv("IE_HOST_TOPK") != NULL;
     for (; st->n_out < p->max_new; st->n_out++, pos++) {

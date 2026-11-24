@@ -51,6 +51,7 @@ static struct {
   hipError_t (*HostMalloc)(void **, size_t, unsigned);
   hipError_t (*HostFree)(void *);
   hipError_t (*Memset)(void *, int, size_t);
+  hipError_t (*MemsetAsync)(void *, int, size_t, hipStream_t);
   hipError_t (*ModuleLoad)(hipModule_t *, const char *);
   hipError_t (*ModuleLoadData)(hipModule_t *, const void *);
   hipError_t (*ModuleUnload)(hipModule_t);
@@ -59,6 +60,7 @@ static struct {
                                    unsigned, hipStream_t, void **, void **);
   hipError_t (*DeviceSynchronize)(void);
   hipError_t (*EventCreate)(hipEvent_t *);
+  hipError_t (*EventCreateWithFlags)(hipEvent_t *, unsigned);
   hipError_t (*EventRecord)(hipEvent_t, hipStream_t);
   hipError_t (*EventQuery)(hipEvent_t);
   hipError_t (*EventSynchronize)(hipEvent_t);
@@ -129,8 +131,25 @@ static void vram_trace(const char *what, size_t bytes) {
   fprintf(stderr, "vram: %-6s %8.1f MiB -> VRAM %.2f GiB, system %.2f GiB, budget %.2f GiB\n", what, bytes / 1048576.0,
           lo.usage / 1073741824.0, nl.usage / 1073741824.0, lo.budget / 1073741824.0);
 }
+static int dxgi_local_mem(uint64_t *budget_out, uint64_t *usage_out) {
+  if (!vt_ad3) {
+    static const ie_guid f1 = {0x770aae78, 0xf26f, 0x4dba, {0xa8, 0x29, 0x25, 0x3c, 0x83, 0xd1, 0xb3, 0x87}};
+    static const ie_guid a3 = {0x645967a4, 0x1392, 0x4310, {0xa7, 0x98, 0x80, 0x53, 0xce, 0x3e, 0x93, 0xfd}};
+    void *dx = dlopen("dxgi.dll", RTLD_NOW), *fac = NULL, *ad = NULL;
+    ie_mkfac mk = dx ? (ie_mkfac)dlsym(dx, "CreateDXGIFactory1") : NULL;
+    if (!mk || mk(&f1, &fac) || ((ie_enum1)(*(void ***)fac)[12])(fac, 0, &ad) || ((ie_qi)(*(void ***)ad)[0])(ad, &a3, &vt_ad3))
+      return 0;
+  }
+  ie_vmi lo = {0};
+  const ie_qvmi q = (ie_qvmi)(*(void ***)vt_ad3)[14];
+  if (q(vt_ad3, 0, 0, &lo) != 0 || lo.budget == 0ULL) return 0;
+  if (budget_out) *budget_out = (uint64_t)lo.budget;
+  if (usage_out) *usage_out = (uint64_t)lo.usage;
+  return 1;
+}
 #else
 static void vram_trace(const char *what, size_t bytes) { (void)what, (void)bytes; }
+static int dxgi_local_mem(uint64_t *budget_out, uint64_t *usage_out) { (void)budget_out, (void)usage_out; return 0; }
 #endif
 
 /* The live device allocations (hipMalloc, hipMemCreate), printed after loading: Windows lowers the VRAM budget of a
@@ -186,6 +205,7 @@ static void hip_load(void) {
   SYM(HostFree, "hipHostFree");
   SYM(Memcpy, "hipMemcpy");
   SYM(Memset, "hipMemset");
+  SYM(MemsetAsync, "hipMemsetAsync");
   SYM(ModuleLoad, "hipModuleLoad");
   SYM(ModuleLoadData, "hipModuleLoadData");
   SYM(ModuleUnload, "hipModuleUnload");
@@ -212,6 +232,7 @@ static void hip_load(void) {
   SYM(MemcpyAsync, "hipMemcpyAsync");
   SYM(HostMalloc, "hipHostMalloc");
 #undef SYM
+  *(void **)&H.EventCreateWithFlags = dlsym(H.lib, "hipEventCreateWithFlags");
   *(void **)&H.EventQuery = dlsym(H.lib, "hipEventQuery");
   *(void **)&H.MemAddressReserve = dlsym(H.lib, "hipMemAddressReserve");
   *(void **)&H.MemAddressFree = dlsym(H.lib, "hipMemAddressFree");
@@ -226,6 +247,14 @@ static void hip_load(void) {
   *(void **)&H.GraphExecDestroy = dlsym(H.lib, "hipGraphExecDestroy");
   real_malloc = H.Malloc, H.Malloc = count_malloc, real_free = H.Free, H.Free = count_free;
   if (H.MemCreate && H.MemRelease) real_mcreate = H.MemCreate, H.MemCreate = count_mcreate, real_mrelease = H.MemRelease, H.MemRelease = count_mrelease;
+}
+
+#define IE_HIP_EVENT_DISABLE_TIMING 0x02u
+static hipError_t ie_event_create_notiming(hipEvent_t *ev) {
+  static int nt = -1;
+  if (nt < 0) nt = !(getenv("IE_EVENT_NOTIMING") && getenv("IE_EVENT_NOTIMING")[0] == '0');
+  if (nt && H.EventCreateWithFlags) return H.EventCreateWithFlags(ev, IE_HIP_EVENT_DISABLE_TIMING);
+  return H.EventCreate(ev);
 }
 
 /* Kernels of ie_kernels.hsaco. */
@@ -336,6 +365,21 @@ enum { K_EMBED_Q4, K_EMBED_F32, K_RMSNORM, K_QUANT, K_GEMV_Q4, K_GEMV_Q8, K_GEMV
        K_INK_WO_SCONV_POST_T1_R9, K_INK_WO_SCONV_POST_T8_R9,
        K_INK_GEMM_IQ4NL_EXP_R9, K_INK_GEMM_Q8_MED_R9, K_INK_GEMM_Q8_64X64_R9,
        K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9,
+       K_INK_REPACK_IQ3XXS_FLUTE_R10, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10,
+       K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10, K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10,
+       K_INK_GEXP_IQ3XXS_T1_NT_R10, K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10, K_INK_GEXP_IQ4NL_T1_NT_R10,
+       K_INK_Q4K_HEAD_VER_NT_R10, K_INK_GEMV_Q8_HT_R10,
+       K_INK_GEXP_IQ3XXS_SITU_WSPLIT_T1_R10, K_INK_GEXP_IQ3XXS_SITU_WSPLIT_VER_R10,
+       K_INK_REL_ATTN_DEC_GATE_Q8_R10, K_INK_REL_ATTN_VER_GATE_Q8_R10, K_INK_REL_ATTN_VER_GLOB_WMMA_GATE_Q8_R10,
+       K_INK_GEMM_IQ4NL_EXPMAJ_R10, K_INK_GEMM_IQ4NL_SCATTER_R10,
+       K_INK_REL_ATTN_PF_FAR_R10, K_INK_REL_ATTN_PF_NEAR_MERGE_R10, K_INK_REL_ATTN_PF_SB_R10,
+       K_INK_GEMM_Q8_FP8_MED_R10, K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10, K_INK_GEMM_F32_ROUTER_BF16_R10,
+       K_INK_GEMM_Q8_MED_SWIZ_R10, K_INK_GEMM_Q8_64X64_SWIZ_R10,
+       K_INK_LC_WFG_GATE_NORM_R11, K_INK_LC_PIPE_ATTN_R11, K_INK_LC_PIPE_MLP_R11,
+       K_INK_QKV_SCONV_KV_R11, K_INK_WO_SCONV_POST_T8_R11, K_INK_REL_ATTN_DEC_GLOB_R11,
+       K_INK_MONOMOE_T1_R11, K_INK_REL_ATTN_VER_SWA_WMMA_R11, K_INK_REL_ATTN_VER_SWA_QT2_R11,
+       K_INK_KV_STORE_GLOB_Q4_R14, K_INK_REL_ATTN_DEC_GLOB_Q4_R14, K_INK_REL_ATTN_VER_GLOB_Q4_R14,
+       K_INK_REL_ATTN_PF_GLOB_Q4_R14, K_INK_DS_ROPE_FILL_R14, K_INK_MOE_WL_FILTER_R14,
        K_N };
 static const char *kname[K_N] = {"ie_embed_q4", "ie_embed_f32", "ie_rmsnorm", "ie_quant_q8", "ie_gemv_q4q8", "ie_gemv_q8q8",
                                  "ie_gemv_f32", "ie_bias",      "ie_add",     "ie_swiglu",   "ie_rope",
@@ -450,7 +494,22 @@ static const char *kname[K_N] = {"ie_embed_q4", "ie_embed_f32", "ie_rmsnorm", "i
                "ie_inkling_qkv_qclip_t8_r9", "ie_inkling_rel_clip_sink_gate_t8_r9",
                "ie_inkling_wo_sconv_post_t1_r9", "ie_inkling_wo_sconv_post_t8_r9",
                "ie_inkling_gemm_iq4nl_exp_r9", "ie_inkling_gemm_q8_med_r9", "ie_inkling_gemm_q8_64x64_r9",
-               "ie_inkling_gemm_rq_exp_iq3xxs_situ_r9"};
+               "ie_inkling_gemm_rq_exp_iq3xxs_situ_r9",
+               "ie_inkling_repack_iq3xxs_flute_r10", "ie_inkling_gemm_rq_exp_iq3xxs_flute_situ_r10",
+               "ie_inkling_gexp_iq3xxs_flute_situ_t1_nt_r10", "ie_inkling_gexp_iq3xxs_flute_situ_compact_nt_r10",
+               "ie_inkling_gexp_iq3xxs_t1_nt_r10", "ie_inkling_gexp_iq4nl_tail_t1_nt_r10", "ie_inkling_gexp_iq4nl_t1_nt_r10",
+               "ie_inkling_q4k_head_ver_nt_r10", "ie_inkling_gemv_q8_ht_r10",
+               "ie_inkling_gexp_iq3xxs_situ_wsplit_t1_r10", "ie_inkling_gexp_iq3xxs_situ_wsplit_ver_r10",
+               "ie_inkling_rel_attn_dec_gate_q8_r10", "ie_inkling_rel_attn_ver_gate_q8_r10", "ie_inkling_rel_attn_ver_glob_wmma_gate_q8_r10",
+               "ie_inkling_gemm_iq4nl_expmaj_r10", "ie_inkling_gemm_iq4nl_scatter_r10",
+               "ie_inkling_rel_attn_pf_far_r10", "ie_inkling_rel_attn_pf_near_merge_r10", "ie_inkling_rel_attn_pf_sb_r10",
+               "ie_inkling_gemm_q8_fp8_med_r10", "ie_inkling_gemm_iq4nl_fp8_expmaj_r10", "ie_inkling_gemm_f32_router_bf16_r10",
+               "ie_inkling_gemm_q8_med_swiz_r10", "ie_inkling_gemm_q8_64x64_swiz_r10",
+               "ie_inkling_lc_wfg_gate_norm_r11", "ie_inkling_lc_pipe_attn_r11", "ie_inkling_lc_pipe_mlp_r11",
+               "ie_inkling_qkv_sconv_kv_r11", "ie_inkling_wo_sconv_post_t8_r11", "ie_inkling_rel_attn_dec_glob_r11",
+               "ie_inkling_monomoe_t1_r11", "ie_inkling_rel_attn_ver_swa_wmma_r11", "ie_inkling_rel_attn_ver_swa_qt2_r11",
+               "ie_inkling_kv_store_glob_q4_r14", "ie_inkling_rel_attn_dec_glob_q4_r14", "ie_inkling_rel_attn_ver_glob_q4_r14",
+               "ie_inkling_rel_attn_pf_glob_q4_r14", "ie_inkling_ds_rope_fill_r14", "ie_inkling_moe_wl_filter_r14"};
 static const uint8_t ink_bit[K_N - K_INK_REL_ATTN_PF] = {
     0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17,
     18, 19, 20, 21, 22, 23, 24, 25, 25, 26, 27, 28, 29, 30, 31, 32,
@@ -463,7 +522,14 @@ static const uint8_t ink_bit[K_N - K_INK_REL_ATTN_PF] = {
     59, 60, 61, 62, 63, 63, 63, 64, 65, 66, 67, 68, 76, 77, 78, 79, 80,
     81, 81, 82, 82, 83, 84, 88, 88, 88, 92, 93, 94, 95,
     69, 70, 71, 72, 73, 73, 74, 75, 75, 85, 86, 86, 86, 86, 86, 89, 90,
-    96, 97, 98, 98, 99, 100, 101, 102};
+    96, 97, 98, 98, 99, 100, 101, 102,
+    103, 104,
+    105, 105, 105, 106, 106, 107, 108,
+    109, 109, 110, 110, 110,
+    112, 113, 114, 114, 115,
+    116, 116, 117, 118, 118,
+    111, 122, 122, 121, 124, 126, 123, 125, 125,
+    153, 153, 153, 153, 154, 91};
 _Static_assert(sizeof(ink_bit) == (size_t)(K_N - K_INK_REL_ATTN_PF), "ink_bit table length mismatch");
 /* ie_gdn: conv input ring slots and state slots per linear layer */
 /* ie_gdn: conv input ring slots (as in ie_kernels.c); the state slots per
@@ -489,6 +555,40 @@ typedef struct {
 } slab_list;
 static void *slab_take(slab_list *s, size_t bytes);
 
+#define IE_HIP_LAUNCH_PARAM_BUFFER_POINTER ((void *)(uintptr_t)0x01)
+#define IE_HIP_LAUNCH_PARAM_BUFFER_SIZE    ((void *)(uintptr_t)0x02)
+#define IE_HIP_LAUNCH_PARAM_END            ((void *)(uintptr_t)0x03)
+
+enum { KMETA_MAX_ARGS = 64, KMETA_MAX_BYTES = 512 };
+
+typedef struct {
+  uint16_t total_bytes;
+  uint16_t off[KMETA_MAX_ARGS];
+  uint8_t sz[KMETA_MAX_ARGS];
+  uint8_t n_args;
+  uint8_t ok;
+} k_arg_meta;
+
+enum { INK_MOE_C_MAXL = 64, INK_MOE_C_MAXE = 256 };
+
+typedef struct {
+  int active;
+  u32 n_exp, n_slots;
+  size_t egu_eb, ed0_eb, ed1_eb, tot_eb;
+  void *egu_host, *ed0_host, *ed1_host;
+  void *slab_dev;
+  void *egu_dev, *ed0_dev, *ed1_dev;
+  int16_t slot_of[INK_MOE_C_MAXE];
+  int16_t exp_of[INK_MOE_C_MAXE];
+  uint32_t tick_of[INK_MOE_C_MAXE];
+  uint32_t score[INK_MOE_C_MAXE];
+  uint32_t tick, step_ctr;
+  uint64_t pf_freq[INK_MOE_C_MAXE];
+  u32 *pf_offs_pin;
+  hipEvent_t pf_offs_ev;
+  int pf_offs_pending, pf_dirty;
+} ink_moe_cache_layer;
+
 typedef struct {
   backend base;
   const model *m;
@@ -497,6 +597,8 @@ typedef struct {
   hipModule_t saluki_mod;
   hipModule_t inkling_mod;
   hipFunction_t k[K_N];
+  k_arg_meta kmeta[K_N];
+  int use_packed_args; /* R39 (H13): IE_HIP_PACKED_ARGS (opt-in default 0; 1: packed extra buffer) */
   char *arena; /* device */
   u32 *am_part, *am_count; /* argmax scratch (device) */
   int skip_argmax;         /* this run's argmax tokens are not wanted (the top K is taken instead): the model's argmax is not launched */
@@ -537,6 +639,7 @@ typedef struct {
     int ready, qkind;
     uint16_t *kc[8], *vc[8];
     u32 kv_cap[8];
+    u32 kv_win[8];           /* effective sliding window per layer (0: full; IE_DS_GLOB_WIN overrides global layers) */
     /* IE_DS_KV_GROW (default; 0: off): the K and V arrays of the global (unwindowed) layers are reserved addresses for
      * kv_cap positions with physical memory mapped only for the positions in use, like the main KV cache (kv_ensure).
      * The kernels still see one contiguous array and the same ring index (p % kv_cap). Windowed layers stay hipMalloc. */
@@ -546,6 +649,9 @@ typedef struct {
     size_t kv_chunk, kv_va, kv_mapped, kv_nchunk, kv_rowb; /* mapping unit, bytes reserved / mapped per array, bytes per row */
     void **kv_h;             /* physical chunks: [2 * layer + v][chunk] */
     float *rcos, *rsin;
+    double *rope_inv_freq;   /* IE_DS_ROPE_OTF=1: 512 B FP64 inv_freq for on-the-fly cos/sin fill */
+    u32 rope_cap;            /* row capacity of dynamic rcos/rsin when rope_otf != 0 */
+    int rope_otf;            /* 1: fill rcos/rsin on-the-fly via K_INK_DS_ROPE_FILL_R14 */
     float *fuse_w, *mask_embed, *out_norm, *tok_norm, *mk_dflare_norm, *mk_rnn_bias, *mk_hidden_bias;
     void *mk_rnn_w0, *mk_rnn_w1, *mk_ho_w0, *mk_ho_w1, *mk_w1_w0, *mk_w1_w1, *head_w0, *head_w1;
     u32 head_rows;
@@ -569,6 +675,9 @@ typedef struct {
     hipEvent_t ev_feat_ready, ev_ctx_done;
     int ctx_pending, ov_mode;
     u32 ctx_pos, ctx_T;
+    float *frnn_prev;        /* R38 (H42): 9.2 KiB copy of frnn at pos-1 for post-token-1 GEN_CK_PROMPT snap */
+    u32 frnn_prev_pos;       /* position (= n_prompt - 1) whose frnn is stored in frnn_prev */
+    int frnn_prev_valid;
     float *dflare_norm[8], *attn_norm[8], *ffn_norm[8], *q_norm[8], *k_norm[8], *k_ctx_norm[8];
     void *wq0[8], *wq1[8], *wk0[8], *wk1[8], *wv0[8], *wv1[8], *wkc0[8], *wkc1[8], *wvc0[8], *wvc1[8];
     void *wo0[8], *wo1[8], *wgu0[8], *wgu1[8], *wd0[8], *wd1[8];
@@ -597,6 +706,7 @@ typedef struct {
   u32 *ms_offs, *ms_list, *ms_packs, *ms_npacks; /* flint/inkling MoE sort + R6 compact packs */
   u32 *ms_packs1, *ms_npacks1, *ms_packsM, *ms_npacksM; /* R8 adaptive nj==1 vs nj==2..4 packs */
   int ink_moe_all_slot;                          /* 1 if every OP_GEMV_EXP supports R6 slot kernels */
+  int ink_iq3_flute;                             /* R42 (H34+H01): 1 iff all 24 physical IQ3_XXS egu buffers are FLUTE SoA */
   int attn_kv;             /* use ie_attn_kv for decode and verify (the K/V of a split read once; not IE_ATTN=split) */
   int has_long;            /* the code object has ie_attn_long */
   int has_split_tp;        /* the code object has ie_attn_split_tp (ie_attn_split_t with early loads) */
@@ -678,6 +788,7 @@ typedef struct {
   hipEvent_t ink_toks_ev[16]; /* per-slot H2D completion fence preventing ring overwrite on >16 queued chunks */
   u32 ink_toks_ring;
   u32 ink_toks_cap;
+  u32 ink_toks_slot;        /* R50 (H09): per-slot pinned ring capacity (>= 512, matches g->T up to 1024) */
   u32 *am_pin;              /* 256 B pinned host buffer for T=1 argmax, verify argmax, and DSpark zbuf D2H */
   u32 *ink_lc_count;        /* inkling2 R6 wfg_gate_norm per-(ctrl, t_tile) atomic counters */
   hipStream_t ink_gstream;  /* dedicated non-blocking stream for inkling2 HIP Graph capture/replay */
@@ -687,8 +798,20 @@ typedef struct {
   uint64_t ink_graph_key;   /* (swa_nsplit << 48) | (glob_nsplit << 32) | (mhash & 0xffffffffULL) */
   uint64_t ink_mask;        /* active IE_INKLING_KERNEL_MASK (bits 0..63) */
   uint64_t ink_mask2;       /* active IE_INKLING_KERNEL_MASK2 / upper hex128 (bits 64..127) */
+  uint64_t ink_mask3;       /* active IE_INKLING_KERNEL_MASK3 / upper hex192 (bits 128..191) */
+  int ink_glob_kv_mode;     /* 0=f16 (default), 2=q4 (72 B/hd global-only; SWA stays f16) */
+  u32 ink_glob_kv_rot;      /* 0=none, 1=K FWHT-128, 3=K+V FWHT-128 */
+  size_t kv_glob_rowb;      /* per-position byte stride of full-length global layers (2048 f16, 576 q4) */
+  int moe_c_on;             /* H38: 1 when outer-layer host-backed VRAM SLRU cache is active */
+  u32 moe_c_slots;          /* VRAM slots per cached outer layer */
+  u32 moe_c_nlayers;        /* number of cached outer layers */
+  ink_moe_cache_layer *moe_c;
+  u32 *moe_rt_pin;          /* 2 KiB pinned host buffer for rt D2H/remap/H2D */
+  void *moe_rt_dev;         /* 2 KiB device buffer for remapped rt */
+  uint64_t moe_c_hits, moe_c_misses, moe_c_dma_bytes, moe_c_waves, moe_c_subbatches;
   int ink_graph_cap;        /* 1 while capturing T=1 decode graph -> emit *_ctx kernels */
   int in_step;              /* 1 while inside gpu_step() T=1 decode run_ops */
+  int in_verify;            /* 1 while inside gpu_run() T=2..16 verify run_ops (R40 H19) */
   u32 ink_swa_nsplit, ink_glob_nsplit;
   /* R34: Low-VGPR (<=64) WDDM-guarded sub-span persistent glue dispatcher (bit 90) */
   void *ink_sp_dev;         /* 64 * 16 * 80 B = 80 KiB device task ring */
@@ -709,6 +832,16 @@ typedef struct {
   char *snap_pin;              /* 2 x SNAP_PIN_CH pinned staging buffer for pipelined host<->device snap_copy */
   hipEvent_t snap_ev[2];
   hipStream_t snap_cs;
+#ifdef _WIN32
+  CRITICAL_SECTION snap_async_cs;
+  CONDITION_VARIABLE snap_async_cv;
+  HANDLE snap_async_th;
+  int snap_async_init, snap_async_stop;
+  volatile int snap_async_busy;
+  int snap_async_k;
+  u32 snap_async_pos, snap_async_slack;
+  size_t snap_async_nr, snap_async_ds;
+#endif
   /* the chunked linear attention of prompt chunks (ie_gdn_prep/wy/seq):
    * scratch for T tokens, or NULL (graph T <= 16 or no linear layers) */
   float *cq_qk, *cq_v, *cq_bg, *cq_u, *cq_w, *cq_m, *cq_g;
@@ -726,6 +859,7 @@ typedef struct {
   hipEvent_t *pev;
   double *pms;
   uint32_t psteps;
+  void *route_stats; /* IE_ROUTE_STATS=1 diagnostic collector (NULL when off) */
   /* IE_HOST_STREAM=1 (opt-in): the host layers' arrays stay in pinned memory and are copied by
    * DMA into hs_ns VRAM slots during each pass (hs_before / hs_after); streamed layer s always runs from slot
    * s % hs_ns, so the ops' weight pointers are fixed. */
@@ -899,13 +1033,334 @@ static u32 ink_qtile_min(void) {
   }
   return v > 0 ? (u32)v : 0u;
 }
+static int ink_iq3_repack_want(void) {
+  const char *e = getenv("IE_INKLING_IQ3_REPACK");
+  if (e && *e) return atoi(e) != 0;
+  return 1; /* R42 (H34+H01): promoted default (IE_INKLING_IQ3_REPACK=0 opts out to AoS) */
+}
+static int ink_fp8_mode(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *g = getenv("IE_INKLING_FP8_WMMA");
+    if (g && g[0] == '0') v = 0;
+    else {
+      const char *e = getenv("IE_INK_FP8_MODE");
+      v = (e && *e) ? atoi(e) : 3; /* bit0: q8_fp8_med_r10, bit1: iq4nl_fp8_expmaj_r10 */
+    }
+  }
+  return v;
+}
+static int ink_ver_slice8(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_VER_SLICE8");
+    v = (e && *e) ? (atoi(e) != 0) : 0; /* R53 (H21b): opt-in during screen; flip to 1 on promotion */
+  }
+  return v;
+}
+static int ink_h15_mode(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H15_MODE");
+    v = (e && *e) ? atoi(e) : 7; /* bit0: T1, bit1: ver_glob_wmma, bit2: ver_swa/short */
+  }
+  return v;
+}
+uint32_t gpu_chunk_clamp(uint32_t chunk, const model *m, uint32_t n_ctx) {
+  if (chunk <= 512u || !m || m->arch != ARCH_INKLING2) return chunk;
+  if (n_ctx >= 131072u && !getenv("IE_CHUNK_FORCE")) {
+    fprintf(stderr, "gpu: --chunk %u clamped to 512 (n_ctx %u >= 131072; set IE_CHUNK_FORCE=1 to override)\n", chunk, n_ctx);
+    return 512u;
+  }
+  if (!H.MemGetInfo) hip_load();
+  size_t fr = 0, tot = 0;
+  if (!H.MemGetInfo || H.MemGetInfo(&fr, &tot) != 0) return chunk;
+  const double free_mb = (double)fr / 1048576.0;
+  const char *me = getenv("IE_CHUNK_VRAM_MIN_MB");
+  const double min_mb = (me && *me) ? atof(me) : 2048.0;
+  uint32_t out = chunk;
+  while (out > 512u) {
+    const double extra_mb = (double)(out - 512u) * 0.28;
+    if (free_mb >= min_mb + extra_mb) break;
+    out = out > 768u ? 768u : 512u;
+  }
+  if (out != chunk)
+    fprintf(stderr, "gpu: --chunk %u clamped to %u (free VRAM %.0f MB, min %.0f MB)\n", chunk, out, free_mb, min_mb);
+  return out;
+}
 static size_t gpu_snap_io(backend *bk, int k, int out, void *buf, uint32_t pos);
 static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf);
+static void snap_async_join(gpu_backend *b);
+static void snap_async_shutdown(gpu_backend *b);
 static void gpu_kv_trim(backend *bk, uint32_t keep_pos);
 static void *gpu_host_alloc(backend *bk, size_t n);
 static void gpu_host_free(backend *bk, void *p);
+static inline size_t kv_layer_rowb(const gpu_backend *b, uint32_t kvi) {
+  return (b->g->kv_len[kvi] >= b->g->n_ctx) ? b->kv_glob_rowb : b->kvrowb;
+}
 static void kv_ensure(gpu_backend *b, u32 need);
 static void ds_kv_ensure(gpu_backend *b, u32 need);
+
+/* Diagnostic MoE expert routing & LRU cache simulator (IE_ROUTE_STATS=1, off by default). */
+enum { RS_NCAP = 5, RS_MAXL = 64, RS_MAXE = 256 };
+static const u32 rs_caps[RS_NCAP] = {32u, 48u, 64u, 80u, 96u};
+typedef struct {
+  u32 n_layers, n_exp, n_used, n_outer, n_core;
+  uint8_t is_outer[RS_MAXL];
+  u32 visits[RS_MAXL];
+  uint64_t exp_bytes[RS_MAXL];
+  u32 lru_warm[RS_MAXL][RS_NCAP][128];
+  u32 lru_warm_n[RS_MAXL][RS_NCAP];
+  u32 lru_cold[RS_MAXL][RS_NCAP][128];
+  u32 lru_cold_n[RS_MAXL][RS_NCAP];
+  uint64_t freq_pf[RS_MAXL][RS_MAXE];
+  uint64_t freq_gen[RS_MAXL][RS_MAXE];
+  /* group: 0=outer, 1=core; ph: 0=decode(T=1), 1=verify(2<=T<=16), 2=prefill(T>=17) */
+  uint64_t calls[2][3];
+  uint64_t tokens[2][3];
+  uint64_t uniq_sum[2][3];
+  u32 uniq_max[2][3];
+  uint64_t warm_refs[2][3][RS_NCAP];
+  uint64_t warm_hits[2][3][RS_NCAP];
+  uint64_t warm_miss_bytes[2][3][RS_NCAP];
+  uint64_t warm_overflow[2][3][RS_NCAP];
+  uint64_t cold_refs[2][3][RS_NCAP];
+  uint64_t cold_hits[2][3][RS_NCAP];
+  uint64_t cold_miss_bytes[2][3][RS_NCAP];
+  uint8_t *hbuf;
+  size_t hcap;
+} route_stats_t;
+
+static void rs_lru_touch(u32 *arr, u32 *pn, u32 cap, u32 e) {
+  u32 n = *pn;
+  u32 pos = n;
+  for (u32 j = 0; j < n; j++) {
+    if (arr[j] == e) { pos = j; break; }
+  }
+  if (pos < n) {
+    if (pos > 0u) {
+      memmove(arr + 1, arr, (size_t)pos * sizeof(u32));
+      arr[0] = e;
+    }
+  } else {
+    u32 keep = n < cap ? n : (cap - 1u);
+    if (keep > 0u) memmove(arr + 1, arr, (size_t)keep * sizeof(u32));
+    arr[0] = e;
+    if (n < cap) *pn = n + 1u;
+  }
+}
+
+static uint64_t rs_mat_one_exp_bytes(const mat *w) {
+  if (!w || !w->rows) return 0u;
+  if (w->kind == MAT_RAWQ) return ie_rawq_bytes(w);
+  if (w->kind == MAT_Q8) return (uint64_t)w->rows * (uint64_t)w->nb * 34u;
+  if (w->kind == MAT_Q4 || w->kind == MAT_IQ4NL) return (uint64_t)w->rows * (uint64_t)w->nb * 18u;
+  if (w->kind == MAT_F32) return (uint64_t)w->rows * (uint64_t)w->cols * 4u;
+  return 0u;
+}
+
+static void route_stats_init(gpu_backend *b) {
+  const char *e = getenv("IE_ROUTE_STATS");
+  if (!e || !*e || atoi(e) == 0) return;
+  const model *m = b->m;
+  const graph *g = b->g;
+  if (!m->n_exp || m->n_exp > RS_MAXE || !m->n_layer || m->n_layer > RS_MAXL) return;
+  route_stats_t *rs = calloc(1, sizeof *rs);
+  if (!rs) ie_die("out of memory (route_stats)");
+  rs->n_layers = m->n_layer;
+  rs->n_exp = m->n_exp;
+  rs->n_used = m->n_used;
+  for (uint32_t i = 0; i < g->n_main; i++) {
+    const op *o = &g->ops[i];
+    if (o->kind == OP_MOE_ROUTE && o->layer >= 0 && (u32)o->layer < rs->n_layers)
+      rs->visits[(u32)o->layer]++;
+  }
+  uint64_t outer_eb = 0;
+  for (u32 l = 0; l < rs->n_layers; l++) {
+    const layer *L = &m->l[l];
+    uint64_t eb = 0;
+    if (L->egu.rows) eb += rs_mat_one_exp_bytes(&L->egu);
+    else eb += rs_mat_one_exp_bytes(&L->eg) + rs_mat_one_exp_bytes(&L->eu);
+    eb += rs_mat_one_exp_bytes(&L->ed);
+    rs->exp_bytes[l] = eb;
+    if (rs->visits[l] == 1u) {
+      rs->is_outer[l] = 1u;
+      rs->n_outer++;
+      if (!outer_eb) outer_eb = eb;
+    } else if (rs->visits[l] > 1u) {
+      rs->n_core++;
+    }
+  }
+  rs->hcap = (size_t)g->T * ((size_t)2u * m->n_used * 4u + 256u);
+  rs->hbuf = malloc(rs->hcap);
+  if (!rs->hbuf) ie_die("out of memory (route_stats hbuf)");
+  b->route_stats = rs;
+  fprintf(stderr, "gpu: IE_ROUTE_STATS=1 enabled (%u layers: %u outer, %u core, %u experts, %.3f MiB/outer-expert)\n",
+          rs->n_layers, rs->n_outer, rs->n_core, rs->n_exp, (double)outer_eb / (1024.0 * 1024.0));
+}
+
+static void route_stats_record(gpu_backend *b, const op *o_rt, const void *rt_dev, u32 ost, u32 T) {
+  route_stats_t *rs = (route_stats_t *)b->route_stats;
+  if (!rs || !o_rt || o_rt->layer < 0 || (u32)o_rt->layer >= rs->n_layers || !T) return;
+  const u32 l = (u32)o_rt->layer;
+  const u32 K = o_rt->nh;
+  if (!K || K > 32u) return;
+  const size_t bytes = (size_t)T * (size_t)(ost ? ost : (2u * K * 4u));
+  if (bytes > rs->hcap) {
+    rs->hbuf = realloc(rs->hbuf, bytes);
+    if (!rs->hbuf) ie_die("out of memory (route_stats hbuf grow)");
+    rs->hcap = bytes;
+  }
+  HIP(H.Memcpy(rs->hbuf, rt_dev, bytes, hipMemcpyDeviceToHost));
+  const int grp = rs->is_outer[l] ? 0 : 1;
+  const int ph = (T == 1u) ? 0 : (T <= 16u ? 1 : 2);
+  uint8_t seen[RS_MAXE];
+  memset(seen, 0, rs->n_exp);
+  u32 uniq[RS_MAXE];
+  u32 n_uniq = 0u;
+  const u32 stride = ost ? ost : (2u * K * 4u);
+  for (u32 t = 0; t < T; t++) {
+    const u32 *ids = (const u32 *)(rs->hbuf + (size_t)t * stride);
+    for (u32 k = 0; k < K; k++) {
+      const u32 id = ids[k];
+      if (id >= rs->n_exp) continue;
+      if (ph == 2) rs->freq_pf[l][id]++;
+      else rs->freq_gen[l][id]++;
+      if (!seen[id]) {
+        seen[id] = 1u;
+        uniq[n_uniq++] = id;
+      }
+    }
+  }
+  rs->calls[grp][ph]++;
+  rs->tokens[grp][ph] += T;
+  rs->uniq_sum[grp][ph] += n_uniq;
+  if (n_uniq > rs->uniq_max[grp][ph]) rs->uniq_max[grp][ph] = n_uniq;
+  for (u32 ci = 0; ci < RS_NCAP; ci++) {
+    const u32 cap = rs_caps[ci];
+    if (ph <= 1) {
+      u32 whits = 0u, chits = 0u;
+      const u32 wn = rs->lru_warm_n[l][ci], cn = rs->lru_cold_n[l][ci];
+      for (u32 ui = 0; ui < n_uniq; ui++) {
+        const u32 e = uniq[ui];
+        for (u32 j = 0; j < wn; j++) if (rs->lru_warm[l][ci][j] == e) { whits++; break; }
+        for (u32 j = 0; j < cn; j++) if (rs->lru_cold[l][ci][j] == e) { chits++; break; }
+      }
+      const u32 wmiss = n_uniq - whits, cmiss = n_uniq - chits;
+      rs->warm_refs[grp][ph][ci] += n_uniq;
+      rs->warm_hits[grp][ph][ci] += whits;
+      rs->warm_miss_bytes[grp][ph][ci] += (uint64_t)wmiss * rs->exp_bytes[l];
+      if (n_uniq > cap) rs->warm_overflow[grp][ph][ci]++;
+      rs->cold_refs[grp][ph][ci] += n_uniq;
+      rs->cold_hits[grp][ph][ci] += chits;
+      rs->cold_miss_bytes[grp][ph][ci] += (uint64_t)cmiss * rs->exp_bytes[l];
+    }
+    for (u32 t = 0; t < T; t++) {
+      const u32 *ids = (const u32 *)(rs->hbuf + (size_t)t * stride);
+      for (u32 k = 0; k < K; k++) {
+        const u32 id = ids[k];
+        if (id >= rs->n_exp) continue;
+        rs_lru_touch(rs->lru_warm[l][ci], &rs->lru_warm_n[l][ci], cap, id);
+        if (ph <= 1) rs_lru_touch(rs->lru_cold[l][ci], &rs->lru_cold_n[l][ci], cap, id);
+      }
+    }
+  }
+}
+
+static int rs_cmp_u64_desc(const void *a, const void *b) {
+  const uint64_t va = *(const uint64_t *)a, vb = *(const uint64_t *)b;
+  return (vb > va) ? 1 : ((vb < va) ? -1 : 0);
+}
+
+static void route_stats_finish(gpu_backend *b) {
+  route_stats_t *rs = (route_stats_t *)b->route_stats;
+  if (!rs) return;
+  const u32 nl_out = rs->n_outer ? rs->n_outer : 1u;
+  uint64_t outer_eb = 0;
+  for (u32 l = 0; l < rs->n_layers; l++) if (rs->is_outer[l]) { outer_eb = rs->exp_bytes[l]; break; }
+  const uint64_t gen_calls_out = rs->calls[0][0] + rs->calls[0][1];
+  const uint64_t gen_steps_out = gen_calls_out / nl_out;
+  const uint64_t ver_steps_out = rs->calls[0][1] / nl_out;
+  const uint64_t dec_steps_out = rs->calls[0][0] / nl_out;
+  const double avg_u_ver = rs->calls[0][1] ? (double)rs->uniq_sum[0][1] / (double)rs->calls[0][1] : 0.0;
+  const double avg_u_dec = rs->calls[0][0] ? (double)rs->uniq_sum[0][0] / (double)rs->calls[0][0] : 0.0;
+  const double avg_u_core_ver = rs->calls[1][1] ? (double)rs->uniq_sum[1][1] / (double)rs->calls[1][1] : 0.0;
+  fprintf(stderr,
+          "route_stats: outer=%u layers (%.3f MiB/exp, total %.2f GiB), core=%u layers; "
+          "steps(outer): dec=%llu (avg_u=%.2f max=%u), ver=%llu (avg_u=%.2f max=%u, core_avg_u=%.2f), pf_visits=%llu\n",
+          rs->n_outer, (double)outer_eb / 1048576.0,
+          (double)rs->n_outer * (double)rs->n_exp * (double)outer_eb / (1024.0 * 1024.0 * 1024.0),
+          rs->n_core, (unsigned long long)dec_steps_out, avg_u_dec, rs->uniq_max[0][0],
+          (unsigned long long)ver_steps_out, avg_u_ver, rs->uniq_max[0][1], avg_u_core_ver,
+          (unsigned long long)rs->calls[0][2]);
+  /* Static oracle top-S coverage over outer generation tokens */
+  double static_cov[RS_NCAP] = {0};
+  uint64_t tot_gen_act_out = 0;
+  uint64_t top_sum[RS_NCAP] = {0};
+  for (u32 l = 0; l < rs->n_layers; l++) {
+    if (!rs->is_outer[l]) continue;
+    uint64_t tmp[RS_MAXE];
+    memcpy(tmp, rs->freq_gen[l], (size_t)rs->n_exp * sizeof(uint64_t));
+    qsort(tmp, rs->n_exp, sizeof(uint64_t), rs_cmp_u64_desc);
+    for (u32 e = 0; e < rs->n_exp; e++) tot_gen_act_out += tmp[e];
+    for (u32 ci = 0; ci < RS_NCAP; ci++) {
+      u32 cap = rs_caps[ci] < rs->n_exp ? rs_caps[ci] : rs->n_exp;
+      for (u32 e = 0; e < cap; e++) top_sum[ci] += tmp[e];
+    }
+  }
+  for (u32 ci = 0; ci < RS_NCAP; ci++)
+    static_cov[ci] = tot_gen_act_out ? 100.0 * (double)top_sum[ci] / (double)tot_gen_act_out : 0.0;
+
+  fprintf(stderr, "route_stats_json: {\"n_outer\":%u,\"n_core\":%u,\"n_exp\":%u,\"exp_mib\":%.4f,"
+          "\"dec_steps\":%llu,\"ver_steps\":%llu,\"pf_outer_visits\":%llu,"
+          "\"outer_dec_avg_u\":%.3f,\"outer_dec_max_u\":%u,\"outer_ver_avg_u\":%.3f,\"outer_ver_max_u\":%u,"
+          "\"core_ver_avg_u\":%.3f,\"core_ver_max_u\":%u,\"slots\":[",
+          rs->n_outer, rs->n_core, rs->n_exp, (double)outer_eb / 1048576.0,
+          (unsigned long long)dec_steps_out, (unsigned long long)ver_steps_out,
+          (unsigned long long)rs->calls[0][2], avg_u_dec, rs->uniq_max[0][0],
+          avg_u_ver, rs->uniq_max[0][1], avg_u_core_ver, rs->uniq_max[1][1]);
+  for (u32 ci = 0; ci < RS_NCAP; ci++) {
+    const u32 cap = rs_caps[ci];
+    const double freed_gib = (double)rs->n_outer * (double)(rs->n_exp > cap ? rs->n_exp - cap : 0u) * (double)outer_eb / (1024.0 * 1024.0 * 1024.0);
+    const uint64_t wr_all = rs->warm_refs[0][0][ci] + rs->warm_refs[0][1][ci];
+    const uint64_t wh_all = rs->warm_hits[0][0][ci] + rs->warm_hits[0][1][ci];
+    const uint64_t wmb_all = rs->warm_miss_bytes[0][0][ci] + rs->warm_miss_bytes[0][1][ci];
+    const uint64_t cr_all = rs->cold_refs[0][0][ci] + rs->cold_refs[0][1][ci];
+    const uint64_t ch_all = rs->cold_hits[0][0][ci] + rs->cold_hits[0][1][ci];
+    const double whit_all = wr_all ? 100.0 * (double)wh_all / (double)wr_all : 0.0;
+    const double chit_all = cr_all ? 100.0 * (double)ch_all / (double)cr_all : 0.0;
+    const double whit_ver = rs->warm_refs[0][1][ci] ? 100.0 * (double)rs->warm_hits[0][1][ci] / (double)rs->warm_refs[0][1][ci] : 0.0;
+    const double whit_dec = rs->warm_refs[0][0][ci] ? 100.0 * (double)rs->warm_hits[0][0][ci] / (double)rs->warm_refs[0][0][ci] : 0.0;
+    const double miss_mib_step_all = gen_steps_out ? (double)wmb_all / (1048576.0 * (double)gen_steps_out) : 0.0;
+    const double miss_mib_step_ver = ver_steps_out ? (double)rs->warm_miss_bytes[0][1][ci] / (1048576.0 * (double)ver_steps_out) : 0.0;
+    const double miss_mib_step_dec = dec_steps_out ? (double)rs->warm_miss_bytes[0][0][ci] / (1048576.0 * (double)dec_steps_out) : 0.0;
+    const uint64_t ovf_ver = rs->warm_overflow[0][1][ci];
+    fprintf(stderr, "%s{\"slots\":%u,\"freed_gib\":%.3f,\"warm_hit_pct\":%.2f,\"cold_hit_pct\":%.2f,"
+            "\"ver_warm_hit_pct\":%.2f,\"dec_warm_hit_pct\":%.2f,\"static_cov_pct\":%.2f,"
+            "\"miss_mib_step\":%.2f,\"ver_miss_mib_step\":%.2f,\"dec_miss_mib_step\":%.2f,\"ver_overflow_visits\":%llu}",
+            ci ? "," : "", cap, freed_gib, whit_all, chit_all, whit_ver, whit_dec, static_cov[ci],
+            miss_mib_step_all, miss_mib_step_ver, miss_mib_step_dec, (unsigned long long)ovf_ver);
+  }
+  fprintf(stderr, "]}\n");
+  for (u32 ci = 0; ci < RS_NCAP; ci++) {
+    const u32 cap = rs_caps[ci];
+    const double freed_gib = (double)rs->n_outer * (double)(rs->n_exp > cap ? rs->n_exp - cap : 0u) * (double)outer_eb / (1024.0 * 1024.0 * 1024.0);
+    const uint64_t wr_all = rs->warm_refs[0][0][ci] + rs->warm_refs[0][1][ci];
+    const uint64_t wh_all = rs->warm_hits[0][0][ci] + rs->warm_hits[0][1][ci];
+    const uint64_t wmb_all = rs->warm_miss_bytes[0][0][ci] + rs->warm_miss_bytes[0][1][ci];
+    const double whit_all = wr_all ? 100.0 * (double)wh_all / (double)wr_all : 0.0;
+    const double whit_ver = rs->warm_refs[0][1][ci] ? 100.0 * (double)rs->warm_hits[0][1][ci] / (double)rs->warm_refs[0][1][ci] : 0.0;
+    const double whit_dec = rs->warm_refs[0][0][ci] ? 100.0 * (double)rs->warm_hits[0][0][ci] / (double)rs->warm_refs[0][0][ci] : 0.0;
+    const double miss_mib_step_all = gen_steps_out ? (double)wmb_all / (1048576.0 * (double)gen_steps_out) : 0.0;
+    const double miss_mib_step_ver = ver_steps_out ? (double)rs->warm_miss_bytes[0][1][ci] / (1048576.0 * (double)ver_steps_out) : 0.0;
+    fprintf(stderr, "route_stats: slots=%2u freed=%.2f GiB | warm_LRU=%.2f%% (ver=%.2f%% dec=%.2f%%) static_top=%.2f%% | miss=%.1f MiB/step (ver=%.1f) ovf=%llu\n",
+            cap, freed_gib, whit_all, whit_ver, whit_dec, static_cov[ci], miss_mib_step_all, miss_mib_step_ver,
+            (unsigned long long)rs->warm_overflow[0][1][ci]);
+  }
+  free(rs->hbuf);
+  free(rs);
+  b->route_stats = NULL;
+}
 static int kv_all_full(const graph *g, const model *m) {
   for (uint32_t i = 0; i < m->n_kvl; i++)
     if (g->kv_len[i] != g->n_ctx) return 0;
@@ -1521,10 +1976,10 @@ static void hs_setup(gpu_backend *b, const graph *g) {
   }
   for (u32 k = 0; k < ns; k++) {
     HIP(H.Malloc((void **)&b->hs_slot[k], sb));
-    HIP(H.EventCreate(&b->hs_free[k]));
+    HIP(ie_event_create_notiming(&b->hs_free[k]));
   }
   b->hs_done = malloc(n * sizeof(hipEvent_t));
-  for (u32 s = 0; s < n; s++) HIP(H.EventCreate(&b->hs_done[s]));
+  for (u32 s = 0; s < n; s++) HIP(ie_event_create_notiming(&b->hs_done[s]));
   HIP(H.StreamCreateWithFlags(&b->hs_cs, 1u)); /* hipStreamNonBlocking: no implicit sync with the default stream */
   /* every op reading a streamed array now reads its slot copy */
   for (u32 i = 0; i < g->n_main; i++) {
@@ -1553,7 +2008,427 @@ static void hs_setup(gpu_backend *b, const graph *g) {
           n, tot / 1e9, ns, sb / 1e6);
 }
 
+/* H38: Outer-layer host-backed VRAM SLRU expert cache (IE_MOE_CACHE_SLOTS=N|auto, bit 91).
+ * Keeps all 12 looped core layers (blk.6..17) and all 24 dense layers 100% VRAM-resident,
+ * while backing the 12 outer layers' MoE weights (egu IQ3_XXS FLUTE + ed IQ4_NL) in pinned
+ * host RAM with N_slots VRAM slots per outer layer. */
+static size_t ink_moe_slab_bytes(size_t egu_eb, size_t ed0_eb, size_t ed1_eb, u32 n_slots,
+                                 size_t *off_ed0, size_t *off_ed1) {
+  const size_t s0 = ((size_t)n_slots * egu_eb + 255u) & ~(size_t)255u;
+  const size_t s1 = ((size_t)n_slots * ed0_eb + 255u) & ~(size_t)255u;
+  const size_t s2 = ((size_t)n_slots * ed1_eb + 255u) & ~(size_t)255u;
+  if (off_ed0) *off_ed0 = s0;
+  if (off_ed1) *off_ed1 = s0 + s1;
+  return s0 + s1 + s2;
+}
+
+static void ink_moe_cache_setup(gpu_backend *b) {
+  b->moe_c_on = 0;
+  const model *m = b->m;
+  const graph *g = b->g;
+  if (m->arch != ARCH_INKLING2) return;
+  const char *e = getenv("IE_MOE_CACHE_SLOTS");
+  if (!e || !*e || strcmp(e, "0") == 0) return;
+  if (m->n_exp == 0u || m->n_exp > INK_MOE_C_MAXE || m->n_layer == 0u || m->n_layer > INK_MOE_C_MAXL)
+    ie_die("IE_MOE_CACHE_SLOTS: unsupported model shape (layers=%u, n_exp=%u)", m->n_layer, m->n_exp);
+  if (!b->k[K_INK_MOE_WL_FILTER_R14] || !b->k[K_INK_MOE_SORT_COMPACT_R6] ||
+      !b->ms_offs || !b->ms_list || !b->ms_packs || !b->ms_npacks)
+    ie_die("IE_MOE_CACHE_SLOTS: requires ie_inkling_moe_wl_filter_r14 (bit 91) and compact MoE sort");
+
+  u32 n_outer = 0u;
+  size_t sample_egu = 0u, sample_ed0 = 0u, sample_ed1 = 0u;
+  for (u32 ip = 0u; ip < m->n_layer; ip++) {
+    if (ip >= m->loop_start && ip < m->loop_end) continue;
+    const layer *L = &m->l[ip];
+    if (L->egu.kind != MAT_RAWQ || L->egu.sub != 18u || !L->egu.host || !L->egu.d1 ||
+        L->ed.kind != MAT_IQ4NL || !L->ed.host || !L->ed.d0 || !L->ed.d1 ||
+        L->egu.n_exp != m->n_exp || L->ed.n_exp != m->n_exp)
+      ie_die("IE_MOE_CACHE_SLOTS: outer layer %u weights are not host-pinned IQ3_XXS/IQ4_NL", ip);
+    sample_egu = (size_t)ie_rawq_bytes(&L->egu);
+    sample_ed0 = (size_t)mat_qw_words(L->ed.kind, L->ed.rows, L->ed.cols) * 4u;
+    sample_ed1 = (size_t)mat_qs_n(L->ed.kind, L->ed.rows, L->ed.cols) * 2u;
+    n_outer++;
+  }
+  if (!n_outer) return;
+
+  u32 n_slots = 0u;
+  const int is_auto = (strcmp(e, "auto") == 0 || strcmp(e, "AUTO") == 0);
+  if (is_auto) {
+    uint64_t dxgi_b = 0ULL, dxgi_u = 0ULL;
+    uint64_t future_kv = 0ULL;
+    if (b->kv_grow == 1) {
+      u32 n_full = 0u;
+      for (u32 kvi = 0u; kvi < m->n_kvl; kvi++)
+        if (g->kv_len[kvi] >= g->n_ctx) n_full++;
+      const size_t full_need = (size_t)g->n_ctx * b->kv_glob_rowb;
+      const size_t rem = full_need > b->kv_mapped ? (full_need - b->kv_mapped) : 0u;
+      future_kv += (uint64_t)n_full * 2ULL * (uint64_t)rem;
+    }
+    if (b->ds.ready && b->ds.kv_grow) {
+      u32 n_dsvm = 0u;
+      for (u32 il = 0u; il < m->ds->n_layer; il++)
+        if (b->ds.kv_vm[il]) n_dsvm++;
+      const size_t ds_rem = b->ds.kv_va > b->ds.kv_mapped ? (b->ds.kv_va - b->ds.kv_mapped) : 0u;
+      future_kv += (uint64_t)n_dsvm * 2ULL * (uint64_t)ds_rem;
+    }
+    if (dxgi_local_mem(&dxgi_b, &dxgi_u) && dxgi_b > 0ULL) {
+      const uint64_t reserve_target = (uint64_t)768u << 20; /* 768 MiB target (>= 512 MiB gate + WDDM margin) */
+      const u32 cands[] = {96u, 80u, 64u, 48u, 32u};
+      n_slots = 32u;
+      for (unsigned ci = 0u; ci < sizeof(cands) / sizeof(cands[0]); ci++) {
+        const u32 ns = cands[ci] < m->n_exp ? cands[ci] : m->n_exp;
+        const uint64_t slab_tot = (uint64_t)n_outer *
+            (uint64_t)ink_moe_slab_bytes(sample_egu, sample_ed0, sample_ed1, ns, NULL, NULL);
+        if (dxgi_u + future_kv + slab_tot + ((uint64_t)16u << 20) + reserve_target <= dxgi_b) {
+          n_slots = ns;
+          break;
+        }
+      }
+      const uint64_t slab_sel = (uint64_t)n_outer *
+          (uint64_t)ink_moe_slab_bytes(sample_egu, sample_ed0, sample_ed1, n_slots, NULL, NULL);
+      const double proj_res_mib =
+          ((double)dxgi_b - (double)(dxgi_u + future_kv + slab_sel)) / (1024.0 * 1024.0);
+      fprintf(stderr, "gpu: H38 auto slots=%u (DXGI budget=%.2f GiB, cur=%.2f GiB, future_kv=%.1f MiB, proj_reserve=%.0f MiB)\n",
+              n_slots, dxgi_b / 1073741824.0, dxgi_u / 1073741824.0, future_kv / 1048576.0, proj_res_mib);
+    } else {
+      n_slots = 64u;
+      fprintf(stderr, "gpu: H38 auto slots=%u (DXGI query unavailable; default 64)\n", n_slots);
+    }
+  } else {
+    const int req = atoi(e);
+    if (req <= 0) return;
+    n_slots = (u32)req;
+  }
+  const u32 min_slots = m->n_used > 16u ? m->n_used : 16u;
+  if (n_slots < min_slots) n_slots = min_slots;
+  if (n_slots > m->n_exp) n_slots = m->n_exp;
+
+  b->moe_c = calloc(m->n_layer, sizeof(*b->moe_c));
+  if (!b->moe_c) ie_die("out of memory (moe_c)");
+  HIP(H.HostMalloc((void **)&b->moe_rt_pin, 16384u, 0));
+  HIP(H.Malloc(&b->moe_rt_dev, 16384u));
+
+  size_t total_vram = 0u, total_full = 0u;
+  for (u32 ip = 0u; ip < m->n_layer; ip++) {
+    if (ip >= m->loop_start && ip < m->loop_end) continue;
+    const layer *L = &m->l[ip];
+    ink_moe_cache_layer *C = &b->moe_c[ip];
+    C->active = 1;
+    C->n_exp = m->n_exp;
+    C->n_slots = n_slots;
+    C->egu_eb = (size_t)ie_rawq_bytes(&L->egu);
+    C->ed0_eb = (size_t)mat_qw_words(L->ed.kind, L->ed.rows, L->ed.cols) * 4u;
+    C->ed1_eb = (size_t)mat_qs_n(L->ed.kind, L->ed.rows, L->ed.cols) * 2u;
+    C->tot_eb = C->egu_eb + C->ed0_eb + C->ed1_eb;
+    C->egu_host = L->egu.d1;
+    C->ed0_host = L->ed.d0;
+    C->ed1_host = L->ed.d1;
+    size_t off_ed0 = 0u, off_ed1 = 0u;
+    const size_t sb = ink_moe_slab_bytes(C->egu_eb, C->ed0_eb, C->ed1_eb, n_slots, &off_ed0, &off_ed1);
+    HIP(H.Malloc(&C->slab_dev, sb));
+    C->egu_dev = C->slab_dev;
+    C->ed0_dev = (char *)C->slab_dev + off_ed0;
+    C->ed1_dev = (char *)C->slab_dev + off_ed1;
+    HIP(H.HostMalloc((void **)&C->pf_offs_pin, (size_t)(m->n_exp + 1u) * sizeof(u32), 0));
+    HIP(ie_event_create_notiming(&C->pf_offs_ev));
+    for (u32 ex = 0u; ex < INK_MOE_C_MAXE; ex++) {
+      C->slot_of[ex] = -1;
+      C->exp_of[ex] = -1;
+    }
+    total_vram += sb;
+    total_full += (size_t)m->n_exp * C->tot_eb;
+  }
+  b->moe_c_on = 1;
+  b->moe_c_slots = n_slots;
+  b->moe_c_nlayers = n_outer;
+  fprintf(stderr, "gpu: H38 outer-expert VRAM SLRU cache enabled (%u layers, %u/%u slots = %.1f MiB VRAM, %.1f MiB freed, mode=%s)\n",
+          n_outer, n_slots, m->n_exp, total_vram / 1048576.0,
+          (total_full > total_vram ? (double)(total_full - total_vram) : 0.0) / 1048576.0,
+          is_auto ? "auto" : e);
+}
+
+static void ink_moe_cache_prepop(gpu_backend *b) {
+  if (!b->moe_c_on || !b->moe_c) return;
+  for (u32 ip = 0u; ip < b->m->n_layer; ip++) {
+    ink_moe_cache_layer *C = &b->moe_c[ip];
+    if (!C->active) continue;
+    const u32 ns = C->n_slots;
+    HIP(H.MemcpyAsync(C->egu_dev, C->egu_host, (size_t)ns * C->egu_eb, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync(C->ed0_dev, C->ed0_host, (size_t)ns * C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync(C->ed1_dev, C->ed1_host, (size_t)ns * C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
+    for (u32 ex = 0u; ex < C->n_exp; ex++) C->slot_of[ex] = -1;
+    for (u32 s = 0u; s < ns; s++) {
+      C->slot_of[s] = (int16_t)s;
+      C->exp_of[s] = (int16_t)s;
+      C->tick_of[s] = 0u;
+    }
+  }
+  HIP(H.DeviceSynchronize());
+}
+
 static void gpu_set_rope(backend *bk, uint32_t pos0, uint32_t n, const float *cos_tab, const float *sin_tab);
+
+static const char *kmeta_loaded_name(const model *m, int k) {
+  if (m->hd == 128u) {
+    if (k == K_ATTN_LONG) return "ie_attn_long128";
+    if (k == K_ATTN_LONG_E) return "ie_attn_long128_e";
+  }
+  return kname[k];
+}
+
+typedef struct {
+  const uint8_t *p, *end;
+  int err;
+} mp_rdr;
+
+static inline uint16_t rd_le16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+static inline uint32_t rd_le32(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static inline uint64_t rd_le64(const uint8_t *p) { return (uint64_t)rd_le32(p) | ((uint64_t)rd_le32(p + 4) << 32); }
+static inline uint16_t rd_be16(const uint8_t *p) { return ((uint16_t)p[0] << 8) | (uint16_t)p[1]; }
+static inline uint32_t rd_be32(const uint8_t *p) {
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+static inline uint64_t rd_be64(const uint8_t *p) { return ((uint64_t)rd_be32(p) << 32) | (uint64_t)rd_be32(p + 4); }
+
+static int mp_take(mp_rdr *r, size_t n, const uint8_t **out) {
+  if (r->err || (size_t)(r->end - r->p) < n) {
+    r->err = 1;
+    return 0;
+  }
+  if (out) *out = r->p;
+  r->p += n;
+  return 1;
+}
+
+static int mp_read_u64(mp_rdr *r, uint64_t *val) {
+  const uint8_t *b;
+  if (!mp_take(r, 1u, &b)) return 0;
+  const uint8_t tag = *b;
+  if (tag <= 0x7fu) { *val = tag; return 1; }
+  if (tag == 0xccu) { if (!mp_take(r, 1u, &b)) return 0; *val = b[0]; return 1; }
+  if (tag == 0xcdu) { if (!mp_take(r, 2u, &b)) return 0; *val = rd_be16(b); return 1; }
+  if (tag == 0xceu) { if (!mp_take(r, 4u, &b)) return 0; *val = rd_be32(b); return 1; }
+  if (tag == 0xcfu) { if (!mp_take(r, 8u, &b)) return 0; *val = rd_be64(b); return 1; }
+  r->p--; /* not an unsigned int */
+  return 0;
+}
+
+static int mp_read_str(mp_rdr *r, const char **s, uint32_t *len) {
+  const uint8_t *b;
+  if (!mp_take(r, 1u, &b)) return 0;
+  const uint8_t tag = *b;
+  uint32_t n = 0u;
+  if (tag >= 0xa0u && tag <= 0xbfu) n = (uint32_t)(tag & 0x1fu);
+  else if (tag == 0xd9u) { if (!mp_take(r, 1u, &b)) return 0; n = b[0]; }
+  else if (tag == 0xdau) { if (!mp_take(r, 2u, &b)) return 0; n = rd_be16(b); }
+  else if (tag == 0xdbu) { if (!mp_take(r, 4u, &b)) return 0; n = rd_be32(b); }
+  else { r->p--; return 0; }
+  const uint8_t *sp;
+  if (!mp_take(r, n, &sp)) return 0;
+  *s = (const char *)sp;
+  *len = n;
+  return 1;
+}
+
+static int mp_read_map_hdr(mp_rdr *r, uint32_t *cnt) {
+  const uint8_t *b;
+  if (!mp_take(r, 1u, &b)) return 0;
+  const uint8_t tag = *b;
+  if (tag >= 0x80u && tag <= 0x8fu) { *cnt = (uint32_t)(tag & 0x0fu); return 1; }
+  if (tag == 0xdeu) { if (!mp_take(r, 2u, &b)) return 0; *cnt = rd_be16(b); return 1; }
+  if (tag == 0xdfu) { if (!mp_take(r, 4u, &b)) return 0; *cnt = rd_be32(b); return 1; }
+  r->p--;
+  return 0;
+}
+
+static int mp_read_arr_hdr(mp_rdr *r, uint32_t *cnt) {
+  const uint8_t *b;
+  if (!mp_take(r, 1u, &b)) return 0;
+  const uint8_t tag = *b;
+  if (tag >= 0x90u && tag <= 0x9fu) { *cnt = (uint32_t)(tag & 0x0fu); return 1; }
+  if (tag == 0xdcu) { if (!mp_take(r, 2u, &b)) return 0; *cnt = rd_be16(b); return 1; }
+  if (tag == 0xddu) { if (!mp_take(r, 4u, &b)) return 0; *cnt = rd_be32(b); return 1; }
+  r->p--;
+  return 0;
+}
+
+static void mp_skip(mp_rdr *r, int depth) {
+  if (r->err || depth > 32) { r->err = 1; return; }
+  const uint8_t *b;
+  if (!mp_take(r, 1u, &b)) return;
+  const uint8_t tag = *b;
+  if (tag <= 0x7fu || tag >= 0xe0u || tag == 0xc0u || tag == 0xc2u || tag == 0xc3u) return;
+  if (tag >= 0xa0u && tag <= 0xbfu) { mp_take(r, (size_t)(tag & 0x1fu), NULL); return; }
+  if (tag >= 0x90u && tag <= 0x9fu) {
+    for (uint32_t i = 0u, n = tag & 0x0fu; i < n && !r->err; i++) mp_skip(r, depth + 1);
+    return;
+  }
+  if (tag >= 0x80u && tag <= 0x8fu) {
+    for (uint32_t i = 0u, n = tag & 0x0fu; i < n && !r->err; i++) { mp_skip(r, depth + 1); mp_skip(r, depth + 1); }
+    return;
+  }
+  switch (tag) {
+    case 0xc4u: case 0xd9u: if (mp_take(r, 1u, &b)) mp_take(r, b[0], NULL); return;
+    case 0xc5u: case 0xdau: if (mp_take(r, 2u, &b)) mp_take(r, rd_be16(b), NULL); return;
+    case 0xc6u: case 0xdbu: if (mp_take(r, 4u, &b)) mp_take(r, rd_be32(b), NULL); return;
+    case 0xc7u: if (mp_take(r, 1u, &b)) mp_take(r, (size_t)b[0] + 1u, NULL); return;
+    case 0xc8u: if (mp_take(r, 2u, &b)) mp_take(r, (size_t)rd_be16(b) + 1u, NULL); return;
+    case 0xc9u: if (mp_take(r, 4u, &b)) mp_take(r, (size_t)rd_be32(b) + 1u, NULL); return;
+    case 0xcau: case 0xceu: case 0xd2u: mp_take(r, 4u, NULL); return;
+    case 0xcbu: case 0xcfu: case 0xd3u: mp_take(r, 8u, NULL); return;
+    case 0xccu: case 0xd0u: mp_take(r, 1u, NULL); return;
+    case 0xcdu: case 0xd1u: case 0xd4u: mp_take(r, 2u, NULL); return;
+    case 0xd5u: mp_take(r, 3u, NULL); return;
+    case 0xd6u: mp_take(r, 5u, NULL); return;
+    case 0xd7u: mp_take(r, 9u, NULL); return;
+    case 0xd8u: mp_take(r, 17u, NULL); return;
+    case 0xdcu: if (mp_take(r, 2u, &b)) for (uint32_t i = 0u, n = rd_be16(b); i < n && !r->err; i++) mp_skip(r, depth + 1); return;
+    case 0xddu: if (mp_take(r, 4u, &b)) for (uint32_t i = 0u, n = rd_be32(b); i < n && !r->err; i++) mp_skip(r, depth + 1); return;
+    case 0xdeu: if (mp_take(r, 2u, &b)) for (uint32_t i = 0u, n = rd_be16(b); i < n && !r->err; i++) { mp_skip(r, depth + 1); mp_skip(r, depth + 1); } return;
+    case 0xdfu: if (mp_take(r, 4u, &b)) for (uint32_t i = 0u, n = rd_be32(b); i < n && !r->err; i++) { mp_skip(r, depth + 1); mp_skip(r, depth + 1); } return;
+    default: r->err = 1; return;
+  }
+}
+
+static int mp_streq(const char *s, uint32_t len, const char *lit) {
+  const size_t n = strlen(lit);
+  return len == n && memcmp(s, lit, n) == 0;
+}
+
+static void hsaco_parse_amdhsa_msgpack(gpu_backend *b, const uint8_t *desc, size_t dlen, int k_first, int k_last) {
+  mp_rdr r = {desc, desc + dlen, 0};
+  uint32_t top_n = 0u;
+  if (!mp_read_map_hdr(&r, &top_n)) return;
+  for (uint32_t ti = 0u; ti < top_n && !r.err; ti++) {
+    const char *tk = NULL;
+    uint32_t tkl = 0u;
+    if (!mp_read_str(&r, &tk, &tkl)) { mp_skip(&r, 0); mp_skip(&r, 0); continue; }
+    if (!mp_streq(tk, tkl, "amdhsa.kernels")) { mp_skip(&r, 0); continue; }
+    uint32_t nk = 0u;
+    if (!mp_read_arr_hdr(&r, &nk)) { mp_skip(&r, 0); continue; }
+    for (uint32_t ki = 0u; ki < nk && !r.err; ki++) {
+      uint32_t km_n = 0u;
+      if (!mp_read_map_hdr(&r, &km_n)) { mp_skip(&r, 0); continue; }
+      const char *nm = NULL;
+      uint32_t nml = 0u;
+      uint64_t kseg = 0u;
+      int has_kseg = 0, has_args = 0, has_hidden = 0, bad = 0;
+      uint32_t prev_end = 0u;
+      k_arg_meta tmp;
+      memset(&tmp, 0, sizeof tmp);
+      for (uint32_t fi = 0u; fi < km_n && !r.err; fi++) {
+        const char *fk = NULL;
+        uint32_t fkl = 0u;
+        if (!mp_read_str(&r, &fk, &fkl)) { mp_skip(&r, 0); mp_skip(&r, 0); continue; }
+        if (mp_streq(fk, fkl, ".name")) {
+          if (!mp_read_str(&r, &nm, &nml)) mp_skip(&r, 0);
+        } else if (mp_streq(fk, fkl, ".kernarg_segment_size")) {
+          if (mp_read_u64(&r, &kseg)) has_kseg = 1;
+          else mp_skip(&r, 0);
+        } else if (mp_streq(fk, fkl, ".args")) {
+          uint32_t na = 0u;
+          if (!mp_read_arr_hdr(&r, &na)) { mp_skip(&r, 0); continue; }
+          has_args = 1;
+          for (uint32_t ai = 0u; ai < na && !r.err; ai++) {
+            uint32_t am_n = 0u;
+            if (!mp_read_map_hdr(&r, &am_n)) { mp_skip(&r, 0); bad = 1; continue; }
+            uint64_t aoff = 0u, asz = 0u;
+            int has_off = 0, has_sz = 0, is_hidden = 0;
+            for (uint32_t aj = 0u; aj < am_n && !r.err; aj++) {
+              const char *ak = NULL;
+              uint32_t akl = 0u;
+              if (!mp_read_str(&r, &ak, &akl)) { mp_skip(&r, 0); mp_skip(&r, 0); continue; }
+              if (mp_streq(ak, akl, ".offset")) {
+                if (mp_read_u64(&r, &aoff)) has_off = 1; else mp_skip(&r, 0);
+              } else if (mp_streq(ak, akl, ".size")) {
+                if (mp_read_u64(&r, &asz)) has_sz = 1; else mp_skip(&r, 0);
+              } else if (mp_streq(ak, akl, ".value_kind")) {
+                const char *vk = NULL;
+                uint32_t vkl = 0u;
+                if (mp_read_str(&r, &vk, &vkl)) {
+                  if (vkl >= 7u && memcmp(vk, "hidden_", 7u) == 0) is_hidden = 1;
+                } else mp_skip(&r, 0);
+              } else {
+                mp_skip(&r, 0);
+              }
+            }
+            if (is_hidden) { has_hidden = 1; continue; }
+            if (has_hidden) { bad = 1; continue; } /* explicit arg after hidden arg */
+            if (!has_off || !has_sz || tmp.n_args >= KMETA_MAX_ARGS || asz < 1u || asz > 8u ||
+                aoff < prev_end || aoff + asz > KMETA_MAX_BYTES) {
+              bad = 1;
+              continue;
+            }
+            tmp.off[tmp.n_args] = (uint16_t)aoff;
+            tmp.sz[tmp.n_args] = (uint8_t)asz;
+            tmp.n_args++;
+            prev_end = (uint32_t)(aoff + asz);
+          }
+        } else {
+          mp_skip(&r, 0);
+        }
+      }
+      if (!nm || !nml || !has_args || !has_kseg) continue;
+      for (int k = k_first; k < k_last; k++) {
+        if (!b->k[k]) continue;
+        const char *ln = kmeta_loaded_name(b->m, k);
+        if (!mp_streq(nm, nml, ln)) continue;
+        const int sz_ok = !has_hidden && ((uint64_t)prev_end == kseg);
+        if (!bad && sz_ok && prev_end <= KMETA_MAX_BYTES) {
+          tmp.total_bytes = (uint16_t)prev_end;
+          tmp.ok = 1u;
+          b->kmeta[k] = tmp;
+        } else {
+          fprintf(stderr, "gpu: kmeta self-check rejected %s (bad=%d prev=%u kseg=%llu hidden=%d)\n",
+                  ln, bad, prev_end, (unsigned long long)kseg, has_hidden);
+        }
+      }
+    }
+  }
+}
+
+static void hsaco_parse_kmeta_mem(gpu_backend *b, const uint8_t *buf, size_t fsize, int k_first, int k_last) {
+  if (!buf || fsize < 64u) return;
+  if (memcmp(buf, "\x7f""ELF", 4u) != 0 || buf[4] != 2u || buf[5] != 1u) return;
+  const uint64_t shoff = rd_le64(buf + 40u);
+  const uint16_t shentsz = rd_le16(buf + 58u);
+  const uint16_t shnum = rd_le16(buf + 60u);
+  if (shentsz < 64u || shoff > fsize || (uint64_t)shnum * shentsz > fsize - shoff) return;
+  for (uint16_t s = 0u; s < shnum; s++) {
+    const uint8_t *sh = buf + shoff + (size_t)s * shentsz;
+    if (rd_le32(sh + 4u) != 7u) continue; /* SHT_NOTE */
+    const uint64_t noff = rd_le64(sh + 24u), nsz = rd_le64(sh + 32u);
+    if (noff > fsize || nsz > fsize - noff) continue;
+    size_t pos = 0u;
+    while (pos + 12u <= nsz) {
+      const uint8_t *np = buf + noff + pos;
+      const uint32_t namesz = rd_le32(np), descsz = rd_le32(np + 4u), ntype = rd_le32(np + 8u);
+      const size_t npad = ((size_t)namesz + 3u) & ~(size_t)3u;
+      const size_t dpad = ((size_t)descsz + 3u) & ~(size_t)3u;
+      if (12u + npad > nsz - pos || dpad > nsz - pos - 12u - npad) break;
+      if (ntype == 32u && namesz >= 6u && memcmp(np + 12u, "AMDGPU", 6u) == 0) {
+        hsaco_parse_amdhsa_msgpack(b, np + 12u + npad, descsz, k_first, k_last);
+      }
+      pos += 12u + npad + dpad;
+    }
+  }
+}
+
+static void hsaco_parse_kmeta_file(gpu_backend *b, const char *path, int k_first, int k_last) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return;
+  if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+  const long sz = ftell(f);
+  if (sz <= 64 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }
+  uint8_t *buf = malloc((size_t)sz);
+  if (!buf) { fclose(f); return; }
+  const size_t got = fread(buf, 1u, (size_t)sz, f);
+  fclose(f);
+  if (got == (size_t)sz) hsaco_parse_kmeta_mem(b, buf, got, k_first, k_last);
+  free(buf);
+}
 
 backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
   hip_load();
@@ -1612,8 +2487,8 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
   b->live_snap = -1;
   b->live_hbuf = -1;
   b->q16_ready_op = -1;
+  b->ds.frnn_prev_valid = 0;
   HIP(H.ModuleLoadData(&b->mod, img));
-  free(img);
   for (int i = 0; i < K_SALUKI_LORA_B; i++) {
     if (i == K_ATTN_LONG) { /* optional: a code object without it keeps the older attention kernels; heads of 128: ie_attn_long128 */
       b->has_long = H.ModuleGetFunction(&b->k[i], b->mod, m->hd == 128u ? "ie_attn_long128" : kname[i]) == 0;
@@ -1746,6 +2621,8 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     }
     HIP(H.ModuleGetFunction(&b->k[i], b->mod, kname[i]));
   }
+  hsaco_parse_kmeta_mem(b, (const uint8_t *)img, (size_t)sz, 0, K_SALUKI_LORA_B);
+  free(img);
   const char *saluki_path = getenv("IE_SALUKI_KERNELS");
   const char *saluki_mask = getenv("IE_SALUKI_KERNEL_MASK");
   const char *saluki_mask_hi = getenv("IE_SALUKI_KERNEL_MASK_HI");
@@ -1829,6 +2706,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
           fprintf(stderr, "gpu: enabled %s\n", kname[i]);
         }
       }
+      hsaco_parse_kmeta_file(b, saluki_path, K_SALUKI_LORA_B, K_SALUKI_END);
     } else {
       fprintf(stderr, "gpu: could not load optional kernels %s; using base module\n", saluki_path);
       b->saluki_mod = NULL;
@@ -1857,13 +2735,45 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       if (H.ModuleGetFunction(&fn, b->saluki_mod, kname[K_SALUKI_TOPK_R11]) == 0) {
         b->k[K_SALUKI_TOPK_R11] = fn;
         fprintf(stderr, "gpu: enabled %s\n", kname[K_SALUKI_TOPK_R11]);
+        if (tk_path) hsaco_parse_kmeta_file(b, tk_path, K_SALUKI_TOPK_R11, K_SALUKI_TOPK_R11 + 1);
       }
+    }
+  }
+  int req_glob_kv_mode = 0, req_ds_rope_otf = 0;
+  u32 req_glob_kv_rot = 0u;
+  if (m->arch == ARCH_INKLING2) {
+    const char *gkve = getenv("IE_INK_GLOB_KV");
+    if (gkve && *gkve && strcmp(gkve, "f16") != 0 && strcmp(gkve, "0") != 0) {
+      if (strcmp(gkve, "q4") == 0) {
+        req_glob_kv_mode = 2;
+        req_glob_kv_rot = 0u;
+      } else if (strcmp(gkve, "q4k") == 0 || strcmp(gkve, "q4krot") == 0) {
+        req_glob_kv_mode = 2;
+        req_glob_kv_rot = 1u;
+      } else if (strcmp(gkve, "q4rot") == 0) {
+        req_glob_kv_mode = 2;
+        req_glob_kv_rot = 3u;
+      } else {
+        ie_die("IE_INK_GLOB_KV: unsupported mode '%s' (expected f16, q4, q4k, q4rot)", gkve);
+      }
+    }
+    if (g->ds_feat >= 0 && m->ds) {
+      const char *droe = getenv("IE_DS_ROPE_OTF");
+      if (droe && *droe) req_ds_rope_otf = (droe[0] != '0');
+      else req_ds_rope_otf = (g->n_ctx >= 131072u) ? 1 : 0;
     }
   }
   {
     const char *ink_env = getenv("IE_INKLING_KERNELS");
-    uint64_t ink_mask = 0ULL, ink_mask2 = 0ULL;
-    ie_ink_parse_mask(&ink_mask, &ink_mask2);
+    uint64_t ink_mask = 0ULL, ink_mask2 = 0ULL, ink_mask3 = 0ULL;
+    ie_ink_parse_mask(&ink_mask, &ink_mask2, &ink_mask3);
+    if (m->arch == ARCH_INKLING2) {
+      if (req_glob_kv_mode == 2) ink_mask3 |= (1ULL << (153u - 128u));
+      if (req_ds_rope_otf) ink_mask3 |= (1ULL << (154u - 128u));
+      const char *mcse = getenv("IE_MOE_CACHE_SLOTS");
+      if (mcse && *mcse && (strcmp(mcse, "auto") == 0 || strcmp(mcse, "AUTO") == 0 || atoi(mcse) > 0))
+        ink_mask2 |= (1ULL << (91u - 64u));
+    }
     {
       const char *ge = getenv("IE_INKLING_GRAPH"), *pe = getenv("IE_INKLING_PWGRAPH");
       if (m->arch == ARCH_INKLING2 && ink_mask != 0ULL &&
@@ -1872,6 +2782,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     }
     b->ink_mask = ink_mask;
     b->ink_mask2 = ink_mask2;
+    b->ink_mask3 = ink_mask3;
     char ink_auto[1024];
     const char *ink_path = NULL;
     if (ink_env && *ink_env) {
@@ -1890,24 +2801,46 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
         ink_path = "ie_inkling_kernels.hsaco";
       }
     }
-    if (ink_path && (ink_mask | ink_mask2)) {
+    if (ink_path && (ink_mask | ink_mask2 | ink_mask3)) {
       if (H.ModuleLoad(&b->inkling_mod, ink_path) == 0) {
         for (int i = K_INK_REL_ATTN_PF; i < K_N; i++) {
           const u32 bi = (u32)ink_bit[i - K_INK_REL_ATTN_PF];
-          const int bit_on = (bi < 64u) ? (((ink_mask >> bi) & 1ULL) != 0ULL)
-                           : (bi < 128u) ? (((ink_mask2 >> (bi - 64u)) & 1ULL) != 0ULL) : 0;
+          const int bit_on = (bi < 64u)  ? (((ink_mask  >> bi) & 1ULL) != 0ULL)
+                           : (bi < 128u) ? (((ink_mask2 >> (bi - 64u)) & 1ULL) != 0ULL)
+                           : (bi < 192u) ? (((ink_mask3 >> (bi - 128u)) & 1ULL) != 0ULL) : 0;
           hipFunction_t fn;
           if (bit_on && H.ModuleGetFunction(&fn, b->inkling_mod, kname[i]) == 0) {
             b->k[i] = fn;
           }
         }
-        if (ink_mask2)
+        if (ink_mask3)
+          fprintf(stderr, "gpu: loaded %s (mask 0x%llx) mask2 0x%llx mask3 0x%llx\n", ink_path,
+                  (unsigned long long)ink_mask, (unsigned long long)ink_mask2, (unsigned long long)ink_mask3);
+        else if (ink_mask2)
           fprintf(stderr, "gpu: loaded %s (mask 0x%llx) mask2 0x%llx\n", ink_path,
                   (unsigned long long)ink_mask, (unsigned long long)ink_mask2);
         else
           fprintf(stderr, "gpu: loaded %s (mask 0x%llx)\n", ink_path, (unsigned long long)ink_mask);
+        hsaco_parse_kmeta_file(b, ink_path, K_INK_REL_ATTN_PF, K_N);
       } else {
         b->inkling_mod = NULL;
+      }
+    }
+    b->use_packed_args = (getenv("IE_HIP_PACKED_ARGS") && getenv("IE_HIP_PACKED_ARGS")[0] == '1');
+    {
+      u32 ok_cnt = 0u, loaded_cnt = 0u;
+      for (int i = 0; i < K_N; i++) {
+        if (!b->k[i]) continue;
+        loaded_cnt++;
+        if (b->kmeta[i].ok) ok_cnt++;
+      }
+      const char *pde = getenv("IE_HIP_PACKED_ARGS_DEBUG");
+      if ((pde && pde[0] == '1') || (b->use_packed_args && ok_cnt < loaded_cnt)) {
+        fprintf(stderr, "gpu: packed launch args %s (%u/%u loaded kernels verified)\n",
+                b->use_packed_args ? "enabled" : "disabled", ok_cnt, loaded_cnt);
+        for (int i = 0; i < K_N; i++)
+          if (b->k[i] && !b->kmeta[i].ok)
+            fprintf(stderr, "gpu: kmeta missing/unverified for %s -> legacy void** fallback\n", kmeta_loaded_name(b->m, i));
       }
     }
     if (m->arch == ARCH_INKLING2) {
@@ -1916,19 +2849,20 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       b->ink_ctx_host[0] = 0u;
       b->ink_ctx_host[1] = 0u;
       b->ink_ctx_host[2] = 0u;
+      HIP(H.Malloc((void **)&b->ink_sp_sync, 16u));
+      HIP(H.Memset(b->ink_sp_sync, 0, 16u));
       if (b->k[K_INK_SUBSPAN_GLUE_R8]) {
         const size_t sp_bytes = 64u * 16u * 80u;
         HIP(H.Malloc(&b->ink_sp_dev, sp_bytes));
         if (H.HostMalloc(&b->ink_sp_pin, sp_bytes, 0) != 0) b->ink_sp_pin = NULL;
-        for (u32 k = 0; k < 64u; k++) HIP(H.EventCreate(&b->ink_sp_ev[k]));
-        HIP(H.Malloc((void **)&b->ink_sp_sync, 16u));
-        HIP(H.Memset(b->ink_sp_sync, 0, 16u));
+        for (u32 k = 0; k < 64u; k++) HIP(ie_event_create_notiming(&b->ink_sp_ev[k]));
       }
       b->ink_toks_cap = g->T ? g->T : 16u;
+      b->ink_toks_slot = g->T > 512u ? g->T : 512u;
       HIP(H.Malloc((void **)&b->ink_toks_dev, (size_t)b->ink_toks_cap * 4u));
-      if (H.HostMalloc((void **)&b->ink_toks_pin, 16u * 512u * 4u, 0) != 0) b->ink_toks_pin = NULL;
+      if (H.HostMalloc((void **)&b->ink_toks_pin, (size_t)16u * b->ink_toks_slot * 4u, 0) != 0) b->ink_toks_pin = NULL;
       if (b->ink_toks_pin) {
-        for (u32 k = 0; k < 16u; k++) HIP(H.EventCreate(&b->ink_toks_ev[k]));
+        for (u32 k = 0; k < 16u; k++) HIP(ie_event_create_notiming(&b->ink_toks_ev[k]));
       }
       const u32 lc_tiles = (g->T + 63u) / 64u;
       const size_t lc_cb = (size_t)(4u * (lc_tiles ? lc_tiles : 1u)) * 4u;
@@ -1946,11 +2880,27 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     b->kvrowb = b->kvq4   ? (size_t)m->n_kv * (m->hd / 2u + m->hd / 8u)
                 : b->kvq8 ? (size_t)m->n_kv * (m->hd + m->hd / 16u)
                           : (size_t)m->n_kv * m->hd * b->kvb;
+    b->kv_glob_rowb = b->kvrowb;
+    if (req_glob_kv_mode == 2) {
+      if (b->kvq8 || b->kvq4 || b->kvb != 2u)
+        ie_die("IE_INK_GLOB_KV=q4*: requires f16 base KV module (IE_KV_Q8=0, IE_KV_Q4=0)");
+      if (m->hd != 128u || m->n_kv == 0u || m->n_head != m->n_kv * 3u)
+        ie_die("IE_INK_GLOB_KV=q4*: requires hd=128 and GQA 3:1 (hd=%u n_head=%u n_kv=%u)", m->hd, m->n_head, m->n_kv);
+      if (!b->k[K_INK_KV_STORE_GLOB_Q4_R14] || !b->k[K_INK_REL_ATTN_DEC_GLOB_Q4_R14] ||
+          !b->k[K_INK_REL_ATTN_VER_GLOB_Q4_R14] || !b->k[K_INK_REL_ATTN_PF_GLOB_Q4_R14])
+        ie_die("IE_INK_GLOB_KV=q4*: required ie_inkling_*_glob_q4_r14 kernels missing from ie_inkling_kernels.hsaco");
+      b->ink_glob_kv_mode = 2;
+      b->ink_glob_kv_rot = req_glob_kv_rot;
+      b->kv_glob_rowb = (size_t)m->n_kv * 72u;
+      b->base.kv_fmt_tag = (2u << 4) | b->ink_glob_kv_rot;
+      fprintf(stderr, "gpu: inkling2 global-only KV cache Q4_0 (rot=%u, %zu B/pos/layer vs %zu B f16; SWA stays f16)\n",
+              b->ink_glob_kv_rot, b->kv_glob_rowb, b->kvrowb);
+    }
     /* the disk prompt cache's rows (kv_io): the layers whose cache holds every position; a sliding window layer's ring
      * goes with the snapshot instead (gpu_snap_io) */
     u32 n_full_kv = 0;
     for (u32 i = 0; i < m->n_kvl; i++) n_full_kv += g->kv_len[i] >= g->n_ctx;
-    b->base.kv_rowb = b->kvrowb * 2u * n_full_kv;
+    b->base.kv_rowb = b->kv_glob_rowb * 2u * n_full_kv;
     const char *mk_env = getenv("IE_MK");
     const char *mki_env = m->arch == ARCH_INKLING2 ? getenv("IE_MK_INKLING") : NULL;
     const int mk_req = mki_env ? (mki_env[0] == '1') : (mk_env && mk_env[0] == '1');
@@ -2065,7 +3015,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     mk.pf = (getenv("IE_MK_PF") ? (u32)atoi(getenv("IE_MK_PF")) : pf_def) << 20;
     for (int r = 0; r < MK_RING; r++) {
       HIP(H.HostMalloc((void **)&mk.ring[r], (size_t)MK_CAP * MK_CMD, 0));
-      HIP(H.EventCreate(&mk.ev[r]));
+      HIP(ie_event_create_notiming(&mk.ev[r]));
     }
     mk.cmd = mk.ring[0];
     HIP(H.HostMalloc((void **)&mk.hflag, 64, 0));
@@ -2231,7 +3181,8 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
   HIP(H.Memset(b->gm_count, 0, 4u)); /* the kernel sets it back to 0 */
   {
     const size_t rcnt_b = (size_t)((m->dim + 31u) / 32u ? (m->dim + 31u) / 32u : 1u) * 4u;
-    const size_t qh_b = (size_t)(m->n_head ? m->n_head : 1u) * 4u;
+    const size_t qh_n = (size_t)(m->n_head + 2u * m->n_kv);
+    const size_t qh_b = (qh_n ? qh_n : 1u) * 4u;
     HIP(H.Malloc((void **)&b->ink_moe_rcount, rcnt_b));
     HIP(H.Memset(b->ink_moe_rcount, 0, rcnt_b));
     HIP(H.Malloc((void **)&b->ink_qhead_cnt, qh_b));
@@ -2248,13 +3199,13 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
    * (IE_ATT_MAX_SPLIT) never applies. ie_attn_long keeps its partial results (at_lstride per token) in the same area.
    * model.c sizes OP_ATTN's scores buffer, the part area of one token, the same way (ie_att_part_floats). */
   b->long_min = ie_att_long_min();
-  const int lw = b->has_long && !mk.on && ie_att_long_ok(m);
+  const int lw = b->has_long && !mk.on && m->arch != ARCH_INKLING2 && ie_att_long_ok(m);
   const uint32_t old_ctx = lw && b->long_min < g->n_ctx ? b->long_min : g->n_ctx;
   b->at_pstride = m->n_head * ie_att_max_split(old_ctx) * (m->hd + 2u);
   b->at_lstride = lw ? m->n_head * ie_atl_parts(g->n_ctx) * IE_ATL_PSZ : 0u;
   b->at_ltmax = 0u;
   b->at_part = NULL; /* allocated below, once the number of verify tokens is known */
-  b->attn_split = m->hd <= IE_ATT_MAX_HD && ie_att_max_split(old_ctx) <= IE_ATT_MAX_SPLIT && !(ae && !strcmp(ae, "old"));
+  b->attn_split = m->arch != ARCH_INKLING2 && m->hd <= IE_ATT_MAX_HD && ie_att_max_split(old_ctx) <= IE_ATT_MAX_SPLIT && !(ae && !strcmp(ae, "old"));
   { /* the scores buffer of OP_ATTN (model.c) holds the part area of one token */
     size_t sc = (size_t)-1;
     for (uint32_t i = 0; i < g->n_ops; i++)
@@ -2316,22 +3267,27 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     if (g->kv_len[i] == g->n_ctx) has_full_kv = 1;
   b->kv_grow = (!mk.on || m->arch == ARCH_INKLING2) && m->arch != ARCH_FLINT && (kv_all_full(g, m) || (m->arch == ARCH_INKLING2 && has_full_kv)) &&
                !(getenv("IE_KV_GROW") && getenv("IE_KV_GROW")[0] == '0');
+  if (b->ink_glob_kv_mode && !b->kv_grow) ie_die("IE_INK_GLOB_KV requires IE_KV_GROW!=0");
   if (b->kv_grow) {
     const uint32_t na = m->n_kvl ? m->n_kvl : 1u;
     b->kv_step = getenv("IE_KV_GROW_STEP") && atoi(getenv("IE_KV_GROW_STEP")) > 0 ? (u32)atoi(getenv("IE_KV_GROW_STEP")) : 4096u;
     b->kcl = calloc(na, sizeof(void *)), b->vcl = calloc(na, sizeof(void *));
     if (!b->kcl || !b->vcl) ie_die("out of memory");
-    /* a kernel may read a few rows past the last position (a tile of 32 keys): kv_slack rows are mapped beyond it */
-    const size_t va_rows = (size_t)g->n_ctx + KV_SLACK;
+    /* a kernel may read a few rows past the last position (a tile of 32 keys): kv_slack rows are mapped beyond it;
+     * R14 global Q4 kernels strictly bounds-check kp < pend <= n_ctx, so slack=0 / pad=0 avoids 64 MiB VMM rounding waste. */
+    const size_t kv_slack = b->ink_glob_kv_mode ? 0u : (size_t)KV_SLACK;
+    const size_t kv_pad = b->ink_glob_kv_mode ? 0u : 4u;
+    const size_t va_rows = (size_t)g->n_ctx + kv_slack;
     b->kv_grow = 2; /* separate arrays unless VMM works (for mixed archs like inkling2, SWA stays compact in b->us) */
     if (H.MemAddressReserve && H.MemCreate && H.MemMap && H.MemSetAccess && H.MemUnmap && H.MemRelease && H.MemAddressFree &&
         H.MemGetAllocationGranularity && !(getenv("IE_KV_VMM") && getenv("IE_KV_VMM")[0] == '0')) {
       hipMemAllocProp prop = {1 /* pinned */, 0, 1 /* device */, 0, NULL, 0, 0, 0};
       size_t gran = 0;
-      const size_t want = (getenv("IE_KV_CHUNK_MB") && atoi(getenv("IE_KV_CHUNK_MB")) > 0 ? (size_t)atoi(getenv("IE_KV_CHUNK_MB")) : 4u) << 20;
+      const size_t def_chunk_mb = (b->ink_glob_kv_mode && g->n_ctx >= 262144u) ? 8u : 4u;
+      const size_t want = (getenv("IE_KV_CHUNK_MB") && atoi(getenv("IE_KV_CHUNK_MB")) > 0 ? (size_t)atoi(getenv("IE_KV_CHUNK_MB")) : def_chunk_mb) << 20;
       if (H.MemGetAllocationGranularity(&gran, &prop, 0) == 0 && gran) {
         b->kv_chunk = (want + gran - 1) / gran * gran;
-        b->kv_va = (va_rows * b->kvrowb + 4 + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
+        b->kv_va = (va_rows * b->kv_glob_rowb + kv_pad + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
         int ok = 1;
         for (uint32_t i = 0; i < na * 2u && ok; i++) {
           if (g->kv_len[i >> 1] < g->n_ctx) continue;
@@ -2355,8 +3311,9 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     for (uint32_t i = 0; i < na; i++) {
       if (b->kv_grow == 1 && g->kv_len[i] == g->n_ctx) continue;
       const size_t rows = g->kv_len[i] < g->n_ctx ? (size_t)g->kv_len[i] : va_rows;
-      b->kcl[i] = slab_take(&b->us, rows * b->kvrowb + 4);
-      b->vcl[i] = slab_take(&b->us, rows * b->kvrowb + 4);
+      const size_t lrb = kv_layer_rowb(b, i);
+      b->kcl[i] = slab_take(&b->us, rows * lrb + 4);
+      b->vcl[i] = slab_take(&b->us, rows * lrb + 4);
     }
     b->kv_cap = 0;
     kv_ensure(b, 1u);
@@ -2391,10 +3348,12 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     b->at_lpack = !(getenv("IE_ATTN_LONG_PACK") && getenv("IE_ATTN_LONG_PACK")[0] == '0');
   }
   if (g->T > 1u && (b->attn_split || m->arch == ARCH_INKLING2)) {
-    const size_t po = b->attn_split ? (size_t)b->at_pstride * b->at_tmax : 0u;
-    const size_t pl = b->attn_split ? (size_t)b->at_lstride * b->at_ltmax : 0u;
+    const int is_ink = (m->arch == ARCH_INKLING2);
+    const size_t po = (!is_ink && b->attn_split) ? (size_t)b->at_pstride * b->at_tmax : 0u;
+    const size_t pl = (!is_ink && b->attn_split) ? (size_t)b->at_lstride * b->at_ltmax : 0u;
     const u32 ivmax = b->base.verify_max > 1u ? b->base.verify_max : 1u;
-    const size_t pi = (m->arch == ARCH_INKLING2 && ivmax > 1u) ? (size_t)ivmax * m->n_head * 64u * 130u : 0u;
+    const u32 islots = (ivmax > 1u) ? (ivmax > 16u ? ivmax : 16u) : (g->T >= 17u ? 16u : 8u); /* 12.19 MiB verify+PF_SPLIT+H04 */
+    const size_t pi = is_ink ? (size_t)islots * m->n_head * 64u * 130u : 0u;
     size_t pf = po > pl ? po : pl;
     if (pi > pf) pf = pi;
     if (pf) {
@@ -2476,12 +3435,25 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       } else
         b->ds.kv_grow = 0;
     }
+    u32 ds_glob_win = 0u;
+    if (m->arch == ARCH_INKLING2) {
+      const char *gwe = getenv("IE_DS_GLOB_WIN");
+      if (gwe && *gwe) {
+        long gv = strtol(gwe, NULL, 10);
+        if (gv > 0) ds_glob_win = (u32)gv;
+      }
+    }
     for (u32 il = 0; il < d->n_layer; il++) {
+      u32 win = d->l[il].win;
+      if (!win && ds_glob_win > 0u) win = ds_glob_win;
+      b->ds.kv_win[il] = win;
       u32 cap = full_cap;
-      if (d->l[il].win) {
-        u32 rw = 1u;
-        while (rw < d->l[il].win + (g->T > 64u ? g->T : 64u)) rw <<= 1u;
-        if (rw < cap) cap = rw;
+      if (win) {
+        const u32 pad = g->T > 64u ? g->T : 64u;
+        const uint64_t need = (uint64_t)win + (uint64_t)pad;
+        uint64_t rw = 1ull;
+        while (rw < (uint64_t)cap && rw < need) rw <<= 1u;
+        if (rw < (uint64_t)cap) cap = (u32)rw;
       }
       b->ds.kv_cap[il] = cap;
       const size_t lbytes = (size_t)cap * kvd * 2u;
@@ -2506,16 +3478,31 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       ds_kv_ensure(b, 1u); /* the first step now, with the GPU idle */
     }
     const u32 rn = g->n_ctx + 32u, h2 = d->hd / 2u;
-    float *hcos = ie_alloc((size_t)rn * h2 * 4u), *hsin = ie_alloc((size_t)rn * h2 * 4u);
-    for (u32 p = 0; p < rn; p++)
-      for (u32 j = 0; j < h2; j++) {
-        double th = (double)p * pow((double)d->rope_base, -2.0 * (double)j / (double)d->hd);
-        hcos[(size_t)p * h2 + j] = (float)cos(th);
-        hsin[(size_t)p * h2 + j] = (float)sin(th);
-      }
-    b->ds.rcos = upload(b, hcos, (size_t)rn * h2 * 4u);
-    b->ds.rsin = upload(b, hsin, (size_t)rn * h2 * 4u);
-    free(hcos), free(hsin);
+    if (req_ds_rope_otf && b->k[K_INK_DS_ROPE_FILL_R14]) {
+      double *hinv = ie_alloc((size_t)h2 * sizeof(double));
+      for (u32 j = 0; j < h2; j++) hinv[j] = pow((double)d->rope_base, -2.0 * (double)j / (double)d->hd);
+      b->ds.rope_inv_freq = upload(b, hinv, (size_t)h2 * sizeof(double));
+      free(hinv);
+      u32 rcap = g->T > B ? g->T : B;
+      if (rcap < 32u) rcap = 32u;
+      b->ds.rope_cap = rcap;
+      b->ds.rcos = slab_take(&b->us, (size_t)rcap * h2 * 4u);
+      b->ds.rsin = slab_take(&b->us, (size_t)rcap * h2 * 4u);
+      b->ds.rope_otf = 1;
+      fprintf(stderr, "gpu: dspark RoPE on-the-fly (cap=%u, %.2f MiB vs %.1f MiB static)\n",
+              rcap, 2.0 * (double)rcap * h2 * 4.0 / 1048576.0, 2.0 * (double)rn * h2 * 4.0 / 1048576.0);
+    } else {
+      float *hcos = ie_alloc((size_t)rn * h2 * 4u), *hsin = ie_alloc((size_t)rn * h2 * 4u);
+      for (u32 p = 0; p < rn; p++)
+        for (u32 j = 0; j < h2; j++) {
+          double th = (double)p * pow((double)d->rope_base, -2.0 * (double)j / (double)d->hd);
+          hcos[(size_t)p * h2 + j] = (float)cos(th);
+          hsin[(size_t)p * h2 + j] = (float)sin(th);
+        }
+      b->ds.rcos = upload(b, hcos, (size_t)rn * h2 * 4u);
+      b->ds.rsin = upload(b, hsin, (size_t)rn * h2 * 4u);
+      free(hcos), free(hsin);
+    }
     b->ds.fuse_w = upload(b, d->fuse_weight.f, d->fuse_weight.n * 4u);
     b->ds.mask_embed = upload(b, d->mask_embed.f, d->mask_embed.n * 4u);
     b->ds.out_norm = upload(b, d->out_norm.f, d->out_norm.n * 4u);
@@ -2561,6 +3548,9 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     HIP(H.Malloc((void **)&b->ds.ctx_q8, (size_t)g->T * b->ds.ctx_q8_str));
     HIP(H.Malloc((void **)&b->ds.ctx_kv, (size_t)g->T * b->ds.ctx_kv_str));
     HIP(H.Malloc((void **)&b->ds.frnn, (size_t)dim * 4u));
+    HIP(H.Malloc((void **)&b->ds.frnn_prev, (size_t)dim * 4u));
+    b->ds.frnn_prev_pos = 0u;
+    b->ds.frnn_prev_valid = 0;
     HIP(H.Malloc((void **)&b->ds.h, (size_t)B * b->ds.h_str));
     HIP(H.Malloc((void **)&b->ds.xn, (size_t)B * b->ds.h_str));
     HIP(H.Malloc((void **)&b->ds.xq, (size_t)B * b->ds.xq_str));
@@ -2598,6 +3588,11 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
             d->n_layer > 2 ? b->ds.kv_cap[2] : 0u, b->ds.head_rows,
             b->ds.head_kind == MAT_Q4K ? "Q4_K" : b->ds.head_kind == MAT_Q6K ? "Q6_K" : "Q8_0",
             b->ds.qkind == MAT_Q4K ? "Q4_K" : "Q8_0");
+    if (ds_glob_win > 0u)
+      fprintf(stderr, "gpu: dspark global window override IE_DS_GLOB_WIN=%u (wins %u/%u/%u, caps %u/%u/%u)\n",
+              ds_glob_win, b->ds.kv_win[0], d->n_layer > 1 ? b->ds.kv_win[1] : 0u,
+              d->n_layer > 2 ? b->ds.kv_win[2] : 0u, b->ds.kv_cap[0],
+              d->n_layer > 1 ? b->ds.kv_cap[1] : 0u, d->n_layer > 2 ? b->ds.kv_cap[2] : 0u);
     const char *sp_env = getenv("IE_DS_SPLIT");
     if (sp_env && sp_env[0] && sp_env[0] != '0') ds_split_setup(b);
     ds_shortlist_setup(b, hsaco);
@@ -2605,8 +3600,8 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     const int ov_req = ov_env ? atoi(ov_env) : 0;
     if ((ov_req == 1 || ov_req == 2) && H.StreamCreateWithFlags) {
       if (H.StreamCreateWithFlags(&b->ds.ctx_stream, 1u) == 0 && b->ds.ctx_stream) {
-        HIP(H.EventCreate(&b->ds.ev_feat_ready));
-        HIP(H.EventCreate(&b->ds.ev_ctx_done));
+        HIP(ie_event_create_notiming(&b->ds.ev_feat_ready));
+        HIP(ie_event_create_notiming(&b->ds.ev_ctx_done));
         b->ds.ov_mode = ov_req;
         fprintf(stderr, "gpu: dspark multi-stream ds_ctx overlap enabled (mode %d)\n", ov_req);
       }
@@ -2630,6 +3625,103 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     }
   }
   hs_setup(b, g);
+  ink_moe_cache_setup(b);
+  b->ink_iq3_flute = 0;
+  if (m->arch == ARCH_INKLING2 && !mk.on && ink_iq3_repack_want() &&
+      b->k[K_INK_REPACK_IQ3XXS_FLUTE_R10] &&
+      (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_R7]) &&
+      (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7]) &&
+      b->k[K_INK_MOE_SORT_COMPACT_R6] &&
+      b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10] && b->k[K_INK_MOE_PF_WORKLIST_R7] &&
+      !getenv("IE_GEMM_RQ_EXP_NO") && !getenv("IE_GEMV_NOBATCH") &&
+      (!getenv("IE_DUMP_GPU_OPS") || getenv("IE_DUMP_GPU_OPS")[0] == '0') &&
+      g->T <= 1024u && m->n_exp > 0u && m->n_exp <= 256u) {
+    int ok_all = 1;
+    u32 n_iq3_ops = 0u;
+    for (u32 i = 0; i < g->n_ops; i++) {
+      const op *o0 = &g->ops[i];
+      if (o0->kind != OP_GEMV_EXP || !o0->w || o0->w->kind != MAT_RAWQ || o0->w->sub != 18u) continue;
+      n_iq3_ops++;
+      const int host_ok = (b->moe_c_on && o0->layer >= 0 && (u32)o0->layer < m->n_layer && b->moe_c[o0->layer].active);
+      if ((o0->w->host && !host_ok) || !b->d[i].w1 || o0->w->rows == 0u || (o0->w->rows & 63u) != 0u ||
+          o0->w->nb < 8u || (o0->w->nb & 7u) != 0u || o0->w->n_exp == 0u || i + 1u >= g->n_ops) {
+        ok_all = 0;
+        break;
+      }
+      const op *o1 = &g->ops[i + 1u];
+      if (o1->kind != OP_SITU || o1->a != o0->b || o1->aoff != 0u || o0->boff != 0u ||
+          o1->nh != o0->nh || o1->b >= 0 || o1->qo < 0 || o1->n == 0u || (o1->n & 31u) != 0u ||
+          o0->w->rows != 2u * o1->n) {
+        ok_all = 0;
+        break;
+      }
+    }
+    if (ok_all && n_iq3_ops > 0u) {
+      void *uniq_ptr[64];
+      u32 uniq_rows[64], uniq_nb[64], uniq_qb[64], uniq_ne[64];
+      uint8_t uniq_host[64];
+      u32 n_uniq = 0u;
+      int any_host = 0;
+      size_t max_qb = 0u;
+      for (u32 ip = 0; ip < m->n_layer; ip++) {
+        const mat *w = &m->l[ip].egu;
+        const int host_ok = (b->moe_c_on && b->moe_c[ip].active);
+        if (w->kind != MAT_RAWQ || w->sub != 18u || (w->host && !host_ok) || w->n_exp == 0u) continue;
+        void *dev = w->d1;
+        if (!dev) {
+          for (u32 i = 0; i < g->n_ops && !dev; i++)
+            if (g->ops[i].w == w && b->d[i].w1) dev = b->d[i].w1;
+        }
+        if (!dev) { ok_all = 0; break; }
+        int seen = 0;
+        for (u32 k = 0; k < n_uniq; k++)
+          if (uniq_ptr[k] == dev) { seen = 1; break; }
+        if (seen) continue;
+        if (n_uniq >= 64u) { ok_all = 0; break; }
+        const u32 qb = (u32)ie_rawq_bytes(w);
+        uniq_ptr[n_uniq] = dev;
+        uniq_rows[n_uniq] = w->rows;
+        uniq_nb[n_uniq] = w->nb;
+        uniq_qb[n_uniq] = qb;
+        uniq_ne[n_uniq] = w->n_exp;
+        uniq_host[n_uniq] = (uint8_t)(w->host ? 1u : 0u);
+        if (w->host) any_host = 1;
+        if ((size_t)qb > max_qb) max_qb = (size_t)qb;
+        n_uniq++;
+      }
+      if (ok_all && n_uniq > 0u && max_qb > 0u) {
+        const u32 batch_e = 16u;
+        void *scratch = NULL, *dev_in = NULL;
+        HIP(H.Malloc(&scratch, (size_t)batch_e * max_qb));
+        if (any_host) HIP(H.Malloc(&dev_in, (size_t)batch_e * max_qb));
+        for (u32 u = 0; u < n_uniq; u++) {
+          u32 rows = uniq_rows[u], nb = uniq_nb[u], qb = uniq_qb[u], ne = uniq_ne[u];
+          const u32 gx = ((rows >> 2u) + 7u) / 8u;
+          for (u32 e0 = 0; e0 < ne; e0 += batch_e) {
+            u32 nb_e = ne - e0 < batch_e ? (ne - e0) : batch_e;
+            void *src_p = (char *)uniq_ptr[u] + (size_t)e0 * qb;
+            if (uniq_host[u]) {
+              HIP(H.MemcpyAsync(dev_in, src_p, (size_t)nb_e * qb, hipMemcpyHostToDevice, cur_stream));
+              void *ra[] = {&dev_in, &scratch, &rows, &nb, &qb, &nb_e};
+              HIP(H.ModuleLaunchKernel(b->k[K_INK_REPACK_IQ3XXS_FLUTE_R10], gx, nb_e, 1, 256, 1, 1, 0, cur_stream, ra, NULL));
+              HIP(H.MemcpyAsync(src_p, scratch, (size_t)nb_e * qb, hipMemcpyDeviceToHost, cur_stream));
+            } else {
+              void *ra[] = {&src_p, &scratch, &rows, &nb, &qb, &nb_e};
+              HIP(H.ModuleLaunchKernel(b->k[K_INK_REPACK_IQ3XXS_FLUTE_R10], gx, nb_e, 1, 256, 1, 1, 0, cur_stream, ra, NULL));
+              HIP(H.MemcpyAsync(src_p, scratch, (size_t)nb_e * qb, hipMemcpyDeviceToDevice, cur_stream));
+            }
+          }
+        }
+        HIP(H.DeviceSynchronize());
+        HIP(H.Free(scratch));
+        if (dev_in) HIP(H.Free(dev_in));
+        b->ink_iq3_flute = 1;
+        fprintf(stderr, "gpu: FLUTE IQ3_XXS repacked %u physical layers (0.0 MiB persistent VRAM%s)\n",
+                n_uniq, any_host ? ", incl. H38 host-pinned outer layers" : "");
+      }
+    }
+  }
+  if (b->moe_c_on) ink_moe_cache_prepop(b);
   HIP(H.EventCreate(&b->e0));
   HIP(H.EventCreate(&b->e1));
   const char *pe = getenv("IE_PROFILE");
@@ -2685,6 +3777,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     if (H.MemGetInfo(&fr, &tot) == 0)
       fprintf(stderr, "gpu: VRAM free after loading: %.0f MB of %.0f MB; %u device allocations\n", fr / 1e6, tot / 1e6, n_dalloc);
   }
+  route_stats_init(b);
   return &b->base;
 }
 
@@ -2707,7 +3800,8 @@ static int dbg_twice(int k) {
  * 6.5 ms, host 13 ms). A record ends the batch (HostQueue::loop flushes on the marker), so the queue thread retires
  * the earlier batches while the GPU runs the later ones. Not while a stream captures a graph (cur_stream set). */
 static hipEvent_t fl_ev;
-static int fl_every = -2; /* -2: uninit, -1: auto (128 in Inkling-2 T=1 gpu_step only), 0: off, >0: explicit global */
+static int fl_every = -2;     /* -2: uninit, -1: auto (Inkling-2 T=1), 0: off, >0: explicit global */
+static int fl_every_ver = -2; /* -2: uninit, 0: off, >0: Inkling-2 T=2..16 verify (R40 H19) */
 static unsigned fl_cnt;
 static void fl_mark(const gpu_backend *b) {
   if (fl_every == -2) {
@@ -2720,22 +3814,67 @@ static void fl_mark(const gpu_backend *b) {
       fl_every = -1;
     }
   }
-  const int lim = (fl_every < 0) ? ((b->in_step && b->m->arch == ARCH_INKLING2) ? 128 : 0) : fl_every;
+  if (fl_every_ver == -2) {
+    const char *ev = getenv("IE_FLUSH_EVERY_VER");
+    if (ev && *ev) {
+      fl_every_ver = atoi(ev);
+      if (fl_every_ver < 0) fl_every_ver = 0;
+      if (fl_every_ver) fprintf(stderr, "gpu: verify event record every %d launches (IE_FLUSH_EVERY_VER)\n", fl_every_ver);
+    } else {
+      fl_every_ver = 0;
+    }
+  }
+  int lim = 0;
+  if (fl_every >= 0) {
+    lim = fl_every;
+  } else if (b->m->arch == ARCH_INKLING2) {
+    if (b->in_step) lim = 64; /* R40 (H19): swept {0,32,48,64,96,128,192,256} with DisableTiming; peak at 64 */
+    else if (b->in_verify) lim = fl_every_ver;
+  }
   if (!lim || cur_stream || ++fl_cnt < (unsigned)lim) return;
   fl_cnt = 0;
-  if (!fl_ev) HIP(H.EventCreate(&fl_ev));
+  if (!fl_ev) HIP(ie_event_create_notiming(&fl_ev));
   HIP(H.EventRecord(fl_ev, NULL));
+}
+static inline void hip_launch_raw(gpu_backend *b, int k,
+                                  unsigned gx, unsigned gy, unsigned gz,
+                                  unsigned bx, unsigned by, unsigned bz,
+                                  unsigned lds_bytes, hipStream_t st, void **args) {
+  const k_arg_meta *km = &b->kmeta[k];
+  if (b->use_packed_args && km->ok) {
+    _Alignas(16) uint8_t kbuf[KMETA_MAX_BYTES];
+    size_t ksz = (size_t)km->total_bytes;
+    uint32_t prev = 0u;
+    const uint32_t na = km->n_args;
+    for (uint32_t i = 0u; i < na; i++) {
+      const uint32_t off = km->off[i];
+      const uint32_t sz = km->sz[i];
+      if (off > prev) memset(kbuf + prev, 0, off - prev);
+      if (sz == 8u) memcpy(kbuf + off, args[i], 8u);
+      else if (sz == 4u) memcpy(kbuf + off, args[i], 4u);
+      else memcpy(kbuf + off, args[i], sz);
+      prev = off + sz;
+    }
+    void *extra[5] = {
+      IE_HIP_LAUNCH_PARAM_BUFFER_POINTER, (void *)kbuf,
+      IE_HIP_LAUNCH_PARAM_BUFFER_SIZE,    (void *)&ksz,
+      IE_HIP_LAUNCH_PARAM_END
+    };
+    HIP(H.ModuleLaunchKernel(b->k[k], gx, gy, gz, bx, by, bz, lds_bytes, st, NULL, extra));
+  } else {
+    HIP(H.ModuleLaunchKernel(b->k[k], gx, gy, gz, bx, by, bz, lds_bytes, st, args, NULL));
+  }
 }
 static uint64_t launch_n; /* kernel launches issued so far */
 static void launch_grid(gpu_backend *b, int k, unsigned groups, unsigned T, unsigned lds_bytes, void **args) {
   if (mk_put(k, groups, T, lds_bytes, args)) { tr_mk_add(mk.n); return; }
   tr_event *event = tr_begin();
-  HIP(H.ModuleLaunchKernel(b->k[k], groups, T, 1, 256, 1, 1, lds_bytes, cur_stream, args, NULL));
+  hip_launch_raw(b, k, groups, T, 1, 256, 1, 1, lds_bytes, cur_stream, args);
   launch_n++;
   tr_launch(kname[k], groups, T, &tr_op, 1, event);
   if (dbg_twice(k)) {
     event = tr_begin();
-    HIP(H.ModuleLaunchKernel(b->k[k], groups, T, 1, 256, 1, 1, lds_bytes, cur_stream, args, NULL));
+    hip_launch_raw(b, k, groups, T, 1, 256, 1, 1, lds_bytes, cur_stream, args);
     launch_n++;
     tr_launch(kname[k], groups, T, &tr_op, 1, event);
   }
@@ -3410,7 +4549,8 @@ static unsigned gemv_groups(u32 rows) {
 #define KVROW(kvi, p) ((size_t)g->kv_off[(kvi)] + (p) % g->kv_len[(kvi)])
 /* The K (v = 0) or V cache of attention layer kvi, from its slot `row` (the layer's own array, or the one for all layers). */
 static inline char *kv_ptr(const gpu_backend *b, int v, uint32_t kvi, size_t row) {
-  if (b->kv_grow) return (char *)(v ? b->vcl[kvi] : b->kcl[kvi]) + row * b->kvrowb;
+  const size_t rb = kv_layer_rowb(b, kvi);
+  if (b->kv_grow) return (char *)(v ? b->vcl[kvi] : b->kcl[kvi]) + row * rb;
   return (char *)(v ? b->vc : b->kc) + ((size_t)b->g->kv_off[kvi] + row) * b->kvrowb;
 }
 /* IE_KV_GROW: back positions 0 .. need - 1 (and KV_SLACK rows more) of every attention layer with physical memory: whole
@@ -3422,7 +4562,9 @@ static void kv_ensure(gpu_backend *b, u32 need) {
   u32 want = need + b->kv_step - 1u;
   want = want / b->kv_step * b->kv_step;
   if (want > g->n_ctx) want = g->n_ctx;
-  size_t bytes = (((size_t)want + KV_SLACK) * b->kvrowb + 4 + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
+  const size_t kv_slack = b->ink_glob_kv_mode ? 0u : (size_t)KV_SLACK;
+  const size_t kv_pad = b->ink_glob_kv_mode ? 0u : 4u;
+  size_t bytes = (((size_t)want + kv_slack) * b->kv_glob_rowb + kv_pad + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
   if (bytes > b->kv_va) bytes = b->kv_va;
   const hipMemAllocProp prop = {1, 0, 1, 0, NULL, 0, 0, 0};
   const hipMemAccDesc acc = {1, 0, 3 /* read and write */};
@@ -3441,8 +4583,8 @@ static void kv_ensure(gpu_backend *b, u32 need) {
     b->kv_mapped = bytes;
   }
   /* positions the mapped chunks cover with the slack behind them */
-  const size_t rows = (bytes - 4) / b->kvrowb;
-  b->kv_cap = rows > KV_SLACK ? (u32)(rows - KV_SLACK < g->n_ctx ? rows - KV_SLACK : g->n_ctx) : 0u;
+  const size_t rows = bytes > kv_pad ? (bytes - kv_pad) / b->kv_glob_rowb : 0u;
+  b->kv_cap = rows > kv_slack ? (u32)(rows - kv_slack < g->n_ctx ? rows - kv_slack : g->n_ctx) : 0u;
 }
 
 /* IE_DS_KV_GROW: back positions 0 .. need - 1 of the drafter's global layers with physical memory, a step of kv_step
@@ -3491,7 +4633,9 @@ static size_t kv_shrink(gpu_backend *b, u32 keep) {
   uint64_t want = (uint64_t)(keep > 1u ? keep : 1u) + (uint64_t)b->kv_step;
   want = ((want + b->kv_step - 1u) / b->kv_step) * b->kv_step;
   if (want > g->n_ctx) want = g->n_ctx;
-  size_t bytes = (((size_t)want + KV_SLACK) * b->kvrowb + 4 + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
+  const size_t kv_slack = b->ink_glob_kv_mode ? 0u : (size_t)KV_SLACK;
+  const size_t kv_pad = b->ink_glob_kv_mode ? 0u : 4u;
+  size_t bytes = (((size_t)want + kv_slack) * b->kv_glob_rowb + kv_pad + b->kv_chunk - 1) / b->kv_chunk * b->kv_chunk;
   if (bytes > b->kv_va) bytes = b->kv_va;
   if (bytes >= b->kv_mapped) return 0;
   const size_t na = b->m->n_kvl ? b->m->n_kvl : 1u;
@@ -3508,8 +4652,8 @@ static size_t kv_shrink(gpu_backend *b, u32 keep) {
     }
   }
   b->kv_mapped = bytes;
-  const size_t rows = bytes > 4 ? (bytes - 4) / b->kvrowb : 0u;
-  b->kv_cap = rows > KV_SLACK ? (u32)(rows - KV_SLACK < g->n_ctx ? rows - KV_SLACK : g->n_ctx) : 0u;
+  const size_t rows = bytes > kv_pad ? (bytes - kv_pad) / b->kv_glob_rowb : 0u;
+  b->kv_cap = rows > kv_slack ? (u32)(rows - kv_slack < g->n_ctx ? rows - kv_slack : g->n_ctx) : 0u;
   return freed;
 }
 
@@ -3545,6 +4689,7 @@ static void gpu_kv_trim(backend *bk, uint32_t keep_pos) {
   if (!kv_shrink_on()) return;
   if (b->kv_grow != 1 && !(b->ds.ready && b->ds.kv_grow)) return;
   ds_ctx_drain(b);
+  snap_async_join(b);
   if (b->snap_cs) HIP(H.StreamSynchronize(b->snap_cs));
   HIP(H.StreamSynchronize(cur_stream));
   const size_t f0 = kv_shrink(b, keep_pos);
@@ -3755,12 +4900,14 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
             void *ta[] = {&w0, &w1, &Ab, &Bb, &rows, &nb, &bias, &Rb, &tn, &xs, &ys, &rs};
             if (mk_light()) { /* the megakernel: 4 rows per wave (fewer registers) */
               launch(b, K_GEMV_Q4K_TR, gr >= 253u && gr <= 256u ? 257u : gr, ta);
-            } else if (b->k[K_INK_GEMV_Q4K_HEAD_VER_R7] && !mk.rec && tn >= 2u && tn <= 8u &&
-                       rows > 0u && nb > 0u && (nb & 7u) == 0u) {
+            } else if ((b->k[K_INK_Q4K_HEAD_VER_NT_R10] || b->k[K_INK_GEMV_Q4K_HEAD_VER_R7]) && !mk.rec &&
+                       tn >= 2u && tn <= 8u && rows > 0u && nb > 0u && (nb & 7u) == 0u) {
               u32 unpad = 0u;
               float cap = 0.0f;
               void *qa[] = {&w0, &w1, &Ab, &Bb, &rows, &nb, &bias, &Rb, &tn, &xs, &ys, &rs, &unpad, &cap};
-              launch(b, K_INK_GEMV_Q4K_HEAD_VER_R7, gr >= 253u && gr <= 256u ? 257u : gr, qa);
+              const int kh = (b->k[K_INK_Q4K_HEAD_VER_NT_R10] && rows >= 65536u)
+                                 ? K_INK_Q4K_HEAD_VER_NT_R10 : K_INK_GEMV_Q4K_HEAD_VER_R7;
+              launch(b, kh, gr >= 253u && gr <= 256u ? 257u : gr, qa);
             } else if (tn >= ts2_min() && tn <= 8u) { /* 8 rows per wave, the tokens split over 2 waves: more waves in flight */
               launch(b, K_GEMV_Q4K_TS2, gr >= 253u && gr <= 256u ? 257u : gr, ta);
             } else if (tn <= 8u) { /* 8 rows per wave: half the activation loads per weight byte */
@@ -3799,6 +4946,11 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           if (gsel < 0) gsel = !getenv("IE_GEMM") ? 0 : getenv("IE_GEMM")[0] == 'h' ? 1 : 2;
           const int gk = gsel == 1 ? K_GEMM_H : gsel == 0 && nb % 4u == 0u ? K_GEMM_Q8R : K_GEMM_Q8;
           const u32 grows = gk == K_GEMM_Q8R ? 256u : 128u;
+          static int q8_swiz_mask = -1;
+          if (q8_swiz_mask < 0) {
+            const char *e = getenv("IE_INK_Q8_SWIZ_MASK");
+            q8_swiz_mask = (e && *e) ? atoi(e) : 3; /* bit0: med_swiz, bit1: 64x64_swiz */
+          }
           if ((int)T >= gmin) { /* many tokens: the matrix instruction (WMMA) */
             if (b->k[K_INK_GEMM_Q8_NB2] && !mk.rec && rows > 0u && nb == 2u) {
               launch(b, K_INK_GEMM_Q8_NB2, ((rows + 127u) / 128u) * ((T + 63u) / 64u), args);
@@ -3807,18 +4959,29 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
                 getenv("IE_INK_Q8_SMALL_R7") && getenv("IE_INK_Q8_SMALL_R7")[0] == '1') {
               const u32 gq = ((rows + 31u) / 32u) * ((T + 63u) / 64u);
               launch(b, K_INK_GEMM_Q8_SMALL_R7, gq >= 253u && gq <= 256u ? 257u : gq, args);
-            } else if (gk == K_GEMM_Q8R && (b->k[K_INK_GEMM_Q8_64X64_R9] || b->k[K_INK_GEMM_Q8_64X64_R7]) && !mk.rec &&
+            } else if (gk == K_GEMM_Q8R &&
+                ((b->k[K_INK_GEMM_Q8_64X64_SWIZ_R10] && (q8_swiz_mask & 2)) ||
+                 b->k[K_INK_GEMM_Q8_64X64_R9] || b->k[K_INK_GEMM_Q8_64X64_R7]) && !mk.rec &&
                 rows > 512u && rows <= 1024u && nb >= 4u && (nb & 3u) == 0u) {
               const u32 gq = ((rows + 63u) / 64u) * ((T + 63u) / 64u);
-              const int k64 = b->k[K_INK_GEMM_Q8_64X64_R9] ? K_INK_GEMM_Q8_64X64_R9 : K_INK_GEMM_Q8_64X64_R7;
+              const int k64 = (b->k[K_INK_GEMM_Q8_64X64_SWIZ_R10] && (q8_swiz_mask & 2))
+                                  ? K_INK_GEMM_Q8_64X64_SWIZ_R10
+                                  : (b->k[K_INK_GEMM_Q8_64X64_R9] ? K_INK_GEMM_Q8_64X64_R9 : K_INK_GEMM_Q8_64X64_R7);
               launch(b, k64, gq >= 253u && gq <= 256u ? 257u : gq, args);
             } else if (gk == K_GEMM_Q8R && b->k[K_INK_GEMM_Q8_SMALL] && !mk.rec &&
                 rows > 0u && rows <= 384u && nb >= 4u && (nb & 3u) == 0u && nb <= 65536u && xs <= 0x0FFFFFFFu) {
               const u32 gq = ((rows + 15u) / 16u) * ((T + 15u) / 16u);
               launch(b, K_INK_GEMM_Q8_SMALL, gq >= 253u && gq <= 256u ? 257u : gq, args);
-            } else if (gk == K_GEMM_Q8R && (b->k[K_INK_GEMM_Q8_MED_R9] || b->k[K_INK_GEMM_Q8_MED_R7]) && !mk.rec &&
+            } else if (gk == K_GEMM_Q8R && b->k[K_INK_GEMM_Q8_FP8_MED_R10] && (ink_fp8_mode() & 1) && !mk.rec &&
+                T >= 64u && rows >= 512u && nb >= 4u && (nb & 3u) == 0u) {
+              launch(b, K_INK_GEMM_Q8_FP8_MED_R10, ((rows + 127u) / 128u) * ((T + 63u) / 64u), args);
+            } else if (gk == K_GEMM_Q8R &&
+                ((b->k[K_INK_GEMM_Q8_MED_SWIZ_R10] && (q8_swiz_mask & 1)) ||
+                 b->k[K_INK_GEMM_Q8_MED_R9] || b->k[K_INK_GEMM_Q8_MED_R7]) && !mk.rec &&
                 rows >= 512u && nb >= 4u && (nb & 3u) == 0u) {
-              const int km = b->k[K_INK_GEMM_Q8_MED_R9] ? K_INK_GEMM_Q8_MED_R9 : K_INK_GEMM_Q8_MED_R7;
+              const int km = (b->k[K_INK_GEMM_Q8_MED_SWIZ_R10] && (q8_swiz_mask & 1))
+                                 ? K_INK_GEMM_Q8_MED_SWIZ_R10
+                                 : (b->k[K_INK_GEMM_Q8_MED_R9] ? K_INK_GEMM_Q8_MED_R9 : K_INK_GEMM_Q8_MED_R7);
               launch(b, km, ((rows + 127u) / 128u) * ((T + 63u) / 64u), args);
             } else if (gk == K_GEMM_Q8R && b->k[K_INK_GEMM_Q8_MED_R2] && !mk.rec &&
                 rows >= 512u && nb >= 4u && (nb & 3u) == 0u) {
@@ -3860,6 +5023,11 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
               fprintf(stderr, "gemm check %ux%u T=%u: max |gemm - gemv| / max |gemv| = %.2e\n", rows, o->w->cols, T, mx > 0 ? d / mx : 0);
               free(y1), free(y2);
             }
+          } else if (b->k[K_INK_GEMV_Q8_HT_R10] && !mk.rec && m->arch == ARCH_INKLING2 &&
+                     o->layer >= (int)m->loop_start && o->layer < (int)m->loop_end &&
+                     T >= 2u && T <= 16u && rows >= 256u && nb >= 8u && (nb & 7u) == 0u) {
+            const u32 gr = (rows + 31u) / 32u;
+            launch(b, K_INK_GEMV_Q8_HT_R10, gr >= 253u && gr <= 256u ? 257u : gr, args);
           } else if (b->k[K_INK_GEMV_Q8_BW_R7] && !mk.rec && T >= 2u && T <= 16u &&
                      rows >= 256u && nb >= 8u && (nb & 7u) == 0u) {
             const u32 gr = (rows + 31u) / 32u;
@@ -3889,6 +5057,13 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           launch(b, K_INK_GEMV_Q8_NB2, (rows + 63u) / 64u, args);
         } else if (b->k[K_INK_GEMV_Q8_SMALL] && mk_ok_k(K_INK_GEMV_Q8_SMALL) && rows > 0u && rows <= 64u && nb >= 32u) {
           launch(b, K_INK_GEMV_Q8_SMALL, rows, args);
+        } else if (b->k[K_INK_GEMV_Q8_HT_R10] && !mk.rec && !NW && m->arch == ARCH_INKLING2 &&
+                   o->layer >= (int)m->loop_start && o->layer < (int)m->loop_end &&
+                   rows >= 128u && rows <= 8192u && nb >= 8u && (nb & 7u) == 0u) {
+          u32 one = 1u, z0 = 0u;
+          void *ba[] = {&w0, &w1, &A, &B, &rows, &nb, &bias, &R, &one, &z0, &z0, &z0};
+          const u32 gr = (rows + 31u) / 32u;
+          launch(b, K_INK_GEMV_Q8_HT_R10, gr >= 253u && gr <= 256u ? 257u : gr, ba);
         } else if (q8_bw_t1 && b->k[K_INK_GEMV_Q8_BW_R7] && !mk.rec && !NW &&
                    rows >= 128u && rows <= 8192u && nb >= 8u && (nb & 7u) == 0u) {
           u32 one = 1u, z0 = 0u;
@@ -3947,6 +5122,13 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
               u32 TT = T;
               void *sa[] = {&w0, &A, &B, &rows, &cols, &xs, &ys, &TT};
               launch(b, K_SALUKI_LORA_A_T4, gx, sa);
+            } else if (b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] && !mk.rec && rows > 0u && cols >= 16u && (cols & 15u) == 0u &&
+                       (xs & 15u) == 0u && (((uintptr_t)w0) & 15u) == 0u && (((uintptr_t)A) & 15u) == 0u) {
+              u32 TT = T, K0 = 0u, ost0 = 0u;
+              float sc0 = 0.0f;
+              void *nul = NULL;
+              void *sa[] = {&w0, &A, &B, &rows, &cols, &bias, &R, &xs, &ys, &rs, &TT, &K0, &nul, &sc0, &nul, &ost0, &nul};
+              launch_t(b, K_INK_GEMM_F32_ROUTER_BF16_R10, (rows + 31u) / 32u, (T + 15u) / 16u, sa);
             } else if (b->k[K_INK_ROUTER_ROUTE_PF_R7] && !mk.rec && rows > 0u && cols > 0u && (cols & 3u) == 0u &&
                        (xs & 15u) == 0u && (((uintptr_t)w0) & 15u) == 0u && (((uintptr_t)A) & 15u) == 0u) {
               u32 TT = T, K0 = 0u, ost0 = 0u;
@@ -4240,17 +5422,18 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
         u32 ls = g->bufs[o->a].stride, ost = g->bufs[o->b].stride;
         void *args[] = {&A, &n, &K, &EB, &sc, &B, &ls, &ost};
         launch_t(b, K_MOE_ROUTE, 1, T, args);
+        if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o, B, ost, T);
         if (T > 1u) { /* the pairs by expert for ie_gexp_t */
           u32 ne = m->n_exp;
           if (T * K > IE_MS_MAXP || ne > 1024u) ie_die("flint chunk: %u pairs (at most %u), %u experts (at most 1024)", T * K, IE_MS_MAXP, ne);
           const u32 slot_max = ink_moe_slot_max(b);
-          const int skip_sort = T >= 2u && T <= 16u && T <= slot_max && b->ink_moe_all_slot && !mk.rec &&
+          const int skip_sort = T >= 2u && T <= 16u && T <= slot_max && b->ink_moe_all_slot && !b->ink_iq3_flute && !mk.rec &&
                                 b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
           const u32 mp_a = T * K, mp_b = ne + (T * K) / 4u;
           const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
           if (skip_sort) {
             /* direct per-slot R6 MoE kernels read route directly without sort */
-          } else if (T >= 2u && T <= 16u && !mk.rec && b->k[K_INK_MOE_SORT_ADAP_R8] &&
+          } else if (T >= 2u && T <= 16u && !mk.rec && !b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] &&
                      ink_moe_adap_mode() == 1 && b->ms_packs1 && b->ms_npacks1 && b->ms_packsM && b->ms_npacksM &&
                      ne <= 256u && T * K <= 4096u && max_packs <= 512u) {
             void *sa[] = {&B, &ost, &T, &K, &ne, &b->ms_offs, &b->ms_list,
@@ -4275,6 +5458,8 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
       case OP_GEMV_EXP: {
         const mat *w = o->w;
         if (w->kind == MAT_RAWQ) {
+          if (b->ink_iq3_flute && w->sub == 18u)
+            ie_die("OP_GEMV_EXP: FLUTE IQ3_XXS repacked weights reached AoS fallback (T=%u)", T);
           u32 rows = w->rows, nb = w->nb, as = o->astr, bs = o->bstr, type = w->sub, q_bytes = (u32)ie_rawq_bytes(w);
           if (T > 1u) {
             if (g->bufs[o->b].rows && T > g->bufs[o->b].rows)
@@ -4321,11 +5506,13 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           } else {
             void *args[] = {&w1, &A, &B, &rows, &nb, &C, &q_bytes, &as, &bs, &type};
             const int kg = (type == 18u && rows > 0u && nb >= 8u && (nb & 7u) == 0u)
-                               ? ((b->k[K_INK_GEXP_RAW_IQ3XXS_R3] && mk_ok_k(K_INK_GEXP_RAW_IQ3XXS_R3))
-                                      ? K_INK_GEXP_RAW_IQ3XXS_R3
-                                      : (b->k[K_INK_GEXP_RAW_IQ3XXS] && mk_ok_k(K_INK_GEXP_RAW_IQ3XXS))
-                                            ? K_INK_GEXP_RAW_IQ3XXS
-                                            : -1)
+                               ? ((b->k[K_INK_GEXP_IQ3XXS_T1_NT_R10] && !mk.rec)
+                                      ? K_INK_GEXP_IQ3XXS_T1_NT_R10
+                                      : (b->k[K_INK_GEXP_RAW_IQ3XXS_R3] && mk_ok_k(K_INK_GEXP_RAW_IQ3XXS_R3))
+                                            ? K_INK_GEXP_RAW_IQ3XXS_R3
+                                            : (b->k[K_INK_GEXP_RAW_IQ3XXS] && mk_ok_k(K_INK_GEXP_RAW_IQ3XXS))
+                                                  ? K_INK_GEXP_RAW_IQ3XXS
+                                                  : -1)
                                : -1;
             if (kg >= 0) {
               launch_t(b, kg, (rows + 31u) / 32u, o->nh, args);
@@ -4354,7 +5541,12 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           if (gx_wmma(b, T, nb, kind) && !getenv("IE_GEMM_KX_NOE")) {
             const u32 mt_a = T * K, mt_b = m->n_exp + (T * K) / 64u;
             const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
-            if ((b->k[K_INK_GEMM_IQ4NL_EXP_R9] || b->k[K_INK_GEMM_IQ4NL_EXP_R7]) && b->k[K_INK_MOE_PF_WORKLIST_R7] && !mk.rec &&
+            if (b->k[K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10] && (ink_fp8_mode() & 2) && !mk.rec &&
+                kind == (u32)MAT_IQ4NL && nb >= 4u && (nb & 3u) == 0u) {
+              launch_t(b, K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10, (rows + 127u) / 128u, m->n_exp, ta);
+            } else if (b->k[K_INK_GEMM_IQ4NL_EXPMAJ_R10] && !mk.rec && kind == (u32)MAT_IQ4NL && nb > 0u && (nb & 3u) == 0u) {
+              launch_t(b, K_INK_GEMM_IQ4NL_EXPMAJ_R10, (rows + 127u) / 128u, m->n_exp, ta);
+            } else if ((b->k[K_INK_GEMM_IQ4NL_EXP_R9] || b->k[K_INK_GEMM_IQ4NL_EXP_R7]) && b->k[K_INK_MOE_PF_WORKLIST_R7] && !mk.rec &&
                 kind == (u32)MAT_IQ4NL && nb > 0u && (nb & 3u) == 0u &&
                 b->ms_packs && b->ms_npacks && m->n_exp <= 256u && T * K <= 8192u && max_tiles <= 512u) {
               void *t7[] = {&w0, &w1, &A, &B, &rows, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks, &qwn, &qsn, &xs, &bs, &xdiv, &kind, &nul, &zero};
@@ -4438,13 +5630,15 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
         }
         void *args[] = {&w0, &w1, &A, &B, &rows, &nb, &C, &qwn, &qsn, &as, &bs, &kind, &two_off};
         const int kg4 = (kind == (u32)MAT_IQ4NL)
-                            ? ((b->k[K_INK_GEXP_IQ4NL_BW_T1_R7] && !mk.rec)
-                                   ? K_INK_GEXP_IQ4NL_BW_T1_R7
-                                   : (b->k[K_INK_GEXP_IQ4NL_R3] && mk_ok_k(K_INK_GEXP_IQ4NL_R3))
-                                         ? K_INK_GEXP_IQ4NL_R3
-                                         : (b->k[K_INK_GEXP_IQ4NL] && mk_ok_k(K_INK_GEXP_IQ4NL))
-                                               ? K_INK_GEXP_IQ4NL
-                                               : -1)
+                            ? ((b->k[K_INK_GEXP_IQ4NL_T1_NT_R10] && !mk.rec)
+                                   ? K_INK_GEXP_IQ4NL_T1_NT_R10
+                                   : (b->k[K_INK_GEXP_IQ4NL_BW_T1_R7] && !mk.rec)
+                                         ? K_INK_GEXP_IQ4NL_BW_T1_R7
+                                         : (b->k[K_INK_GEXP_IQ4NL_R3] && mk_ok_k(K_INK_GEXP_IQ4NL_R3))
+                                               ? K_INK_GEXP_IQ4NL_R3
+                                               : (b->k[K_INK_GEXP_IQ4NL] && mk_ok_k(K_INK_GEXP_IQ4NL))
+                                                     ? K_INK_GEXP_IQ4NL
+                                                     : -1)
                             : -1;
         if (kg4 >= 0) {
           launch_t(b, kg4, (rows + 31u) / 32u, o->nh, args);
@@ -4466,6 +5660,8 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
         break;
       }
       case OP_MOE_SUM: {
+        if (g->bufs[o->a].rows && T > g->bufs[o->a].rows)
+          ie_die("OP_MOE_SUM: exp_down capped to %u rows (T=%u) without bit 113 scatter", g->bufs[o->a].rows, T);
         u32 K = o->nh;
         u32 ys = g->bufs[o->a].stride, os = g->bufs[o->b].stride, rts = g->bufs[o->c].stride, rs = o->res >= 0 ? g->bufs[o->res].stride : 0u;
         void *args[] = {&A, &B, &C, &R, &n, &K, &ys, &os, &rts, &rs};
@@ -4803,7 +5999,13 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
       }
       case OP_KV: {
         const u32 kvi = m->arch == ARCH_INKLING2 ? o->kvi : m->l[o->layer].kvi;
-        if (T > 1u || b->kvq8 || b->kvq4) {
+        if (b->ink_glob_kv_mode == 2 && g->kv_len[kvi] >= g->n_ctx) {
+          void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
+          u32 kvlen = g->kv_len[kvi], ks = g->bufs[o->a].stride, vs = g->bufs[o->b].stride;
+          u32 TT = T, rot = b->ink_glob_kv_rot;
+          void *args[] = {&A, &B, &kc, &vc, &pos, &TT, &kvlen, (void *)&nkv, (void *)&hd, &ks, &vs, &rot};
+          launch_t(b, K_INK_KV_STORE_GLOB_Q4_R14, nkv, T, args);
+        } else if (T > 1u || b->kvq8 || b->kvq4) {
           void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
           u32 kvlen = g->kv_len[kvi], ks = g->bufs[o->a].stride, vs = g->bufs[o->b].stride;
           void *args[] = {&A, &B, &kc, &vc, (void *)&hd, (void *)&nkv, &pos, &kvlen, &ks, &vs};
@@ -5107,6 +6309,8 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
         break;
       }
       case OP_VCLIP: {
+        if (o->b >= 0 && g->bufs[o->b].rows && T > g->bufs[o->b].rows)
+          ie_die("OP_VCLIP: capped buffer %s (%u rows) hit at T=%u", g->bufs[o->b].name, g->bufs[o->b].rows, T);
         u32 nh = o->nh, qhd = o->qstr, norope = o->norope, win = o->win;
         u32 as = g->bufs[o->a].stride, bs = g->bufs[o->b].stride;
         float clamp = o->clamp, esc = o->escale;
@@ -5163,6 +6367,8 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
         break;
       }
       case OP_SCONV: {
+        if (o->b >= 0 && g->bufs[o->b].rows && T > g->bufs[o->b].rows)
+          ie_die("OP_SCONV: capped buffer %s (%u rows) hit at T=%u", g->bufs[o->b].name, g->bufs[o->b].rows, T);
         float *ring = b->sc_ring + (size_t)o->scoff * 4u;
         u32 nh = o->nh, as = g->bufs[o->a].stride, cs = o->c >= 0 ? g->bufs[o->c].stride : 0u, bs = g->bufs[o->b].stride;
         float esc = o->escale;
@@ -5226,6 +6432,42 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
       case OP_REL_ATTN: {
         u32 kvi = o->kvi, kvlen = g->kv_len[kvi], nh = o->nh, d_rel = o->qstr, relext = m->rel_extent, win = o->win;
         void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
+        if (b->ink_glob_kv_mode == 2 && win == 0u && kvlen >= g->n_ctx) {
+          u32 rot = b->ink_glob_kv_rot;
+          if (T == 1u) {
+            u32 np = pos + 1u;
+            u32 max_sp = (u32)(g->bufs[o->c].size / ((size_t)nh * (hd + 2u) * 4u));
+            if (max_sp > 64u) max_sp = 64u;
+            if (max_sp == 0u) max_sp = 1u;
+            u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
+            if (nsplit > max_sp) nsplit = max_sp;
+            u32 ch = (np + nsplit - 1u) / nsplit;
+            nsplit = (np + ch - 1u) / ch;
+            void *ag_nul = NULL, *oq_nul = NULL;
+            void *ga[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &B, &pos, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
+                          &relext, &win, &nsplit, &ch, &b->at_count, &ag_nul, &oq_nul, &rot};
+            launch(b, K_INK_REL_ATTN_DEC_GLOB_Q4_R14, nkv * nsplit, ga);
+          } else {
+            u32 qs = g->bufs[o->a].stride, rs = g->bufs[o->nq].stride, ss = g->bufs[o->res].stride, os = g->bufs[o->b].stride;
+            u32 TT = T;
+            if (T <= 16u && b->at_part && b->at_count) {
+              u32 np = pos + T;
+              u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+              if (nsplit > 64u) nsplit = 64u;
+              while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+              void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+              u32 gs0 = 0u, oqs0 = 0u;
+              void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                            &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag_nul, &oq_nul, &gs0, &oqs0, &rot};
+              launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_R14, nkv * nsplit, (T + 3u) / 4u, va);
+            } else {
+              void *pa[] = {&A, &kc, &vc, &NQ, &w0, &R, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
+                            &relext, &win, &qs, &rs, &ss, &os, &rot};
+              launch_t(b, K_INK_REL_ATTN_PF_GLOB_Q4_R14, (T + 31u) / 32u, nkv, pa);
+            }
+          }
+          break;
+        }
         if (T > 1u) {
           u32 qs = g->bufs[o->a].stride, rs = g->bufs[o->nq].stride, ss = g->bufs[o->res].stride, os = g->bufs[o->b].stride;
           u32 TT = T;
@@ -5254,17 +6496,25 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
             void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
                           &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count};
             launch_t(b, K_INK_REL_ATTN_VER_SWA_QTILE_R7, nkv * nsplit, (T + 3u) / 4u, va);
-          } else if (b->k[K_INK_REL_ATTN_VER_GLOB_WMMA_R7] && !b->kvq8 && !b->kvq4 && !mk.rec &&
-              win == 0u && pos >= 2048u && T >= 2u && T <= 8u && hd == 128u && d_rel == 16u && nkv > 0u &&
+          } else if (b->k[K_INK_REL_ATTN_VER_GLOB_WMMA_R7] && !b->kvq8 && !b->kvq4 && !mk.rec && !b->tr_on &&
+              win == 0u && pos >= 2048u && T >= 2u && T <= (ink_ver_slice8() ? 16u : 8u) && hd == 128u && d_rel == 16u && nkv > 0u &&
               nh == nkv * 3u && kvlen > 0u && ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
-            u32 np = pos + T;
-            u32 nsplit = (np >= 256u && b->at_part && b->at_count) ? (np + 255u) / 256u : 1u;
-            if (nsplit > 64u) nsplit = 64u;
-            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
-            void *part_p = (void *)b->at_part;
-            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
-                          &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count};
-            launch_t(b, K_INK_REL_ATTN_VER_GLOB_WMMA_R7, nkv * nsplit, 1u, va);
+            for (u32 s0 = 0u; s0 < T; s0 += 8u) {
+              u32 sT = (T - s0 > 8u) ? 8u : (T - s0);
+              u32 spos = pos + s0;
+              void *A_s = (char *)A + (size_t)s0 * qs;
+              void *NQ_s = (char *)NQ + (size_t)s0 * rs;
+              void *R_s = (char *)R + (size_t)s0 * ss;
+              void *B_s = (char *)B + (size_t)s0 * os;
+              u32 np = spos + sT;
+              u32 nsplit = (np >= 256u && b->at_part && b->at_count) ? (np + 255u) / 256u : 1u;
+              if (nsplit > 64u) nsplit = 64u;
+              while (nsplit > 1u && (size_t)sT * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+              void *part_p = (void *)b->at_part;
+              void *va[] = {&A_s, &kc, &vc, &NQ_s, &w0, &R_s, &part_p, &B_s, &spos, &sT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                            &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count};
+              launch_t(b, K_INK_REL_ATTN_VER_GLOB_WMMA_R7, nkv * nsplit, 1u, va);
+            }
           } else if (b->k[K_INK_REL_ATTN_VER_QTILE_R6] && !b->kvq8 && !b->kvq4 && mk_ok_k(K_INK_REL_ATTN_VER_QTILE_R6) &&
               win == 0u && pos >= ink_qtile_min() && T >= 2u && T <= 16u && hd == 128u && d_rel == 16u && nkv > 0u &&
               nh == nkv * 3u && kvlen > 0u && ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
@@ -5300,14 +6550,27 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
                             &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count};
               launch_t(b, K_INK_REL_ATTN_PF_SPLIT_R7, ntile * nsplit, nkv, va);
             } else {
-              const int ka = b->k[K_INK_REL_ATTN_PF_R7] ? K_INK_REL_ATTN_PF_R7
-                           : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF);
+              const int ka = b->k[K_INK_REL_ATTN_PF_SB_R10] ? K_INK_REL_ATTN_PF_SB_R10
+                           : (b->k[K_INK_REL_ATTN_PF_R7] ? K_INK_REL_ATTN_PF_R7
+                           : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF));
               launch_t(b, ka, ntile, nkv, args);
             }
-          } else if ((b->k[K_INK_REL_ATTN_PF_R7] || b->k[K_INK_REL_ATTN_PF_R3] || b->k[K_INK_REL_ATTN_PF]) &&
+          } else if (b->k[K_INK_REL_ATTN_PF_FAR_R10] && b->k[K_INK_REL_ATTN_PF_NEAR_MERGE_R10] &&
+              !b->kvq8 && !b->kvq4 && !mk.rec && win == 0u && pos >= 2048u && T > 1u &&
+              hd == 128u && d_rel == 16u && nkv > 0u && nh == nkv * 3u && kvlen > 0u &&
+              b->at_part && (size_t)T * nh * 130u <= b->at_part_floats) {
+            void *part_p = (void *)b->at_part;
+            const u32 ntile = (T + 31u) / 32u;
+            void *fa[] = {&A, &kc, &vc, &R, &part_p, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &relext, &qs, &ss};
+            void *na[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                          &d_rel, &relext, &win, &qs, &rs, &ss, &os};
+            launch_t(b, K_INK_REL_ATTN_PF_FAR_R10, ntile, nkv, fa);
+            launch_t(b, K_INK_REL_ATTN_PF_NEAR_MERGE_R10, ntile, nkv, na);
+          } else if ((b->k[K_INK_REL_ATTN_PF_SB_R10] || b->k[K_INK_REL_ATTN_PF_R7] || b->k[K_INK_REL_ATTN_PF_R3] || b->k[K_INK_REL_ATTN_PF]) &&
               !b->kvq8 && !b->kvq4 && !mk.rec && hd == 128u && d_rel == 16u && nkv > 0u && nh == nkv * 3u && kvlen > 0u) {
-            const int ka = b->k[K_INK_REL_ATTN_PF_R7] ? K_INK_REL_ATTN_PF_R7
-                         : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF);
+            const int ka = b->k[K_INK_REL_ATTN_PF_SB_R10] ? K_INK_REL_ATTN_PF_SB_R10
+                         : (b->k[K_INK_REL_ATTN_PF_R7] ? K_INK_REL_ATTN_PF_R7
+                         : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF));
             launch_t(b, ka, (T + 31u) / 32u, nkv, args);
           } else {
             launch_t(b, K_REL_ATTN_PF, (T + 7u) / 8u, nh, args);
@@ -5325,6 +6588,16 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
             void *ca[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &B, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
                           &relext, &win, &nsplit, &b->at_count, &b->ink_ctx_dev};
             launch(b, K_INK_REL_ATTN_DEC_CTX_R2, nkv * nsplit, ca);
+          } else if (win == 0u && b->k[K_INK_REL_ATTN_DEC_GLOB_R11] && !b->kvq8 && !b->kvq4 && !mk.rec &&
+                     hd == 128u && d_rel == 16u && nkv > 0u && nh == 3u * nkv && kvlen > 0u) {
+            u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
+            if (nsplit > max_sp) nsplit = max_sp;
+            u32 ch = (np + nsplit - 1u) / nsplit;
+            nsplit = (np + ch - 1u) / ch;
+            void *ag_nul = NULL, *oq_nul = NULL;
+            void *ga[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &B, &pos, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
+                          &relext, &win, &nsplit, &ch, &b->at_count, &ag_nul, &oq_nul};
+            launch(b, K_INK_REL_ATTN_DEC_GLOB_R11, nkv * nsplit, ga);
           } else {
             const int use_dec = b->k[K_INK_REL_ATTN_DEC] && !b->kvq8 && !b->kvq4 && mk_ok_k(K_INK_REL_ATTN_DEC) &&
                                 hd == 128u && d_rel == 16u && nkv > 0u && nh == 3u * nkv;
@@ -5537,6 +6810,443 @@ static unsigned ink_t1_fuse(void) {
   return (unsigned)v;
 }
 
+static void ink_moe_cache_flush_pf(ink_moe_cache_layer *C, int merge_scores) {
+  if (C->pf_offs_pending) {
+    HIP(H.EventSynchronize(C->pf_offs_ev));
+    for (u32 e = 0u; e < C->n_exp; e++) {
+      const u32 lo = C->pf_offs_pin[e], hi = C->pf_offs_pin[e + 1u];
+      if (hi > lo) C->pf_freq[e] += (uint64_t)(hi - lo);
+    }
+    C->pf_offs_pending = 0;
+    C->pf_dirty = 1;
+  }
+  if (merge_scores && C->pf_dirty) {
+    uint64_t max_f = 0ULL;
+    for (u32 e = 0u; e < C->n_exp; e++)
+      if (C->pf_freq[e] > max_f) max_f = C->pf_freq[e];
+    if (max_f > 0ULL) {
+      for (u32 e = 0u; e < C->n_exp; e++) {
+        const u32 add = (u32)((C->pf_freq[e] * 64ULL) / max_f);
+        const u32 ns = C->score[e] + add;
+        C->score[e] = ns > 128u ? 128u : ns;
+        C->pf_freq[e] = 0ULL;
+      }
+    }
+    C->pf_dirty = 0;
+  }
+}
+
+/* Resolve SLRU cache for T_sub tokens in rt_rows (planar per token: u32 ids[K], float w[K]),
+ * DMA missed experts from pinned host RAM into C->*_dev, remap ids in-place to VRAM slot [0..n_slots-1],
+ * and upload remapped rt_rows to b->moe_rt_dev. Caller guarantees |unique(ids)| <= C->n_slots. */
+static void ink_moe_cache_resolve(gpu_backend *b, ink_moe_cache_layer *C,
+                                  char *rt_rows, u32 rst, u32 T_sub, u32 K) {
+  const u32 ne = C->n_exp, ns = C->n_slots;
+  uint8_t pin[INK_MOE_C_MAXE];
+  u32 uniq[INK_MOE_C_MAXE];
+  memset(pin, 0, ne);
+  u32 nu = 0u;
+  for (u32 t = 0u; t < T_sub; t++) {
+    u32 *ids = (u32 *)(rt_rows + (size_t)t * rst);
+    for (u32 k = 0u; k < K; k++) {
+      const u32 e = ids[k];
+      if (e >= ne) ie_die("H38: expert id %u >= n_exp %u", e, ne);
+      if (!pin[e]) {
+        pin[e] = 1u;
+        uniq[nu++] = e;
+      }
+    }
+  }
+  if (nu > ns) ie_die("H38: resolve overflow (%u > %u)", nu, ns);
+
+  u32 miss_e[INK_MOE_C_MAXE], miss_s[INK_MOE_C_MAXE];
+  u32 n_miss = 0u;
+  for (u32 u = 0u; u < nu; u++) {
+    const u32 e = uniq[u];
+    int s = C->slot_of[e];
+    if (s < 0) {
+      int vic = -1;
+      for (u32 j = 0u; j < ns; j++) {
+        if (C->exp_of[j] < 0) { vic = (int)j; break; }
+      }
+      if (vic < 0) {
+        u32 best_sc = 0xffffffffu, best_tk = 0xffffffffu;
+        for (u32 j = 0u; j < ns; j++) {
+          const int old_e = C->exp_of[j];
+          if (pin[old_e]) continue;
+          const u32 sc = C->score[old_e], tk = C->tick_of[j];
+          if (vic < 0 || sc < best_sc || (sc == best_sc && tk < best_tk)) {
+            vic = (int)j;
+            best_sc = sc;
+            best_tk = tk;
+          }
+        }
+      }
+      if (vic < 0) ie_die("H38: no unpinned eviction victim (nu=%u ns=%u)", nu, ns);
+      const int old_e = C->exp_of[vic];
+      if (old_e >= 0) C->slot_of[old_e] = -1;
+      C->exp_of[vic] = (int16_t)e;
+      C->slot_of[e] = (int16_t)vic;
+      miss_e[n_miss] = e;
+      miss_s[n_miss] = (u32)vic;
+      n_miss++;
+      s = vic;
+    } else {
+      b->moe_c_hits++;
+    }
+    C->tick_of[s] = ++C->tick;
+    if (C->score[e] < 252u) C->score[e] += 4u;
+  }
+  b->moe_c_misses += (uint64_t)n_miss;
+  b->moe_c_dma_bytes += (uint64_t)n_miss * (uint64_t)C->tot_eb;
+
+  for (u32 t = 0u; t < T_sub; t++) {
+    u32 *ids = (u32 *)(rt_rows + (size_t)t * rst);
+    for (u32 k = 0u; k < K; k++) ids[k] = (u32)C->slot_of[ids[k]];
+  }
+  HIP(H.MemcpyAsync(b->moe_rt_dev, rt_rows, (size_t)T_sub * rst, hipMemcpyHostToDevice, cur_stream));
+  for (u32 mi = 0u; mi < n_miss; mi++) {
+    const size_t e = (size_t)miss_e[mi], s = (size_t)miss_s[mi];
+    HIP(H.MemcpyAsync((char *)C->egu_dev + s * C->egu_eb, (const char *)C->egu_host + e * C->egu_eb,
+                      C->egu_eb, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync((char *)C->ed0_dev + s * C->ed0_eb, (const char *)C->ed0_host + e * C->ed0_eb,
+                      C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync((char *)C->ed1_dev + s * C->ed1_eb, (const char *)C->ed1_host + e * C->ed1_eb,
+                      C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
+  }
+}
+
+static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
+  const graph *g = b->g;
+  const model *m = b->m;
+  const op *o0 = &g->ops[i];
+  if (o0->layer < 0 || (u32)o0->layer >= m->n_layer) return 0u;
+  ink_moe_cache_layer *C = &b->moe_c[o0->layer];
+  if (!C->active) return 0u;
+  if (o0->w != &m->l[o0->layer].egu) return 0u;
+  if (i + 2u >= i1) ie_die("H38: truncated outer MoE sequence at op %u", i);
+  const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u];
+  if (o1->kind != OP_SITU || o2->kind != OP_GEMV_EXP || o2->w != &m->l[o0->layer].ed ||
+      o1->a != o0->b || o1->qo < 0 || o2->a != o1->qo || o2->c != o0->c)
+    ie_die("H38: unexpected outer MoE op sequence at layer %d op %u", o0->layer, i);
+
+  const u32 K = o0->nh, ne = C->n_exp, ns = C->n_slots;
+  const u32 eff = o1->n, nb = o0->w->nb, q_bytes = (u32)C->egu_eb;
+  const u32 drows = o2->w->rows, dnb = o2->w->nb;
+  const u32 qwn = (u32)mat_qw_words(o2->w->kind, drows, o2->w->cols);
+  const u32 qsn = (u32)mat_qs_n(o2->w->kind, drows, o2->w->cols);
+  const u32 rst = g->bufs[o0->c].stride;
+  void *X = b->arena + g->bufs[o0->a].off + o0->aoff;
+  void *qout = b->arena + g->bufs[o1->qo].off;
+  void *yd = b->arena + g->bufs[o2->b].off + o2->boff;
+  void *rt_orig = b->arena + g->bufs[o0->c].off + o0->coff;
+  void *qw = C->egu_dev, *w0 = C->ed0_dev, *w1 = C->ed1_dev;
+  void *bout = NULL, *nul = NULL;
+  u32 bstr0 = 0u, zero = 0u, qstr = o1->bstr, dkind = (u32)o2->w->kind;
+  float beta = o1->clamp, lbeta = o1->lam;
+
+  /* --- Mode A: T == 1 decode --- */
+  if (T == 1u) {
+    if ((size_t)rst > 16384u) ie_die("H38: route stride %u > 16384", rst);
+    HIP(H.MemcpyAsync(b->moe_rt_pin, rt_orig, rst, hipMemcpyDeviceToHost, cur_stream));
+    HIP(H.StreamSynchronize(cur_stream));
+    ink_moe_cache_flush_pf(C, 1);
+    if ((++C->step_ctr & 63u) == 0u) {
+      for (u32 e = 0u; e < ne; e++) C->score[e] >>= 1u;
+    }
+    ink_moe_cache_resolve(b, C, (char *)b->moe_rt_pin, rst, 1u, K);
+
+    u32 astr = o0->astr, dastr = o2->astr, dbstr = o2->bstr;
+    u32 eff_u = eff, nb_u = nb, qb_u = q_bytes, drows_u = drows, dnb_u = dnb;
+    u32 qwn_u = qwn, qsn_u = qsn;
+    static int two_env = -1;
+    if (two_env < 0) two_env = getenv("IE_GEXP_TWO") && getenv("IE_GEXP_TWO")[0] == '1';
+    u32 two_off = !two_env;
+    void *rt_dev = b->moe_rt_dev;
+    void *args1[] = {&qw, &X, &bout, &qout, &eff_u, &nb_u, &rt_dev, &qb_u, &astr, &bstr0, &qstr, &beta, &lbeta};
+    const int ks = b->ink_iq3_flute
+                       ? (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10]
+                              ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10
+                              : K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_R7)
+                       : (b->k[K_INK_GEXP_IQ3XXS_SITU_R3] ? K_INK_GEXP_IQ3XXS_SITU_R3 : K_INK_GEXP_IQ3XXS_SITU_R2);
+    tr_span(g, i, 2u);
+    launch_t(b, ks, (eff + 31u) / 32u, K, args1);
+
+    void *args2[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u, &rt_dev, &qwn_u, &qsn_u, &dastr, &dbstr, &dkind, &two_off};
+    const int kg4 = (b->k[K_INK_GEXP_IQ4NL_T1_NT_R10] && !mk.rec)
+                        ? K_INK_GEXP_IQ4NL_T1_NT_R10
+                        : (b->k[K_INK_GEXP_IQ4NL_BW_T1_R7] && !mk.rec)
+                              ? K_INK_GEXP_IQ4NL_BW_T1_R7
+                              : (b->k[K_INK_GEXP_IQ4NL_R3] && mk_ok_k(K_INK_GEXP_IQ4NL_R3))
+                                    ? K_INK_GEXP_IQ4NL_R3
+                                    : (b->k[K_INK_GEXP_IQ4NL] && mk_ok_k(K_INK_GEXP_IQ4NL))
+                                          ? K_INK_GEXP_IQ4NL : -1;
+    tr_span(g, i + 2u, 1u);
+    if (kg4 >= 0) launch_t(b, kg4, (drows + 31u) / 32u, K, args2);
+    else launch_t(b, K_GEXP, (dnb <= 16u || (dnb <= 64u && !two_off)) ? (drows + 15u) / 16u : gemv_groups(drows), K, args2);
+    return 3u;
+  }
+
+  /* --- Mode B: T = 2..16 speculative verify (fast single-pass or exact sub-batch overflow) --- */
+  if (T <= 16u) {
+    const size_t rt_bytes = (size_t)T * rst;
+    if (rt_bytes > 16384u) ie_die("H38: verify route bytes %zu > 16384", rt_bytes);
+    HIP(H.MemcpyAsync(b->moe_rt_pin, rt_orig, rt_bytes, hipMemcpyDeviceToHost, cur_stream));
+    HIP(H.StreamSynchronize(cur_stream));
+    ink_moe_cache_flush_pf(C, 1);
+    if ((++C->step_ctr & 63u) == 0u) {
+      for (u32 e = 0u; e < ne; e++) C->score[e] >>= 1u;
+    }
+
+    uint8_t seen[INK_MOE_C_MAXE];
+    memset(seen, 0, ne);
+    u32 nu = 0u;
+    for (u32 t = 0u; t < T; t++) {
+      const u32 *ids = (const u32 *)((const char *)b->moe_rt_pin + (size_t)t * rst);
+      for (u32 k = 0u; k < K; k++) {
+        const u32 e = ids[k];
+        if (e < ne && !seen[e]) { seen[e] = 1u; nu++; }
+      }
+    }
+
+    u32 xs = o0->astr ? o0->astr : g->bufs[o0->a].stride;
+    u32 xdiv = o0->astr ? 1u : K;
+    u32 dxs = o2->astr ? o2->astr : g->bufs[o2->a].stride;
+    u32 dys = o2->bstr, dxdiv = o2->astr ? 1u : K;
+    u32 eff_u = eff, nb_u = nb, qb_u = q_bytes, drows_u = drows, dnb_u = dnb;
+    u32 qwn_u = qwn, qsn_u = qsn, KK = K, ns_u = ns, rst_u = rst;
+    const int kf = b->ink_iq3_flute
+                       ? (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10]
+                              ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10
+                              : K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7)
+                       : K_INK_GEXP_IQ3XXS_SITU_COMPACT_R7;
+    const int kc4 = (b->k[K_INK_GEXP_IQ4NL_BW_COMPACT_R7] && !mk.rec)
+                        ? K_INK_GEXP_IQ4NL_BW_COMPACT_R7 : K_INK_GEXP_IQ4NL_COMPACT_R6;
+    if (!b->k[kf] || !b->k[kc4]) ie_die("H38: missing compact verify MoE kernels");
+
+    if (nu <= ns) {
+      /* Fast single-pass path (guaranteed whenever T * K <= ns). */
+      ink_moe_cache_resolve(b, C, (char *)b->moe_rt_pin, rst, T, K);
+      u32 TT = T;
+      void *rt_dev = b->moe_rt_dev;
+      void *sa[] = {&rt_dev, &rst_u, &TT, &KK, &ns_u, &b->ms_offs, &b->ms_list, &b->ms_packs, &b->ms_npacks};
+      launch(b, K_INK_MOE_SORT_COMPACT_R6, 1u, sa);
+
+      const u32 mp_a = T * K, mp_b = ns + (T * K) / 4u;
+      const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
+      void *fa[] = {&qw, &X, &bout, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                    &qb_u, &xs, &bstr0, &qstr, &xdiv, &beta, &lbeta};
+      tr_span(g, i, 2u);
+      launch_t(b, kf, eff / 32u, max_packs, fa);
+
+      /* Try exact B2 fused tail (matches ink_r2_fuse:7226-7296). */
+      static int moe_tail_mode = -1;
+      if (moe_tail_mode < 0) {
+        const char *me = getenv("IE_INK_MOE_TAIL_MODE");
+        moe_tail_mode = me ? atoi(me) : 0;
+      }
+      const int sc_tree = b->tr_on && b->ink_tree_split > 0u && b->ink_tree_split < T;
+      const int allow_b2 = !sc_tree && !mk.rec && b->ink_moe_rcount && b->k[K_INK_EXP_DOWN_TAIL_VER_R7] &&
+                           (moe_tail_mode == 0 || moe_tail_mode == 2) && i + 5u < i1 && max_packs <= 160u;
+      if (allow_b2) {
+        const op *o3 = &g->ops[i + 3u], *o4 = &g->ops[i + 4u], *o5 = &g->ops[i + 5u];
+        const u32 yts = g->bufs[o2->b].stride;
+        if (o3->kind == OP_MOE_SUM && o3->res < 0 && o3->a == o2->b && o3->aoff == 0u &&
+            o3->c == o2->c && o3->coff == o2->coff && o3->n == drows && o3->nh == K &&
+            o4->kind == OP_SCONV && o4->c < 0 && o4->a == o3->b && o4->aoff == 0u && o4->n == drows &&
+            o5->kind == OP_ADD && o5->n == drows && (o5->a == o4->b || o5->b == o4->b) &&
+            yts == K * dys && (!o2->astr || g->bufs[o2->a].stride == K * o2->astr) &&
+            buf_disjoint(g, o2->a, o5->c) && buf_disjoint(g, o2->b, o5->c) && buf_disjoint(g, o2->c, o5->c)) {
+          const int rb = (o5->a == o4->b) ? o5->b : o5->a;
+          const u32 roff = (o5->a == o4->b) ? o5->boff : o5->aoff;
+          void *v = b->d[i + 4u].w0;
+          float *ring = b->sc_ring + (size_t)o4->scoff * 4u;
+          void *res = b->arena + g->bufs[rb].off + roff;
+          void *out = b->arena + g->bufs[o5->c].off + o5->coff;
+          float *hist = b->sc_defer ? (b->sc_hist + (size_t)o4->scoff) : NULL;
+          u32 rs = g->bufs[rb].stride, os = g->bufs[o5->c].stride, yts_u = yts;
+          u32 hrs = hist ? b->sc_hist_stride : 0u;
+          float esc = o4->escale;
+          if (((uintptr_t)yd & 15u) == 0u && ((uintptr_t)v & 15u) == 0u && ((uintptr_t)ring & 15u) == 0u &&
+              ((uintptr_t)res & 15u) == 0u && ((uintptr_t)out & 15u) == 0u &&
+              ((yts | rs | os) & 15u) == 0u &&
+              (!hist || (((uintptr_t)hist & 15u) == 0u && (hrs & 3u) == 0u))) {
+            void *fb[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u,
+                          &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                          &qwn_u, &qsn_u, &dxs, &dys, &dxdiv,
+                          &rt_dev, &KK, &rst_u, &v, &ring, &res, &out, &hist,
+                          &esc, &pos, &TT, &yts_u, &rs, &os, &hrs, &b->ink_moe_rcount};
+            tr_span(g, i + 2u, 4u);
+            launch_t(b, K_INK_EXP_DOWN_TAIL_VER_R7, (drows + 31u) / 32u, max_packs, fb);
+            return 6u;
+          }
+        }
+      }
+      void *ca[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                    &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
+      tr_span(g, i + 2u, 1u);
+      launch_t(b, kc4, (drows + 31u) / 32u, max_packs, ca);
+      return 3u;
+    }
+
+    /* Overflow path (|U| > n_slots): sub-batch tokens in groups of T_sub = n_slots / K so overflow is impossible.
+     * Leaves OP_MOE_SUM + OP_SCONV + OP_ADD to run once unmodified across all T tokens via B1 (100% bit-exact!). */
+    const u32 t_sub = ns / K;
+    if (t_sub < 1u) ie_die("H38: n_slots=%u < K=%u", ns, K);
+    const size_t x_tok_str = g->bufs[o0->a].stride;
+    const size_t q_tok_str = g->bufs[o1->qo].stride;
+    const size_t y_tok_str = g->bufs[o2->b].stride;
+    tr_span(g, i, 3u);
+    for (u32 t0 = 0u; t0 < T; t0 += t_sub) {
+      u32 len = (T - t0 < t_sub) ? (T - t0) : t_sub;
+      b->moe_c_subbatches++;
+      char *rt_slice = (char *)b->moe_rt_pin + (size_t)t0 * rst;
+      ink_moe_cache_resolve(b, C, rt_slice, rst, len, K);
+      void *rt_dev = b->moe_rt_dev;
+      void *sa[] = {&rt_dev, &rst_u, &len, &KK, &ns_u, &b->ms_offs, &b->ms_list, &b->ms_packs, &b->ms_npacks};
+      launch(b, K_INK_MOE_SORT_COMPACT_R6, 1u, sa);
+
+      const u32 mp_a = len * K, mp_b = ns + (len * K) / 4u;
+      const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
+      void *X_sub = (char *)X + (size_t)t0 * x_tok_str;
+      void *Q_sub = (char *)qout + (size_t)t0 * q_tok_str;
+      void *Y_sub = (char *)yd + (size_t)t0 * y_tok_str;
+      void *fa[] = {&qw, &X_sub, &bout, &Q_sub, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                    &qb_u, &xs, &bstr0, &qstr, &xdiv, &beta, &lbeta};
+      launch_t(b, kf, eff / 32u, max_packs, fa);
+
+      void *ca[] = {&w0, &w1, &Q_sub, &Y_sub, &drows_u, &dnb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                    &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
+      launch_t(b, kc4, (drows + 31u) / 32u, max_packs, ca);
+    }
+    return 3u;
+  }
+
+  /* --- Mode C: T >= 17 prefill wave-streaming (0 extra VRAM, 100% bit-exact) --- */
+  if (ns < ne && (!buf_disjoint(g, o0->a, o2->b) || !buf_disjoint(g, o0->a, o1->qo)))
+    ie_die("H38: ffn_in_q8 aliases exp_down/exp_mid_q8 across prefill waves (layer %d)", o0->layer);
+  /* Flush previous chunk's prefill counts (completed ~100 ms ago -> 0 stall), then async-snapshot this chunk's ms_offs. */
+  ink_moe_cache_flush_pf(C, 0);
+  HIP(H.MemcpyAsync(C->pf_offs_pin, b->ms_offs, (size_t)(ne + 1u) * sizeof(u32), hipMemcpyDeviceToHost, cur_stream));
+  HIP(H.EventRecord(C->pf_offs_ev, cur_stream));
+  C->pf_offs_pending = 1;
+
+  u32 xs = o0->astr ? o0->astr : g->bufs[o0->a].stride;
+  u32 xdiv = o0->astr ? 1u : K;
+  u32 dxs = o2->astr ? o2->astr : g->bufs[o2->a].stride;
+  u32 dys = o2->bstr, dxdiv = o2->astr ? 1u : K;
+  u32 eff_u = eff, nb_u = nb, qb_u = q_bytes, drows_u = drows, dnb_u = dnb;
+  u32 qwn_u = qwn, qsn_u = qsn, ne_u = ne;
+
+  /* Check if bit 113 atomic-scatter fusion is enabled (not default, supported cleanly). */
+  int use_scatter = 0;
+  void *ysum_sc = NULL;
+  u32 os_sc = 0u, rst_sc = rst, KK_sc = K;
+  if (!mk.rec && b->k[K_INK_GEMM_IQ4NL_SCATTER_R10] && i + 3u < i1 &&
+      gx_wmma(b, T, dnb, dkind) && !getenv("IE_GEMM_KX_NOE") &&
+      drows > 0u && dnb > 0u && (dnb & 3u) == 0u) {
+    const op *o3 = &g->ops[i + 3u];
+    if (o3->kind == OP_MOE_SUM && o3->res < 0 && o3->a == o2->b && o3->aoff == 0u && o3->boff == 0u &&
+        o3->c == o2->c && o3->coff == o2->coff && o3->n == drows && o3->nh == K &&
+        (o2->astr == 0u || g->bufs[o2->a].stride == K * o2->astr) &&
+        buf_disjoint(g, o2->a, o3->b) && buf_disjoint(g, o2->c, o3->b)) {
+      use_scatter = 1;
+      ysum_sc = b->arena + g->bufs[o3->b].off + o3->boff;
+      os_sc = g->bufs[o3->b].stride;
+      HIP(H.MemsetAsync(ysum_sc, 0, (size_t)T * os_sc, cur_stream));
+    }
+  }
+
+  tr_span(g, i, use_scatter ? 4u : 3u);
+  u32 last_lo = 0u, last_hi = 0u;
+  for (u32 e_lo = 0u; e_lo < ne; e_lo += ns) {
+    u32 e_hi = e_lo + ns;
+    if (e_hi > ne) e_hi = ne;
+    const u32 cnt = e_hi - e_lo;
+    last_lo = e_lo;
+    last_hi = e_hi;
+    b->moe_c_waves++;
+    b->moe_c_dma_bytes += (uint64_t)cnt * (uint64_t)C->tot_eb;
+
+    HIP(H.MemcpyAsync(C->egu_dev, (const char *)C->egu_host + (size_t)e_lo * C->egu_eb,
+                      (size_t)cnt * C->egu_eb, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync(C->ed0_dev, (const char *)C->ed0_host + (size_t)e_lo * C->ed0_eb,
+                      (size_t)cnt * C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync(C->ed1_dev, (const char *)C->ed1_host + (size_t)e_lo * C->ed1_eb,
+                      (size_t)cnt * C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
+
+    void *wf[] = {&b->ms_offs, &ne_u, &e_lo, &e_hi, &b->ms_packs, &b->ms_npacks, &nul};
+    launch(b, K_INK_MOE_WL_FILTER_R14, 1u, wf);
+
+    const u32 mt_a = T * K, mt_b = cnt + (T * K) / 64u;
+    const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
+    if (b->ink_iq3_flute) {
+      void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                    &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+      launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10, (eff + 63u) / 64u, max_tiles, fa);
+    } else if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7]) {
+      void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                    &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+      const int ki3 = b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] ? K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9 : K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7;
+      launch_t(b, ki3, (eff + 63u) / 64u, max_tiles, fa);
+    } else if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6]) {
+      u32 *offs_w = b->ms_offs + e_lo;
+      void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &offs_w, &zero,
+                    &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+      launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6, (eff + 63u) / 64u, cnt, fa);
+    } else {
+      ie_die("H38: no fused prefill IQ3_XXS+SITU kernel available");
+    }
+
+    u32 *offs_w = b->ms_offs + e_lo;
+    if (use_scatter) {
+      void *fs[] = {&w0, &w1, &qout, &ysum_sc, &drows_u, &dnb_u, &b->ms_list, &offs_w,
+                    &rt_orig, &rst_sc, &KK_sc, &qwn_u, &qsn_u, &dxs, &os_sc, &dxdiv};
+      launch_t(b, K_INK_GEMM_IQ4NL_SCATTER_R10, (drows + 127u) / 128u, cnt, fs);
+    } else {
+      void *ta[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u, &b->ms_list, &offs_w, &zero,
+                    &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
+      if (gx_wmma(b, T, dnb, dkind) && !getenv("IE_GEMM_KX_NOE")) {
+        if (b->k[K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10] && (ink_fp8_mode() & 2) && !mk.rec && dnb >= 4u && (dnb & 3u) == 0u) {
+          launch_t(b, K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10, (drows + 127u) / 128u, cnt, ta);
+        } else if (b->k[K_INK_GEMM_IQ4NL_EXPMAJ_R10] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
+          launch_t(b, K_INK_GEMM_IQ4NL_EXPMAJ_R10, (drows + 127u) / 128u, cnt, ta);
+        } else if ((b->k[K_INK_GEMM_IQ4NL_EXP_R9] || b->k[K_INK_GEMM_IQ4NL_EXP_R7]) && !mk.rec &&
+                   dnb > 0u && (dnb & 3u) == 0u && max_tiles <= 512u) {
+          void *t7[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                        &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
+          const int ki4 = b->k[K_INK_GEMM_IQ4NL_EXP_R9] ? K_INK_GEMM_IQ4NL_EXP_R9 : K_INK_GEMM_IQ4NL_EXP_R7;
+          launch_t(b, ki4, (drows + 127u) / 128u, max_tiles, t7);
+        } else if (b->k[K_INK_GEMM_IQ4NL_EXP_R2] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
+          launch_t(b, K_INK_GEMM_IQ4NL_EXP_R2, (drows + 127u) / 128u, cnt, ta);
+        } else if (b->k[K_INK_GEMM_IQ4NL_EXP] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
+          launch_t(b, K_INK_GEMM_IQ4NL_EXP, (drows + 127u) / 128u, cnt, ta);
+        } else {
+          launch_t(b, K_GEMM_KX, (drows + 127u) / 128u, cnt, ta);
+        }
+      } else {
+        launch_t(b, K_GEXP_T, (drows + 63u) / 64u, cnt, ta);
+      }
+    }
+  }
+
+  /* Update cache metadata to match the final wave currently sitting in VRAM slots. */
+  for (u32 e = 0u; e < ne; e++) C->slot_of[e] = -1;
+  const u32 last_cnt = last_hi - last_lo;
+  for (u32 s = 0u; s < ns; s++) {
+    if (s < last_cnt) {
+      const u32 e = last_lo + s;
+      C->exp_of[s] = (int16_t)e;
+      C->slot_of[e] = (int16_t)s;
+      C->tick_of[s] = C->tick;
+    } else {
+      C->exp_of[s] = -1;
+      C->tick_of[s] = 0u;
+    }
+  }
+  return use_scatter ? 4u : 3u;
+}
+
 static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u32 pos, u32 slot, u32 wfrom) {
   const graph *g = b->g;
   const model *m = b->m;
@@ -5545,9 +7255,15 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
   const int ctx_on = b->ink_graph_cap && T == 1u;
   const unsigned t1f = T == 1u ? ink_t1_fuse() : 0u;
 
-  /* R7 Wave 4 bit 76: [OP_GEMV_Q4K, OP_LOGIT_CAP] (T=1..8) -> ie_inkling_gemv_q4k_head_ver_r7 */
+  /* H38 (bit 91): Outer-layer host-backed VRAM SLRU expert cache across T=1, T=2..16, and T>=17. */
+  if (__builtin_expect(b->moe_c_on && k0 == OP_GEMV_EXP, 0)) {
+    const u32 mc = ink_moe_cache_exec(b, i, i1, T, pos);
+    if (mc) return mc;
+  }
+
+  /* R7 Wave 4 bit 76 / R10 bit 107 NT: [OP_GEMV_Q4K, OP_LOGIT_CAP] (T=1..8) -> q4k_head_ver[_nt_r10|_r7] */
   if (k0 == OP_GEMV_Q4K && !mk.rec && T >= 1u && T <= 8u && i + 1u < i1 &&
-      b->k[K_INK_GEMV_Q4K_HEAD_VER_R7] && !o0->nv &&
+      (b->k[K_INK_Q4K_HEAD_VER_NT_R10] || b->k[K_INK_GEMV_Q4K_HEAD_VER_R7]) && !o0->nv &&
       o0->w->rows > 0u && o0->w->nb > 0u && (o0->w->nb & 7u) == 0u && o0->boff == 0u) {
     const op *o1 = &g->ops[i + 1u];
     static int q4k_min_t = -1;
@@ -5565,9 +7281,136 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       float cap = o1->clamp;
       u32 gr = (rows + 31u) / 32u;
       void *fa[] = {&qw, &qs, &xq, &y, &rows, &nb, &bias, &res, &TT, &xs, &ys, &rs, &unpad, &cap};
+      const int kh = (b->k[K_INK_Q4K_HEAD_VER_NT_R10] && rows >= 65536u)
+                         ? K_INK_Q4K_HEAD_VER_NT_R10 : K_INK_GEMV_Q4K_HEAD_VER_R7;
       tr_span(g, i, 2u);
-      launch(b, K_INK_GEMV_Q4K_HEAD_VER_R7, gr >= 253u && gr <= 256u ? 257u : gr, fa);
+      launch(b, kh, gr >= 253u && gr <= 256u ? 257u : gr, fa);
       return 2u;
+    }
+  }
+
+  /* Wave 11 R54 (H15 bit 110 + H19b bit 126 + R14 global Q4 bit 153): [OP_REL_ATTN, OP_GATE(qo=aq)] -> fused attn+sigmoid_gate+q8 (elides att) */
+  if (k0 == OP_REL_ATTN && !mk.rec && !b->kvq8 && !b->kvq4 && !b->tr_on && !ctx_on && T >= 1u && T <= 16u &&
+      i + 1u < i1 && m->hd == 128u && o0->qstr == 16u && m->n_kv > 0u && o0->nh == m->n_kv * 3u &&
+      (b->k[K_INK_REL_ATTN_DEC_GATE_Q8_R10] || b->k[K_INK_REL_ATTN_VER_GATE_Q8_R10] ||
+       b->k[K_INK_REL_ATTN_VER_GLOB_WMMA_GATE_Q8_R10] || (T == 1u && o0->win == 0u && b->k[K_INK_REL_ATTN_DEC_GLOB_R11]) ||
+       (b->ink_glob_kv_mode == 2 && o0->win == 0u && g->kv_len[o0->kvi] >= g->n_ctx))) {
+    const op *o1 = &g->ops[i + 1u];
+    const u32 nh = o0->nh, nkv = m->n_kv, hd = 128u, d_rel = 16u, qd = nh * hd;
+    const u32 kvi = o0->kvi, kvlen = g->kv_len[kvi], relext = m->rel_extent, win = o0->win;
+    const int is_glob_q4 = (b->ink_glob_kv_mode == 2 && win == 0u && kvlen >= g->n_ctx);
+    if (o1->kind == OP_GATE && o1->a == o0->b && o1->aoff == 0u && o1->b >= 0 && o1->qo >= 0 &&
+        o1->n == qd && kvlen > 0u && g->bufs[o0->b].last <= i + 1u &&
+        buf_disjoint(g, o0->a, o1->qo) && buf_disjoint(g, o0->nq, o1->qo) &&
+        buf_disjoint(g, o0->res, o1->qo) && buf_disjoint(g, o0->c, o1->qo) &&
+        buf_disjoint(g, o1->b, o1->qo)) {
+      void *A = b->arena + g->bufs[o0->a].off + o0->aoff;
+      void *NQ = b->arena + g->bufs[o0->nq].off;
+      void *R = b->arena + g->bufs[o0->res].off;
+      void *w0 = b->d[i].w0;
+      void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
+      void *ag = b->arena + g->bufs[o1->b].off + o1->boff;
+      void *oq = b->arena + g->bufs[o1->qo].off;
+      void *out_p = gdump_on() ? (b->arena + g->bufs[o0->b].off + o0->boff) : NULL;
+      const int h15m = ink_h15_mode();
+      if (is_glob_q4) {
+        u32 hd_u = hd, nh_u = nh, nkv_u = nkv, dr_u = d_rel, re_u = relext, win_u = win, kv_u = kvlen;
+        u32 rot = b->ink_glob_kv_rot;
+        if (T == 1u && (h15m & 1) && (((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u) {
+          void *C = b->arena + g->bufs[o0->c].off;
+          u32 np = pos + 1u;
+          u32 max_sp = (u32)(g->bufs[o0->c].size / ((size_t)nh * (hd + 2u) * 4u));
+          if (max_sp > 64u) max_sp = 64u;
+          if (max_sp == 0u) max_sp = 1u;
+          u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
+          if (nsplit > max_sp) nsplit = max_sp;
+          u32 ch = (np + nsplit - 1u) / nsplit;
+          nsplit = (np + ch - 1u) / ch;
+          void *fa[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &out_p, &pos, &kv_u, &hd_u, &nh_u, &nkv_u,
+                        &dr_u, &re_u, &win_u, &nsplit, &ch, &b->at_count, &ag, &oq, &rot};
+          tr_span(g, i, 2u);
+          launch(b, K_INK_REL_ATTN_DEC_GLOB_Q4_R14, nkv * nsplit, fa);
+          return 2u;
+        } else if (T >= 2u && (h15m & 6) && b->at_part && b->at_count) {
+          u32 qs = g->bufs[o0->a].stride, rs = g->bufs[o0->nq].stride, ss = g->bufs[o0->res].stride;
+          u32 os = g->bufs[o0->b].stride, gs = g->bufs[o1->b].stride, oqs = g->bufs[o1->qo].stride;
+          if ((((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u &&
+              ((qs | os | gs) & 15u) == 0u && (oqs & 3u) == 0u) {
+            void *part_p = (void *)b->at_part;
+            u32 np = pos + T;
+            u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+            if (nsplit > 64u) nsplit = 64u;
+            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+            u32 TT = T;
+            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &TT, &kv_u, &hd_u, &nh_u, &nkv_u,
+                          &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag, &oq, &gs, &oqs, &rot};
+            tr_span(g, i, 2u);
+            launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_R14, nkv * nsplit, (T + 3u) / 4u, va);
+            return 2u;
+          }
+        }
+      } else if (T == 1u && (h15m & 1) && (((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u) {
+        const int kd = (win == 0u && b->k[K_INK_REL_ATTN_DEC_GLOB_R11]) ? K_INK_REL_ATTN_DEC_GLOB_R11
+                     : (b->k[K_INK_REL_ATTN_DEC_GATE_Q8_R10] ? K_INK_REL_ATTN_DEC_GATE_Q8_R10 : -1);
+        if (kd >= 0) {
+          void *C = b->arena + g->bufs[o0->c].off;
+          u32 np = (win > 0u && pos + 1u > win) ? win : (pos + 1u);
+          u32 max_sp = (u32)(g->bufs[o0->c].size / ((size_t)nh * (hd + 2u) * 4u));
+          if (max_sp > 64u) max_sp = 64u;
+          if (max_sp == 0u) max_sp = 1u;
+          u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
+          if (nsplit > max_sp) nsplit = max_sp;
+          u32 ch = (np + nsplit - 1u) / nsplit;
+          nsplit = (np + ch - 1u) / ch;
+          u32 hd_u = hd, nh_u = nh, nkv_u = nkv, dr_u = d_rel, re_u = relext, win_u = win, kv_u = kvlen;
+          void *fa[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &out_p, &pos, &kv_u, &hd_u, &nh_u, &nkv_u,
+                        &dr_u, &re_u, &win_u, &nsplit, &ch, &b->at_count, &ag, &oq};
+          tr_span(g, i, 2u);
+          launch(b, kd, nkv * nsplit, fa);
+          return 2u;
+        }
+      } else if (T >= 2u && b->at_part && b->at_count) {
+        u32 qs = g->bufs[o0->a].stride, rs = g->bufs[o0->nq].stride, ss = g->bufs[o0->res].stride;
+        u32 os = g->bufs[o0->b].stride, gs = g->bufs[o1->b].stride, oqs = g->bufs[o1->qo].stride;
+        if ((((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u &&
+            ((qs | os | gs) & 15u) == 0u && (oqs & 3u) == 0u) {
+          u32 hd_u = hd, nh_u = nh, nkv_u = nkv, dr_u = d_rel, re_u = relext, win_u = win, kv_u = kvlen;
+          void *part_p = (void *)b->at_part;
+          if (win == 0u && pos >= 2048u && T <= (ink_ver_slice8() ? 16u : 8u) && (h15m & 2) &&
+              b->k[K_INK_REL_ATTN_VER_GLOB_WMMA_GATE_Q8_R10]) {
+            tr_span(g, i, 2u);
+            for (u32 s0 = 0u; s0 < T; s0 += 8u) {
+              u32 sT = (T - s0 > 8u) ? 8u : (T - s0);
+              u32 spos = pos + s0;
+              void *A_s = (char *)A + (size_t)s0 * qs;
+              void *NQ_s = (char *)NQ + (size_t)s0 * rs;
+              void *R_s = (char *)R + (size_t)s0 * ss;
+              void *B_s = out_p ? ((char *)out_p + (size_t)s0 * os) : NULL;
+              void *ag_s = (char *)ag + (size_t)s0 * gs;
+              void *oq_s = (char *)oq + (size_t)s0 * oqs;
+              u32 np = spos + sT;
+              u32 nsplit = (np >= 256u) ? (np + 255u) / 256u : 1u;
+              if (nsplit > 64u) nsplit = 64u;
+              while (nsplit > 1u && (size_t)sT * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+              void *va[] = {&A_s, &kc, &vc, &NQ_s, &w0, &R_s, &part_p, &B_s, &spos, &sT, &kv_u, &hd_u, &nh_u, &nkv_u,
+                            &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag_s, &oq_s, &gs, &oqs};
+              launch_t(b, K_INK_REL_ATTN_VER_GLOB_WMMA_GATE_Q8_R10, nkv * nsplit, 1u, va);
+            }
+            return 2u;
+          } else if ((h15m & 4) && b->k[K_INK_REL_ATTN_VER_GATE_Q8_R10]) {
+            u32 np = (win > 0u && pos + T > win) ? win : (pos + T);
+            u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+            if (nsplit > 64u) nsplit = 64u;
+            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+            u32 TT = T;
+            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &TT, &kv_u, &hd_u, &nh_u, &nkv_u,
+                          &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag, &oq, &gs, &oqs};
+            tr_span(g, i, 2u);
+            launch_t(b, K_INK_REL_ATTN_VER_GATE_Q8_R10, nkv * nsplit, T, va);
+            return 2u;
+          }
+        }
+      }
     }
   }
 
@@ -5779,10 +7622,11 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R6 bit 53 (Exp #2): T<=16 3x (or 1x MLP) [QUANT(64), GEMV_Q8(wfg,nb=2), LOOP_GATE] + OP_RMSNORM(qo) -> ie_inkling_lc_wfg_gate_norm_r6
+  /* R6 bit 53 / Wave 11 R52 bit 111 (55 VGPR 4-WG/CU cliff fix): T<=16 3x (or 1x MLP) [QUANT(64), GEMV_Q8(wfg,nb=2), LOOP_GATE] + OP_RMSNORM(qo)
    * (T>=17 prefill stays on K_INK_LC_WFG_GATE_R2 + K_INK_RMSNORM_MT, which is ~50-60 ms faster at C512.) */
-  if (k0 == OP_QUANT && T <= 16u && o0->n == 64u && b->k[K_INK_LC_WFG_GATE_NORM_R6] &&
-      mk_ok_k(K_INK_LC_WFG_GATE_NORM_R6) && b->ink_lc_count) {
+  if (k0 == OP_QUANT && T <= 16u && o0->n == 64u && b->ink_lc_count &&
+      ((b->k[K_INK_LC_WFG_GATE_NORM_R11] && !mk.rec) || (b->k[K_INK_LC_WFG_GATE_NORM_R6] && mk_ok_k(K_INK_LC_WFG_GATE_NORM_R6)))) {
+    const int k_wfg_r = (b->k[K_INK_LC_WFG_GATE_NORM_R11] && !mk.rec) ? K_INK_LC_WFG_GATE_NORM_R11 : K_INK_LC_WFG_GATE_NORM_R6;
     for (u32 nc = 3u; nc >= 1u; nc = (nc == 3u) ? 1u : 0u) {
       if (i + 4u * nc - 1u >= i1) continue;
       void *qw[4] = {NULL}, *qs[4] = {NULL}, *h[4] = {NULL}, *inp[4] = {NULL}, *msg[4] = {NULL};
@@ -5856,8 +7700,8 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           &hs, &is[0], &is[1], &is[2], &is[3], &ms[0], &ms[1], &ms[2], &ms[3],
           &ts, &ys, &qs_out};
       tr_span(g, i, 4u * nc);
-      if (T <= 16u) launch_t(b, K_INK_LC_WFG_GATE_NORM_R6, (dim + 31u) / 32u, n_ctrl, args);
-      else launch_t(b, K_INK_LC_WFG_GATE_NORM_R6, (dim + 127u) / 128u, n_ctrl * ((T + 63u) / 64u), args);
+      if (T <= 16u) launch_t(b, k_wfg_r, (dim + 31u) / 32u, n_ctrl, args);
+      else launch_t(b, k_wfg_r, (dim + 127u) / 128u, n_ctrl * ((T + 63u) / 64u), args);
       return 4u * nc;
     }
   }
@@ -5922,7 +7766,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         okc->a == o0->b && okc->aoff == 0u && ov->n == 1024u && ovc->a == ov->b && ovc->aoff == 0u &&
         okv->a == okc->b && okv->b == ovc->b && o0->escale == ov->escale &&
         okc->clamp > 0.0f && !okc->v && !okc->norope && !ovc->v && ovc->clamp == 0.0f &&
-        g->kv_len[okv->kvi] > 0u) {
+        g->kv_len[okv->kvi] > 0u && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx)) {
       void *ka = b->arena + g->bufs[o0->a].off + o0->aoff;
       void *vk = b->d[i].w0;
       void *ck = o0->c >= 0 ? (b->arena + g->bufs[o0->c].off + o0->coff) : NULL;
@@ -5983,7 +7827,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       if (n_span && okc->a == o0->b && okc->aoff == 0u && ov->n == 1024u && ovc->a == ov->b && ovc->aoff == 0u &&
           okv->a == okc->b && okv->b == ovc->b && o0->escale == ov->escale &&
           okc->clamp > 0.0f && !okc->v && !okc->norope && !ovc->v && ovc->clamp == 0.0f &&
-          g->kv_len[okv->kvi] > 0u) {
+          g->kv_len[okv->kvi] > 0u && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx)) {
         const u32 iv_idx = has_vdyn ? (i + 3u) : (i + 2u);
         void *ka = b->arena + g->bufs[o0->a].off + o0->aoff;
         void *vk = b->d[i].w0;
@@ -6042,17 +7886,18 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Fusion B2 bit 63: 4-op [OP_GEMV_EXP(IQ4_NL), OP_MOE_SUM, OP_SCONV(c=-1), OP_ADD] (+ inline sc_hist/ring) */
+  /* R7 Fusion B2 bit 63 / R10 bit 106 NT: 4-op [OP_GEMV_EXP(IQ4_NL), OP_MOE_SUM, OP_SCONV(c=-1), OP_ADD] */
   if (k0 == OP_GEMV_EXP && !sc_tree && !mk.rec && !ctx_on && T >= 1u && T <= 16u && i + 3u < i1 &&
       o0->w->kind == MAT_IQ4NL && o0->boff == 0u && b->ink_moe_rcount &&
-      ((T == 1u && b->k[K_INK_EXP_DOWN_TAIL_T1_R7]) || (T >= 2u && b->k[K_INK_EXP_DOWN_TAIL_VER_R7]))) {
+      ((T == 1u && (b->k[K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10] || b->k[K_INK_EXP_DOWN_TAIL_T1_R7])) ||
+       (T >= 2u && b->k[K_INK_EXP_DOWN_TAIL_VER_R7]))) {
     /* IE_INK_MOE_TAIL_MODE: 0=hybrid (B1 on T==1, B2 on T=2..16), 1=B1 all, 2=B2 all */
     static int moe_tail_mode = -1;
     if (moe_tail_mode < 0) {
       const char *e = getenv("IE_INK_MOE_TAIL_MODE");
       moe_tail_mode = e ? atoi(e) : 0;
     }
-    const int adap_nob2 = (T >= 2u && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1);
+    const int adap_nob2 = (T >= 2u && !b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1);
     const int allow_b2 = !adap_nob2 && ((moe_tail_mode == 2) || (moe_tail_mode == 0 && T >= 2u));
     const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u], *o3 = &g->ops[i + 3u];
     const u32 rows = o0->w->rows, nb = o0->w->nb, K = o0->nh;
@@ -6083,11 +7928,13 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           u32 astr = o0->astr, bstr = o0->bstr;
           void *fa[] = {&qw, &qs, &xq, &yd, &r_u, &nb_u, &rt, &K_u, &qwn, &qsn, &astr, &bstr,
                         &v, &ring, &res, &out, &esc, &pos, &b->ink_moe_rcount};
+          const int kb2 = b->k[K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10]
+                              ? K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10 : K_INK_EXP_DOWN_TAIL_T1_R7;
           tr_span(g, i, 4u);
-          launch_t(b, K_INK_EXP_DOWN_TAIL_T1_R7, (rows + 31u) / 32u, K, fa);
+          launch_t(b, kb2, (rows + 31u) / 32u, K, fa);
           return 4u;
         } else {
-          const int skip_sort = T <= ink_moe_slot_max(b) && b->ink_moe_all_slot &&
+          const int skip_sort = T <= ink_moe_slot_max(b) && b->ink_moe_all_slot && !b->ink_iq3_flute &&
                                 b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
           const u32 mp_a = T * K, mp_b = m->n_exp + (T * K) / 4u;
           const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
@@ -6355,9 +8202,41 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R9 bit 102 / R7 bit 70 (Wave 3) / R6 bit 57: T >= 17 [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] -> worklist r9/r7 or r6 */
+  /* R10 Wave 10 H02b bit 113: T >= 17 [OP_GEMV_EXP(MAT_IQ4NL), OP_MOE_SUM(res=-1)] -> atomic scatter into ysum */
   if (k0 == OP_GEMV_EXP && !mk.rec && T >= 17u && i + 1u < i1 &&
-      (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6]) &&
+      b->k[K_INK_GEMM_IQ4NL_SCATTER_R10] && o0->w->kind == MAT_IQ4NL && o0->boff == 0u &&
+      gx_wmma(b, T, o0->w->nb, (u32)o0->w->kind) && !getenv("IE_GEMM_KX_NOE") &&
+      b->ms_list && b->ms_offs) {
+    const op *o1 = &g->ops[i + 1u];
+    const u32 rows = o0->w->rows, nb = o0->w->nb, K = o0->nh;
+    if (rows > 0u && nb > 0u && (nb & 3u) == 0u && K > 0u &&
+        o1->kind == OP_MOE_SUM && o1->res < 0 && o1->a == o0->b && o1->aoff == 0u && o1->boff == 0u &&
+        o1->c == o0->c && o1->coff == o0->coff && o1->n == rows && o1->nh == K &&
+        (o0->astr == 0u || g->bufs[o0->a].stride == K * o0->astr) &&
+        buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->c, o1->b)) {
+      void *qw0 = b->d[i].w0, *qs0 = b->d[i].w1;
+      void *X = b->arena + g->bufs[o0->a].off + o0->aoff;
+      void *ysum = b->arena + g->bufs[o1->b].off + o1->boff;
+      void *rt = b->arena + g->bufs[o1->c].off + o1->coff;
+      u32 r_u = rows, nb_u = nb, K_u = K;
+      u32 qwn = (u32)mat_qw_words(o0->w->kind, rows, o0->w->cols);
+      u32 qsn = (u32)mat_qs_n(o0->w->kind, rows, o0->w->cols);
+      u32 xs = o0->astr ? o0->astr : g->bufs[o0->a].stride;
+      u32 os = g->bufs[o1->b].stride, rts = g->bufs[o1->c].stride;
+      u32 xdiv = o0->astr ? 1u : K;
+      HIP(H.MemsetAsync(ysum, 0, (size_t)T * os, cur_stream));
+      void *fa[] = {&qw0, &qs0, &X, &ysum, &r_u, &nb_u, &b->ms_list, &b->ms_offs,
+                    &rt, &rts, &K_u, &qwn, &qsn, &xs, &os, &xdiv};
+      tr_span(g, i, 2u);
+      launch_t(b, K_INK_GEMM_IQ4NL_SCATTER_R10, (rows + 127u) / 128u, m->n_exp, fa);
+      return 2u;
+    }
+  }
+
+  /* R10 bit 104 FLUTE / R9 bit 102 / R7 bit 70 / R6 bit 57: T >= 17 [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
+  if (k0 == OP_GEMV_EXP && !mk.rec && T >= 17u && i + 1u < i1 &&
+      ((b->ink_iq3_flute && b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10]) ||
+       (!b->ink_iq3_flute && (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6]))) &&
       !getenv("IE_GEMM_RQ_EXP_NO") &&
       o0->w->kind == MAT_RAWQ && o0->w->sub == 18u) {
     const op *o1 = &g->ops[i + 1u];
@@ -6377,7 +8256,15 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       float beta = o1->clamp, lbeta = o1->lam;
       const u32 mt_a = T * o0->nh, mt_b = m->n_exp + (T * o0->nh) / 64u;
       const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
-      if ((b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7]) &&
+      if (b->ink_iq3_flute) {
+        if (!b->k[K_INK_MOE_PF_WORKLIST_R7] || !b->ms_packs || !b->ms_npacks ||
+            m->n_exp > 256u || T * o0->nh > 8192u || max_tiles > 512u)
+          ie_die("FLUTE IQ3_XXS prefill preconditions failed (T=%u, max_tiles=%u)", T, max_tiles);
+        void *args[] = {&qw, &X, &Qout, &eff, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks, &q_bytes, &xs, &qstr, &xdiv, &beta, &lbeta};
+        tr_span(g, i, 2u);
+        launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10, (eff + 63u) / 64u, max_tiles, args);
+        return 2u;
+      } else if ((b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7]) &&
           b->k[K_INK_MOE_PF_WORKLIST_R7] &&
           b->ms_packs && b->ms_npacks && m->n_exp <= 256u && T * o0->nh <= 8192u && max_tiles <= 512u) {
         void *args[] = {&qw, &X, &Qout, &eff, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks, &q_bytes, &xs, &qstr, &xdiv, &beta, &lbeta};
@@ -6394,17 +8281,18 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Fusion E1 bit 66 / R8 Adaptive MoE bit 86: T=2..16 compact [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
+  /* R10 FLUTE / R7 Fusion E1 bit 66 / R8 Adaptive MoE bit 86: T=2..16 compact [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
   if (k0 == OP_GEMV_EXP && !mk.rec && T >= 2u && T <= 16u && i + 1u < i1 &&
-      ((b->k[K_INK_GEXP_IQ3XXS_SITU_NJ1_R8] && b->k[K_INK_GEXP_IQ3XXS_SITU_NJM_R8]) || b->k[K_INK_GEXP_IQ3XXS_SITU_COMPACT_R7]) &&
+      ((b->ink_iq3_flute && (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7])) ||
+       (!b->ink_iq3_flute && ((b->k[K_INK_GEXP_IQ3XXS_SITU_NJ1_R8] && b->k[K_INK_GEXP_IQ3XXS_SITU_NJM_R8]) || b->k[K_INK_GEXP_IQ3XXS_SITU_COMPACT_R7]))) &&
       o0->w->kind == MAT_RAWQ && o0->w->sub == 18u) {
     const op *o1 = &g->ops[i + 1u];
     const u32 K = o0->nh;
-    const int skip_sort = T <= ink_moe_slot_max(b) && b->ink_moe_all_slot &&
+    const int skip_sort = T <= ink_moe_slot_max(b) && b->ink_moe_all_slot && !b->ink_iq3_flute &&
                           b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
     const u32 mp_a = T * K, mp_b = m->n_exp + (T * K) / 4u;
     const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
-    const int use_adap = b->k[K_INK_GEXP_IQ3XXS_SITU_NJ1_R8] && b->k[K_INK_GEXP_IQ3XXS_SITU_NJM_R8];
+    const int use_adap = !b->ink_iq3_flute && b->k[K_INK_GEXP_IQ3XXS_SITU_NJ1_R8] && b->k[K_INK_GEXP_IQ3XXS_SITU_NJM_R8];
     const int sep_packs = use_adap && ink_moe_adap_mode() >= 1 && b->k[K_INK_MOE_SORT_ADAP_R8] &&
                           b->ms_packs1 && b->ms_npacks1 && b->ms_packsM && b->ms_npacksM;
     const int has_packs = sep_packs || (b->k[K_INK_MOE_SORT_COMPACT_R6] && b->ms_packs && b->ms_npacks);
@@ -6426,7 +8314,14 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       u32 bstr = 0u, qstr = o1->bstr, xdiv = o0->astr ? 1u : K;
       float beta = o1->clamp, lbeta = o1->lam;
       tr_span(g, i, 2u);
-      if (use_adap) {
+      if (b->ink_iq3_flute) {
+        void *fa[] = {&qw, &X, &bout, &qout, &eff, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                      &q_bytes, &xs, &bstr, &qstr, &xdiv, &beta, &lbeta};
+        const int kf = b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10]
+                           ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10
+                           : K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7;
+        launch_t(b, kf, eff / 32u, max_packs, fa);
+      } else if (use_adap) {
         const u32 mp1 = sep_packs ? (T * K < m->n_exp ? T * K : m->n_exp) : max_packs;
         const u32 mpM = sep_packs ? ((T * K) / 2u < max_packs ? (T * K) / 2u : max_packs) : max_packs;
         void *p1 = sep_packs ? b->ms_packs1 : b->ms_packs, *np1 = sep_packs ? b->ms_npacks1 : b->ms_npacks;
@@ -6446,9 +8341,10 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* g18 bit 37 / g09 bit 19: T==1 [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] -> ie_inkling_gexp_iq3xxs_situ_r3/r2 */
+  /* R10 FLUTE / g18 bit 37 / g09 bit 19: T==1 [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
   if (k0 == OP_GEMV_EXP && !mk.rec && T == 1u && i + 1u < i1 &&
-      (b->k[K_INK_GEXP_IQ3XXS_SITU_R3] || b->k[K_INK_GEXP_IQ3XXS_SITU_R2]) &&
+      ((b->ink_iq3_flute && (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_R7])) ||
+       (!b->ink_iq3_flute && (b->k[K_INK_GEXP_IQ3XXS_SITU_R3] || b->k[K_INK_GEXP_IQ3XXS_SITU_R2]))) &&
       o0->w->kind == MAT_RAWQ && o0->w->sub == 18u) {
     const op *o1 = &g->ops[i + 1u];
     if (o1->kind == OP_SITU && o1->a == o0->b && o1->aoff == 0u && o0->boff == 0u &&
@@ -6464,16 +8360,144 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       u32 astr = o0->astr, bstr = 0u, qstr = o1->bstr;
       float beta = o1->clamp, lbeta = o1->lam;
       void *args[] = {&qw, &xq, &bout, &qout, &eff, &nb, &rt, &q_bytes, &astr, &bstr, &qstr, &beta, &lbeta};
-      const int ks = b->k[K_INK_GEXP_IQ3XXS_SITU_R3] ? K_INK_GEXP_IQ3XXS_SITU_R3 : K_INK_GEXP_IQ3XXS_SITU_R2;
+      const int ks = b->ink_iq3_flute
+                         ? (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10]
+                                ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10
+                                : K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_R7)
+                         : (b->k[K_INK_GEXP_IQ3XXS_SITU_R3] ? K_INK_GEXP_IQ3XXS_SITU_R3 : K_INK_GEXP_IQ3XXS_SITU_R2);
       tr_span(g, i, 2u);
       launch_t(b, ks, (eff + 31u) / 32u, o0->nh, args);
       return 2u;
     }
   }
 
-  /* R7/R9 Fusion D1 (bit 64 r7 T<=4 / bit 96 r9 CT=8 T=2..8): (wqkv | wq+wk+wv) + q_clip [+ k_dyn + v_dyn] */
+  /* Wave 11 R55 (H20 bit 121): Single-Launch [QKV + q_clip + inline k_dyn/v_dyn + K/V sconv + vclip + f16 KV] (-48 L) */
+  if (k0 == OP_GEMV_Q8 && !sc_tree && !mk.rec && !ctx_on && !b->kvq8 && !b->kvq4 && T >= 1u && T <= 8u &&
+      b->k[K_INK_QKV_SCONV_KV_R11] && b->ink_qhead_cnt && m->hd == 128u && m->n_head > 0u && m->n_kv == 8u &&
+      !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
+      o0->w->nb >= 8u && (o0->w->nb & 7u) == 0u) {
+    const u32 nh = m->n_head, nkv = m->n_kv, hd = 128u, qd = nh * hd, kvd = nkv * hd, nb = o0->w->nb;
+    u32 n_d1 = 0u, i_qc = 0u;
+    int packed = 0, has_dyn = 0;
+    if (o0->w->rows == qd + 2u * kvd && i + 6u < i1 && g->ops[i + 1u].kind == OP_VCLIP) {
+      const op *oqc = &g->ops[i + 1u];
+      if (oqc->a == o0->b && oqc->aoff == 0u && oqc->n == qd && oqc->nh == nh && oqc->qstr == hd) {
+        packed = 1; n_d1 = 2u; i_qc = i + 1u;
+      }
+    } else if (o0->w->rows == qd && i + 8u < i1 &&
+               g->ops[i + 1u].kind == OP_GEMV_Q8 && g->ops[i + 2u].kind == OP_GEMV_Q8 &&
+               g->ops[i + 3u].kind == OP_VCLIP) {
+      const op *ok = &g->ops[i + 1u], *ov = &g->ops[i + 2u], *oqc = &g->ops[i + 3u];
+      if (!ok->v && ok->res < 0 && !ok->nv && ok->boff == 0u && ok->w->rows == kvd && ok->w->nb == nb &&
+          !ov->v && ov->res < 0 && !ov->nv && ov->boff == 0u && ov->w->rows == kvd && ov->w->nb == nb &&
+          oqc->a == o0->b && oqc->aoff == 0u && oqc->n == qd && oqc->nh == nh && oqc->qstr == hd) {
+        n_d1 = 4u; i_qc = i + 3u;
+        if (i + 10u < i1 && g->ops[i + 4u].kind == OP_GEMV_Q8 && g->ops[i + 5u].kind == OP_GEMV_Q8) {
+          const op *okd = &g->ops[i + 4u], *ovd = &g->ops[i + 5u];
+          if (!okd->v && okd->res < 0 && !okd->nv && okd->boff == 0u && okd->w->nb == nb && okd->w->rows == 4u * nkv &&
+              !ovd->v && ovd->res < 0 && !ovd->nv && ovd->boff == 0u && ovd->w->nb == nb && ovd->w->rows == 4u * nkv &&
+              okd->a == ok->a && okd->aoff == ok->aoff && ovd->a == ov->a && ovd->aoff == ov->aoff) {
+            has_dyn = 1; n_d1 = 6u;
+          }
+        }
+      }
+    }
+    if (n_d1 && i + n_d1 + 4u < i1) {
+      const u32 i_sc = i + n_d1, i_kv = i_sc + 4u;
+      const op *oqc = &g->ops[i_qc];
+      const op *ok = packed ? o0 : &g->ops[i + 1u];
+      const op *ov = packed ? o0 : &g->ops[i + 2u];
+      const op *okd = has_dyn ? &g->ops[i + 4u] : NULL;
+      const op *ovd = has_dyn ? &g->ops[i + 5u] : NULL;
+      const op *osck = &g->ops[i_sc], *okc = &g->ops[i_sc + 1u];
+      const op *oscv = &g->ops[i_sc + 2u], *ovc = &g->ops[i_sc + 3u], *okv = &g->ops[i_kv];
+      if (osck->kind == OP_SCONV && okc->kind == OP_VCLIP && oscv->kind == OP_SCONV &&
+          ovc->kind == OP_VCLIP && okv->kind == OP_KV &&
+          osck->n == kvd && oscv->n == kvd &&
+          osck->a == ok->b && osck->aoff == (packed ? qd * 4u : 0u) &&
+          oscv->a == ov->b && oscv->aoff == (packed ? (qd + kvd) * 4u : 0u) &&
+          osck->c == (has_dyn ? okd->b : -1) && oscv->c == (has_dyn ? ovd->b : -1) &&
+          (!has_dyn || (osck->coff == 0u && oscv->coff == 0u &&
+                        g->bufs[okd->b].last <= i_kv && g->bufs[ovd->b].last <= i_kv)) &&
+          okc->a == osck->b && okc->aoff == 0u && ovc->a == oscv->b && ovc->aoff == 0u &&
+          okv->a == okc->b && okv->b == ovc->b && osck->escale == oscv->escale &&
+          okc->clamp > 0.0f && !okc->v && !okc->norope && !ovc->v && ovc->clamp == 0.0f &&
+          g->kv_len[okv->kvi] > 0u && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx) &&
+          g->bufs[osck->b].last <= i_kv && g->bufs[okc->b].last <= i_kv &&
+          g->bufs[oscv->b].last <= i_kv && g->bufs[ovc->b].last <= i_kv) {
+        const int inb[3] = {o0->a, ok->a, ov->a};
+        const int outb[4] = {o0->b, oqc->b, packed ? -1 : ok->b, packed ? -1 : ov->b};
+        int ok_dj = 1;
+        for (int a = 0; ok_dj && a < 4; a++) {
+          if (outb[a] < 0) continue;
+          for (int c = 0; ok_dj && c < 3; c++)
+            if (!buf_disjoint(g, inb[c], outb[a])) ok_dj = 0;
+          for (int d = a + 1; ok_dj && d < 4; d++)
+            if (outb[d] >= 0 && !buf_disjoint(g, outb[a], outb[d])) ok_dj = 0;
+        }
+        if (ok_dj) {
+          void *qw_q = b->d[i].w0, *qs_q = b->d[i].w1;
+          void *xq_q = b->arena + g->bufs[o0->a].off + o0->aoff;
+          void *y_q_raw = b->arena + g->bufs[o0->b].off + o0->boff;
+          void *y_q_clip = b->arena + g->bufs[oqc->b].off + oqc->boff;
+          void *qw_k = packed ? (void *)((uint32_t *)qw_q + (size_t)qd * nb * 8u) : b->d[i + 1u].w0;
+          void *qs_k = packed ? (void *)((uint16_t *)qs_q + (size_t)qd * nb) : b->d[i + 1u].w1;
+          void *xq_k = packed ? xq_q : (b->arena + g->bufs[ok->a].off + ok->aoff);
+          void *y_k = packed ? (void *)((float *)y_q_raw + qd) : (b->arena + g->bufs[ok->b].off + ok->boff);
+          void *qw_v = packed ? (void *)((uint32_t *)qw_q + (size_t)(qd + kvd) * nb * 8u) : b->d[i + 2u].w0;
+          void *qs_v = packed ? (void *)((uint16_t *)qs_q + (size_t)(qd + kvd) * nb) : b->d[i + 2u].w1;
+          void *xq_v = packed ? xq_q : (b->arena + g->bufs[ov->a].off + ov->aoff);
+          void *y_v = packed ? (void *)((float *)y_q_raw + qd + kvd) : (b->arena + g->bufs[ov->b].off + ov->boff);
+          void *qw_kd = has_dyn ? b->d[i + 4u].w0 : NULL, *qs_kd = has_dyn ? b->d[i + 4u].w1 : NULL;
+          void *qw_vd = has_dyn ? b->d[i + 5u].w0 : NULL, *qs_vd = has_dyn ? b->d[i + 5u].w1 : NULL;
+          void *v_qclip = b->d[i_qc].w0;
+          void *vk = b->d[i_sc].w0, *vv = b->d[i_sc + 2u].w0;
+          float *ring_k = b->sc_ring + (size_t)osck->scoff * 4u;
+          float *ring_v = b->sc_ring + (size_t)oscv->scoff * 4u;
+          float *hist_k = (T > 1u && b->sc_defer) ? (b->sc_hist + (size_t)osck->scoff) : NULL;
+          float *hist_v = (T > 1u && b->sc_defer) ? (b->sc_hist + (size_t)oscv->scoff) : NULL;
+          void *kc0 = kv_ptr(b, 0, okv->kvi, 0), *vc0 = kv_ptr(b, 1, okv->kvi, 0);
+          u32 nh_u = nh, nkv_u = nkv, hd_u = hd, nb_u = nb, kvlen = g->kv_len[okv->kvi];
+          u32 norope = oqc->norope, win = oqc->win, TT = T;
+          float q_clamp = oqc->clamp, q_esc = oqc->escale;
+          float sc_esc = osck->escale, k_clamp = okc->clamp, v_eps = ovc->escale;
+          u32 xs_q = g->bufs[o0->a].stride, xs_k = g->bufs[ok->a].stride, xs_v = g->bufs[ov->a].stride;
+          u32 ys_qr = g->bufs[o0->b].stride, ys_qc = g->bufs[oqc->b].stride;
+          u32 ys_k = g->bufs[ok->b].stride, ys_v = g->bufs[ov->b].stride;
+          u32 hrs = hist_k ? b->sc_hist_stride : 0u;
+          if ((((uintptr_t)y_q_raw | (uintptr_t)y_q_clip | (uintptr_t)y_k | (uintptr_t)y_v |
+                (uintptr_t)vk | (uintptr_t)vv | (uintptr_t)ring_k | (uintptr_t)ring_v |
+                (uintptr_t)kc0 | (uintptr_t)vc0) & 15u) == 0u &&
+              (!v_qclip || ((uintptr_t)v_qclip & 15u) == 0u) &&
+              (!hist_k || ((((uintptr_t)hist_k | (uintptr_t)hist_v) & 15u) == 0u && (hrs & 3u) == 0u)) &&
+              (T == 1u || ((ys_qr | ys_qc | ys_k | ys_v) & 15u) == 0u)) {
+            u32 gx = (qd >> 4u) + (kvd >> 4u) + (kvd >> 4u);
+            void *fa[] = {&qw_q, &qs_q, &xq_q, &y_q_raw, &y_q_clip,
+                          &qw_k, &qs_k, &xq_k, &y_k,
+                          &qw_v, &qs_v, &xq_v, &y_v,
+                          &qw_kd, &qs_kd, &qw_vd, &qs_vd,
+                          &v_qclip,
+                          &vk, &ring_k, &hist_k,
+                          &vv, &ring_v, &hist_v,
+                          &kc0, &vc0, &b->ink_qhead_cnt,
+                          &nh_u, &nkv_u, &hd_u, &nb_u, &kvlen,
+                          &q_clamp, &norope, &q_esc, &win,
+                          &sc_esc, &k_clamp, &v_eps,
+                          &pos, &TT,
+                          &xs_q, &xs_k, &xs_v,
+                          &ys_qr, &ys_qc, &ys_k, &ys_v, &hrs};
+            tr_span(g, i, n_d1 + 5u);
+            launch(b, K_INK_QKV_SCONV_KV_R11, gx, fa);
+            return n_d1 + 5u;
+          }
+        }
+      }
+    }
+  }
+
+  /* R7/R9 Fusion D1 (bit 64 r7 T<=4 / bit 96 r9 CT=8 T=2..8; R53 2-slice T=9..16): (wqkv | wq+wk+wv) + q_clip [+ k_dyn + v_dyn] */
   if (k0 == OP_GEMV_Q8 && !mk.rec && !ctx_on && T >= 1u &&
-      ((b->k[K_INK_QKV_QCLIP_T8_R9] && T <= 8u) || (b->k[K_INK_QKV_QCLIP_R7] && T <= 4u)) &&
+      ((b->k[K_INK_QKV_QCLIP_T8_R9] && T <= (ink_ver_slice8() ? 16u : 8u)) || (b->k[K_INK_QKV_QCLIP_R7] && T <= 4u)) &&
       i + 1u < i1 && b->ink_qhead_cnt && m->hd == 128u && m->n_head > 0u && m->n_kv > 0u &&
       !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
       o0->w->nb >= 8u && (o0->w->nb & 7u) == 0u) {
@@ -6542,7 +8566,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         void *y_vd = has_dyn ? (b->arena + g->bufs[ovd->b].off + ovd->boff) : NULL;
         void *v_qclip = b->d[i_qc].w0;
         u32 rows_kd = has_dyn ? okd->w->rows : 0u, rows_vd = has_dyn ? ovd->w->rows : 0u;
-        u32 nh_u = nh, nkv_u = nkv, hd_u = hd, nb_u = nb, norope = oqc->norope, win = oqc->win, TT = T;
+        u32 nh_u = nh, nkv_u = nkv, hd_u = hd, nb_u = nb, norope = oqc->norope, win = oqc->win;
         float clamp = oqc->clamp, esc = oqc->escale;
         u32 xs_q = g->bufs[o0->a].stride, xs_k = g->bufs[ok->a].stride, xs_v = g->bufs[ov->a].stride;
         u32 ys_qr = g->bufs[o0->b].stride, ys_qc = g->bufs[oqc->b].stride;
@@ -6557,27 +8581,41 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
                        : ((qd >> 5u) + ((kvd + 31u) >> 5u) + ((kvd + 31u) >> 5u) +
                           (rows_kd ? ((rows_kd + 31u) >> 5u) : 0u) + (rows_vd ? ((rows_vd + 31u) >> 5u) : 0u));
           if (gx >= 253u && gx <= 256u) gx = 257u;
-          void *fa[] = {&qw_q, &qs_q, &xq_q, &y_q_raw, &y_q_clip,
-                        &qw_k, &qs_k, &xq_k, &y_k,
-                        &qw_v, &qs_v, &xq_v, &y_v,
-                        &qw_kd, &qs_kd, &y_kd,
-                        &qw_vd, &qs_vd, &y_vd,
-                        &v_qclip, &b->ink_qhead_cnt,
-                        &nh_u, &nkv_u, &hd_u, &rows_kd, &rows_vd, &nb_u,
-                        &clamp, &norope, &esc, &win, &pos, &TT,
-                        &xs_q, &xs_k, &xs_v,
-                        &ys_qr, &ys_qc, &ys_k, &ys_v, &ys_kd, &ys_vd};
           tr_span(g, i, n_span);
-          launch(b, use_d1_r9 ? K_INK_QKV_QCLIP_T8_R9 : K_INK_QKV_QCLIP_R7, gx, fa);
+          const u32 step = use_d1_r9 ? 8u : 4u;
+          for (u32 s0 = 0u; s0 < T; s0 += step) {
+            u32 sT = (T - s0 > step) ? step : (T - s0);
+            u32 spos = pos + s0;
+            void *xq_qs = (char *)xq_q + (size_t)s0 * xs_q;
+            void *y_qrs = (char *)y_q_raw + (size_t)s0 * ys_qr;
+            void *y_qcs = (char *)y_q_clip + (size_t)s0 * ys_qc;
+            void *xq_ks = (char *)xq_k + (size_t)s0 * xs_k;
+            void *y_ks = (char *)y_k + (size_t)s0 * ys_k;
+            void *xq_vs = (char *)xq_v + (size_t)s0 * xs_v;
+            void *y_vs = (char *)y_v + (size_t)s0 * ys_v;
+            void *y_kds = y_kd ? ((char *)y_kd + (size_t)s0 * ys_kd) : NULL;
+            void *y_vds = y_vd ? ((char *)y_vd + (size_t)s0 * ys_vd) : NULL;
+            void *fa[] = {&qw_q, &qs_q, &xq_qs, &y_qrs, &y_qcs,
+                          &qw_k, &qs_k, &xq_ks, &y_ks,
+                          &qw_v, &qs_v, &xq_vs, &y_vs,
+                          &qw_kd, &qs_kd, &y_kds,
+                          &qw_vd, &qs_vd, &y_vds,
+                          &v_qclip, &b->ink_qhead_cnt,
+                          &nh_u, &nkv_u, &hd_u, &rows_kd, &rows_vd, &nb_u,
+                          &clamp, &norope, &esc, &win, &spos, &sT,
+                          &xs_q, &xs_k, &xs_v,
+                          &ys_qr, &ys_qc, &ys_k, &ys_v, &ys_kd, &ys_vd};
+            launch(b, use_d1_r9 ? K_INK_QKV_QCLIP_T8_R9 : K_INK_QKV_QCLIP_R7, gx, fa);
+          }
           return n_span;
         }
       }
     }
   }
 
-  /* R7/R9 Fusion D2 (bit 65 r7 T<=4 / bit 97 r9 CT=8 T=2..8): [wrel, r_clip(d_rel=16), wsink, wagt] */
+  /* R7/R9 Fusion D2 (bit 65 r7 T<=4 / bit 97 r9 CT=8 T=2..8; R53 2-slice T=9..16): [wrel, r_clip(d_rel=16), wsink, wagt] */
   if (k0 == OP_GEMV_Q8 && !mk.rec && !ctx_on && T >= 1u &&
-      ((b->k[K_INK_REL_CLIP_SINK_GATE_T8_R9] && T <= 8u) || (b->k[K_INK_REL_CLIP_SINK_GATE_R7] && T <= 4u)) &&
+      ((b->k[K_INK_REL_CLIP_SINK_GATE_T8_R9] && T <= (ink_ver_slice8() ? 16u : 8u)) || (b->k[K_INK_REL_CLIP_SINK_GATE_R7] && T <= 4u)) &&
       i + 3u < i1 && m->n_head > 0u &&
       !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
       o0->w->nb >= 8u && (o0->w->nb & 7u) == 0u && o0->w->rows == m->n_head * 16u) {
@@ -6601,7 +8639,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       void *y_g = b->arena + g->bufs[o3->b].off + o3->boff;
       void *xq = b->arena + g->bufs[o0->a].off + o0->aoff;
       u32 nh_u = nh, dr_u = d_rel, rows_g = o3->w->rows, nb_u = nb;
-      u32 norope = o1->norope, win = o1->win, TT = T;
+      u32 norope = o1->norope, win = o1->win;
       float clamp = o1->clamp, esc = o1->escale;
       u32 xs = g->bufs[o0->a].stride, ys_rc = g->bufs[o1->b].stride;
       u32 ys_s = g->bufs[o2->b].stride, ys_g = g->bufs[o3->b].stride;
@@ -6610,14 +8648,23 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         u32 gx = use_d2_r9 ? (nh + ((nh + 15u) >> 4u) + ((rows_g + 15u) >> 4u))
                            : (((nh + 7u) >> 3u) + ((nh + 31u) >> 5u) + ((rows_g + 31u) >> 5u));
         if (gx >= 253u && gx <= 256u) gx = 257u;
-        void *fa[] = {&qw_r, &qs_r, &v_rc, &y_rc,
-                      &qw_s, &qs_s, &y_s,
-                      &qw_g, &qs_g, &y_g,
-                      &xq, &nh_u, &dr_u, &rows_g, &nb_u,
-                      &clamp, &norope, &esc, &win, &pos, &TT,
-                      &xs, &ys_rc, &ys_s, &ys_g};
         tr_span(g, i, 4u);
-        launch(b, use_d2_r9 ? K_INK_REL_CLIP_SINK_GATE_T8_R9 : K_INK_REL_CLIP_SINK_GATE_R7, gx, fa);
+        const u32 step = use_d2_r9 ? 8u : 4u;
+        for (u32 s0 = 0u; s0 < T; s0 += step) {
+          u32 sT = (T - s0 > step) ? step : (T - s0);
+          u32 spos = pos + s0;
+          void *xq_s = (char *)xq + (size_t)s0 * xs;
+          void *y_rcs = (char *)y_rc + (size_t)s0 * ys_rc;
+          void *y_ss = (char *)y_s + (size_t)s0 * ys_s;
+          void *y_gs = (char *)y_g + (size_t)s0 * ys_g;
+          void *fa[] = {&qw_r, &qs_r, &v_rc, &y_rcs,
+                        &qw_s, &qs_s, &y_ss,
+                        &qw_g, &qs_g, &y_gs,
+                        &xq_s, &nh_u, &dr_u, &rows_g, &nb_u,
+                        &clamp, &norope, &esc, &win, &spos, &sT,
+                        &xs, &ys_rc, &ys_s, &ys_g};
+          launch(b, use_d2_r9 ? K_INK_REL_CLIP_SINK_GATE_T8_R9 : K_INK_REL_CLIP_SINK_GATE_R7, gx, fa);
+        }
         return 4u;
       }
     }
@@ -6664,13 +8711,14 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       void *args[] = {&w, &x, &lg, &rows, &cols, &K, &eb, &sc, &rt, &b->gm_count};
       tr_span(g, i, 2u);
       launch(b, K_INK_ROUTER_ROUTE_EXACT_T1_R7, gx, args);
+      if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, rt, g->bufs[o1->b].stride, 1u);
       return 2u;
     }
   }
 
   /* R7 Fusion A bit 60: T=2..16 exact [OP_GEMV_F32(router), OP_MOE_ROUTE (+ compact sort)] -> ie_inkling_router_route_sort_ver_r7 */
   if (k0 == OP_GEMV_F32 && !mk.rec && T >= 2u && T <= 16u && i + 1u < i1 && b->k[K_INK_ROUTER_ROUTE_SORT_VER_R7] &&
-      !(b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1) &&
+      !(!b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1) &&
       !o0->v && o0->res < 0 && !o0->nv && o0->w->rows > 0u && o0->w->rows <= 256u && o0->w->cols > 0u &&
       b->gm_count) {
     const op *o1 = &g->ops[i + 1u];
@@ -6679,7 +8727,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         buf_disjoint(g, o0->a, o0->b) && buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->b, o1->b)) {
       const u32 K = o1->nh, ne = m->n_exp;
       const u32 slot_max = ink_moe_slot_max(b);
-      const int skip_sort = T <= slot_max && b->ink_moe_all_slot &&
+      const int skip_sort = T <= slot_max && b->ink_moe_all_slot && !b->ink_iq3_flute &&
                             b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
       const u32 mp_a = T * K, mp_b = ne + (T * K) / 4u;
       const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
@@ -6703,7 +8751,8 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
                         &offs_p, &list_p, &packs_p, &npacks_p, &b->gm_count};
         tr_span(g, i, 2u);
         launch(b, K_INK_ROUTER_ROUTE_SORT_VER_R7, (rows + 3u) / 4u, args);
-        if (need_compact && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 2 &&
+        if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, rt, rst, T);
+        if (need_compact && !b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 2 &&
             b->ms_packs1 && b->ms_npacks1 && b->ms_packsM && b->ms_npacksM) {
           u32 ne_u = ne;
           void *sa[] = {&rt, &rst, &TT, &KK, &ne_u, &b->ms_offs, &b->ms_list,
@@ -6715,13 +8764,16 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Wave 3 bit 74: T >= 17 [OP_GEMV_F32(router), OP_MOE_ROUTE] -> ie_inkling_router_route_pf_r7 (+ worklist/sort) */
-  if (k0 == OP_GEMV_F32 && !mk.rec && T >= 17u && i + 1u < i1 && b->k[K_INK_ROUTER_ROUTE_PF_R7] &&
+  /* R10 bit 117 (H08) / R7 bit 74: T >= 17 [OP_GEMV_F32(router), OP_MOE_ROUTE] -> bf16_r10 or pf_r7 (+ worklist/sort) */
+  if (k0 == OP_GEMV_F32 && !mk.rec && T >= 17u && i + 1u < i1 &&
+      (b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] || b->k[K_INK_ROUTER_ROUTE_PF_R7]) &&
       !o0->v && o0->res < 0 && !o0->nv && o0->w->rows > 0u && o0->w->rows <= 256u &&
-      o0->w->cols > 0u && (o0->w->cols & 3u) == 0u && b->at_count &&
-      ((T + 63u) / 64u) <= m->n_head * b->at_tmax) {
+      o0->w->cols > 0u && (o0->w->cols & 3u) == 0u && b->at_count) {
+    const int use_bf16 = b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] && o0->w->cols >= 16u && (o0->w->cols & 15u) == 0u &&
+                         ((T + 15u) / 16u) <= m->n_head * b->at_tmax;
+    const int use_r7 = !use_bf16 && b->k[K_INK_ROUTER_ROUTE_PF_R7] && ((T + 63u) / 64u) <= m->n_head * b->at_tmax;
     const op *o1 = &g->ops[i + 1u];
-    if (o1->kind == OP_MOE_ROUTE && o1->a == o0->b && o1->aoff == 0u && o0->boff == 0u &&
+    if ((use_bf16 || use_r7) && o1->kind == OP_MOE_ROUTE && o1->a == o0->b && o1->aoff == 0u && o0->boff == 0u &&
         o1->n == o0->w->rows && o1->nh > 0u && o1->nh <= 32u &&
         buf_disjoint(g, o0->a, o0->b) && buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->b, o1->b)) {
       void *w = b->d[i].w0;
@@ -6737,7 +8789,9 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         void *fa[] = {&w, &x, &lg, &rows, &cols, &nul, &nul, &xs, &ys, &rs, &TT,
                       &K, &eb, &sc, &rt, &ost, &b->at_count};
         tr_span(g, i, 2u);
-        launch_t(b, K_INK_ROUTER_ROUTE_PF_R7, (rows + 31u) / 32u, (T + 63u) / 64u, fa);
+        if (use_bf16) launch_t(b, K_INK_GEMM_F32_ROUTER_BF16_R10, (rows + 31u) / 32u, (T + 15u) / 16u, fa);
+        else launch_t(b, K_INK_ROUTER_ROUTE_PF_R7, (rows + 31u) / 32u, (T + 63u) / 64u, fa);
+        if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, rt, ost, T);
         u32 ne = m->n_exp;
         if (T * K > IE_MS_MAXP || ne > 1024u)
           ie_die("flint chunk: %u pairs (at most %u), %u experts (at most 1024)", T * K, IE_MS_MAXP, ne);
@@ -6774,6 +8828,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         void *args[] = {&w, &x, &lg, &rows, &cols, &K, &eb, &sc, &rt, &b->gm_count};
         tr_span(g, i, 2u);
         launch(b, K_INK_ROUTER_ROUTE_DEC_R2, (rows + 3u) / 4u, args);
+        if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, rt, g->bufs[o1->b].stride, 1u);
         return 2u;
       }
     }
@@ -6921,6 +8976,7 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
   b->live_snap = -1;
   b->live_hbuf = -1;
   b->q16_ready_op = -1;
+  b->ds.frnn_prev_valid = 0;
   if (!i0) {
     b->rec_n = 0; /* a new model run without an accept: as accept(0) */
     if (pos == 0u) {
@@ -6996,11 +9052,11 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
           HIP(H.Malloc((void **)&b->ink_toks_dev, (size_t)T * 4u));
           b->ink_toks_cap = T;
         }
-        if (b->ink_toks_pin && T <= 512u) {
+        if (b->ink_toks_pin && T <= b->ink_toks_slot) {
           const u32 ridx = b->ink_toks_ring++;
           const u32 rslot = ridx & 15u;
           if (ridx >= 16u && b->ink_toks_ev[rslot]) HIP(H.EventSynchronize(b->ink_toks_ev[rslot]));
-          u32 *tp = b->ink_toks_pin + (size_t)rslot * 512u;
+          u32 *tp = b->ink_toks_pin + (size_t)rslot * b->ink_toks_slot;
           memcpy(tp, toks, (size_t)T * 4u);
           HIP(H.MemcpyAsync(b->ink_toks_dev, tp, (size_t)T * 4u, hipMemcpyHostToDevice, cur_stream));
           if (b->ink_toks_ev[rslot]) HIP(H.EventRecord(b->ink_toks_ev[rslot], cur_stream));
@@ -7172,6 +9228,10 @@ static u32 ink_nsplit_bucket(u32 np, u32 max_sp) {
 
 static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits, double *ms) {
   gpu_backend *b = (gpu_backend *)bk;
+#ifdef _WIN32
+  if (b->snap_async_busy && (pos < b->snap_async_pos || pos + 1u >= b->snap_async_pos + b->snap_async_slack))
+    snap_async_join(b);
+#endif
   const model *m = b->m;
   const graph *g = b->g;
   static int gb = -1;
@@ -7214,7 +9274,8 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
   }
   const int use_ink_graph =
       ink_gr_env && m->arch == ARCH_INKLING2 && !b->prof && !gdump_on() && !mk.on && !b->hs_on &&
-      !tr_f && !tr_gpu && !b->base.ext_rows && !b->kvq8 && !b->kvq4 &&
+      !b->route_stats && !tr_f && !tr_gpu && !b->base.ext_rows && !b->kvq8 && !b->kvq4 && !b->ink_glob_kv_mode &&
+      !b->moe_c_on &&
       b->ink_ctx_dev && b->ink_ctx_host &&
       b->k[K_INK_EMBED_Q8_CTX_R2] && b->k[K_INK_VCLIP_CTX_R2] && b->k[K_INK_SCONV_CTX_R2] &&
       b->k[K_INK_KV_STORE_CTX_R2] && b->k[K_INK_REL_ATTN_DEC_CTX_R2] &&
@@ -7225,7 +9286,7 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
     kv_ensure(b, pos + 1u);
     if (!b->ink_gstream) {
       HIP(H.StreamCreateWithFlags ? H.StreamCreateWithFlags(&b->ink_gstream, 1u) : H.StreamCreate(&b->ink_gstream));
-      for (u32 p = 0; p < 8u; p++) HIP(H.EventCreate(&b->ink_pev[p]));
+      for (u32 p = 0; p < 8u; p++) HIP(ie_event_create_notiming(&b->ink_pev[p]));
     }
     const u32 swa_np = (pos + 1u > 1024u) ? 1024u : (pos + 1u);
     const u32 swa_sp = b->at_count ? ink_nsplit_bucket(swa_np, 64u) : 1u;
@@ -7235,6 +9296,7 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
     if (np_cfg > 1u && g->n_visits_rec < np_cfg) np_cfg = 1u;
     const uint64_t mhash = (b->ink_mask ^ (b->ink_mask >> 32)) ^
                            ((b->ink_mask2 ^ (b->ink_mask2 >> 32)) * 0x9e3779b9ULL) ^
+                           ((b->ink_mask3 ^ (b->ink_mask3 >> 32)) * 0xbf58476dULL) ^
                            ((uint64_t)np_cfg * 0x85ebca6bULL);
     const uint64_t key = ((uint64_t)swa_sp << 48) | ((uint64_t)glob_sp << 32) | (mhash & 0xffffffffULL);
     if (!b->ink_n_pieces || !b->ink_pgraph[0] || b->ink_graph_key != key) {
@@ -7671,6 +9733,12 @@ static void ds_ctx_kv_launch(gpu_backend *b, u32 pos, u32 T, int dsprof, double 
   float *f0 = feat, *f1 = feat + dim, *f2 = feat + 2u * dim, *f3 = feat + 3u * dim;
   u32 TT = T, qs = b->ds.ctx_q8_str, os0 = 0u, nb_dim = dim / 32u;
   u32 kv_ys = b->ds.ctx_kv_str / 4u, rs0 = 0u;
+  if (b->ds.rope_otf) {
+    if (T > b->ds.rope_cap) ie_die("dspark rope_otf: T=%u > cap=%u", T, b->ds.rope_cap);
+    u32 p0 = pos, TT_r = T, h2_r = h2;
+    void *rfa[] = {&b->ds.rope_inv_freq, &b->ds.rcos, &b->ds.rsin, &p0, &TT_r, &h2_r};
+    launch(b, K_INK_DS_ROPE_FILL_R14, (T * h2 + 255u) / 256u, rfa);
+  }
   for (u32 il = 0; il < d->n_layer; il++) {
     u32 li = il;
     void *ma[] = {&f0, &f1, &f2, &f3, &b->ds.fuse_w, &b->ds.dflare_norm[il], &nul, &b->ds.ctx_q8,
@@ -7690,7 +9758,8 @@ static void ds_ctx_kv_launch(gpu_backend *b, u32 pos, u32 T, int dsprof, double 
       void *src = (char *)b->ds.ctx_kv + (size_t)done * ins;
       uint16_t *kc = b->ds.kc[il] + (size_t)row * kvd;
       uint16_t *vc = b->ds.vc[il] + (size_t)row * kvd;
-      float *cs = b->ds.rcos + (size_t)p_cur * h2, *sn = b->ds.rsin + (size_t)p_cur * h2;
+      const size_t roff = (size_t)(b->ds.rope_otf ? done : p_cur) * h2;
+      float *cs = b->ds.rcos + roff, *sn = b->ds.rsin + roff;
       void *ra[] = {&src, &nul, &kc, &vc, &nul, &b->ds.k_ctx_norm[il], &cs, &sn, &nq0, (void *)&nkv, (void *)&hd, &nrot, &eps, &ins, &qos0, &qstr};
       launch_t(b, K_QKN_ROPE_KV, 2u * nkv, cnt, ra);
       done += cnt;
@@ -7714,9 +9783,27 @@ static void ds_ctx_frnn_launch(gpu_backend *b, u32 row_idx) {
   launch_t(b, K_DS_DFLARE_MIX_R4, 1u, 1u, fa);
 }
 
+static void ds_ctx_frnn_finish(gpu_backend *b, u32 pos, u32 T, int save_prev) {
+  if (save_prev && b->ds.frnn_prev && b->m->arch == ARCH_INKLING2) {
+    const size_t fb = (size_t)b->m->ds->dim * 4u;
+    if (T >= 2u) ds_ctx_frnn_launch(b, T - 2u);
+    HIP(H.MemcpyAsync(b->ds.frnn_prev, b->ds.frnn, fb, hipMemcpyDeviceToDevice, cur_stream));
+    b->ds.frnn_prev_pos = pos + T - 1u;
+    b->ds.frnn_prev_valid = 1;
+  } else {
+    b->ds.frnn_prev_valid = 0;
+  }
+  ds_ctx_frnn_launch(b, T - 1u);
+}
+
 static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint32_t pos, int last_only, uint32_t *out,
                     float *prob) {
   gpu_backend *b = (gpu_backend *)bk;
+#ifdef _WIN32
+  if (b->snap_async_busy && (sec == 0 || sec == 2) &&
+      (pos < b->snap_async_pos || pos + T >= b->snap_async_pos + b->snap_async_slack))
+    snap_async_join(b);
+#endif
   const graph *g = b->g;
   { /* IE_VRAM_TRACE=1: before the first runs, then every 64th */
     static uint32_t nr;
@@ -7751,8 +9838,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
           /* R33: KV rows [pos .. pos + T - 1] were already computed concurrently on ctx_stream; GPU-only wait + 1-WG frnn! */
           HIP(H.StreamWaitEvent(cur_stream, b->ds.ev_ctx_done, 0));
           b->ds.ctx_pending = 0;
-          ds_ctx_frnn_launch(b, T - 1u);
-          (void)last_only;
+          ds_ctx_frnn_finish(b, pos, T, last_only == 2);
           return;
         }
         if (b->ds.ctx_pending) {
@@ -7767,7 +9853,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
         for (u32 il = 0; il < d->n_layer; il++)
           if (b->ds.kv_vm[il]) { ds_kv_ensure(b, pos + T); break; }
         ds_ctx_kv_launch(b, pos, T, dsprof, &tp1, &tp2, &tp3, &tp0);
-        ds_ctx_frnn_launch(b, T - 1u);
+        ds_ctx_frnn_finish(b, pos, T, last_only == 2);
         if (dsprof && T >= 16u) {
           HIP(H.DeviceSynchronize());
           fprintf(stderr, "ds_ctx(pos=%u, T=%u): dflare=%.2f ms, gemm=%.2f ms, rope_kv=%.2f ms, frnn=%.2f ms\n",
@@ -7819,6 +9905,12 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
         u32 BB = B, hs = b->ds.h_str, xqs = b->ds.xq_str, qs = b->ds.q_str, kvs = b->ds.kv_str;
         u32 aqs = b->ds.aq_str, gus = b->ds.gu_str, gqs = b->ds.gq_str;
         u32 h_ys = hs / 4u, q_ys = qs / 4u, kv_ys = kvs / 4u, gu_ys = gus / 4u, rs0 = 0u;
+        if (b->ds.rope_otf) {
+          if (B > b->ds.rope_cap) ie_die("dspark rope_otf: B=%u > cap=%u", B, b->ds.rope_cap);
+          u32 p0 = pos, B_r = B, h2_r = h2;
+          void *rfa[] = {&b->ds.rope_inv_freq, &b->ds.rcos, &b->ds.rsin, &p0, &B_r, &h2_r};
+          launch(b, K_INK_DS_ROPE_FILL_R14, (B * h2 + 255u) / 256u, rfa);
+        }
         for (u32 il = 0; il < d->n_layer; il++) {
           /* pre-attn RMSNorm + Q8 */
           void *na[] = {&b->ds.h, &b->ds.attn_norm[il], &b->ds.xn, (void *)&dim, &eps, &b->ds.xq, &hs, &hs, &xqs};
@@ -7828,14 +9920,15 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
           ds_gemv(b, d->l[il].wk.kind, b->ds.wk0[il], b->ds.wk1[il], b->ds.xq, b->ds.k, kvd, nb_dim, NULL, NULL, BB, xqs, kv_ys, rs0, eps);
           ds_gemv(b, d->l[il].wv.kind, b->ds.wv0[il], b->ds.wv1[il], b->ds.xq, b->ds.v, kvd, nb_dim, NULL, NULL, BB, xqs, kv_ys, rs0, eps);
           /* per-head Q/K RMSNorm + NeoX RoPE in-place (pos .. pos + B - 1) */
-          float *cs = b->ds.rcos + (size_t)pos * h2, *sn = b->ds.rsin + (size_t)pos * h2;
+          const size_t roff = b->ds.rope_otf ? 0u : (size_t)pos * h2;
+          float *cs = b->ds.rcos + roff, *sn = b->ds.rsin + roff;
           u32 nkv0 = 0u, nrot = hd, qstr = hd;
           void *rqa[] = {&b->ds.q, &b->ds.q, &nul, &nul, &b->ds.q_norm[il], &nul, &cs, &sn, (void *)&nh, &nkv0, (void *)&hd, &nrot, &eps, &qs, &qs, &qstr};
           void *rka[] = {&b->ds.k, &b->ds.k, &nul, &nul, &b->ds.k_norm[il], &nul, &cs, &sn, (void *)&nkv, &nkv0, (void *)&hd, &nrot, &eps, &kvs, &kvs, &qstr};
           launch_t(b, K_QKN_ROPE_KV, nh, B, rqa);
           launch_t(b, K_QKN_ROPE_KV, nkv, B, rka);
           /* bidirectional block attention over context KV [0..pos-1] + block KV [0..B-1] */
-          u32 ctx_len = pos, cap = b->ds.kv_cap[il], win = d->l[il].win;
+          u32 ctx_len = pos, cap = b->ds.kv_cap[il], win = b->ds.kv_win[il];
           if (b->k[K_DS_ATTN_LONG_R7] && hd == 128u && nkv > 0u && nh == nkv * 3u && B > 0u && ((qs | kvs) & 15u) == 0u) {
             const u32 ctx_start = (win > 0u && ctx_len > win) ? (ctx_len - win) : 0u;
             const u32 ctx_n = (cap > 0u && ctx_len > ctx_start) ? (ctx_len - ctx_start) : 0u;
@@ -8263,6 +10356,9 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   const int do_ds_ov = !sec && b->ds.ov_mode && b->ds.ctx_stream && b->ds.ready && !last_only &&
                        T >= 2u && !tree && !b->prof && !gdump_on() && !mk.rec && !fused_q4k_head &&
                        g->ds_feat >= 0 && g->i_head + 1u < i1;
+  const int prev_ver = b->in_verify;
+  b->in_verify = (!sec && !last_only && T >= 2u && T <= 16u);
+  fl_cnt = 0;
   if (do_ds_ov) {
     const u32 split_op = (b->ds.ov_mode == 1) ? g->i_head : (g->i_head + 1u);
     for (u32 il = 0; il < b->m->ds->n_layer; il++)
@@ -8290,6 +10386,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
     run_ops(b, sec ? g->n_main : 0, i1, toks, T, pos, wf);
     b->sc_defer = 0;
   }
+  b->in_verify = prev_ver;
   b->tr_on = 0;
   b->skip_argmax = 0;
   mk.rec = 0;
@@ -8532,8 +10629,8 @@ static void snap_alloc(gpu_backend *b, int k) {
     if (!b->snap_pin) {
       if (H.HostMalloc((void **)&b->snap_pin, 2u * SNAP_PIN_CH, 0) == 0 && b->snap_pin) {
         snap_stream_ensure(b);
-        HIP(H.EventCreate(&b->snap_ev[0]));
-        HIP(H.EventCreate(&b->snap_ev[1]));
+        HIP(ie_event_create_notiming(&b->snap_ev[0]));
+        HIP(ie_event_create_notiming(&b->snap_ev[1]));
       } else {
         b->snap_pin = NULL;
       }
@@ -8548,7 +10645,7 @@ static void snap_alloc(gpu_backend *b, int k) {
 static inline int ds_is_ring(const gpu_backend *b, u32 il) { return b->ds.kv_cap[il] < b->g->n_ctx + 16u; }
 static inline u32 ds_snap_rows(const gpu_backend *b, u32 il) {
   const u32 cap = b->ds.kv_cap[il];
-  const u32 win = b->m->ds->l[il].win;
+  const u32 win = b->ds.kv_win[il];
   if (snap_compact_swa() && win && win < cap) return win;
   return cap;
 }
@@ -8559,9 +10656,127 @@ static size_t ds_snap_bytes(const gpu_backend *b) {
     if (ds_is_ring(b, il)) nr += ds_snap_rows(b, il);
   return 2u * nr * b->ds.kv_rowb + (size_t)b->m->ds->dim * 4u;
 }
+#ifdef _WIN32
+static int snap_async_on(void) {
+  static int on = -1;
+  if (on < 0) {
+    const char *ae = getenv("IE_SNAP_ASYNC");
+    if (ae && *ae) on = atoi(ae) != 0;
+    else {
+      const char *de = getenv("IE_DEFER_CKSAVE");
+      on = (de && *de) ? (atoi(de) >= 2) : 1; /* R38 Phase 2 default ON (IE_DEFER_CKSAVE=2); 0/1 opts out */
+    }
+  }
+  return on;
+}
+static DWORD WINAPI snap_async_worker(LPVOID arg) {
+  gpu_backend *b = (gpu_backend *)arg;
+  const model *m = b->m;
+  const graph *g = b->g;
+  for (;;) {
+    EnterCriticalSection(&b->snap_async_cs);
+    while (!b->snap_async_busy && !b->snap_async_stop)
+      SleepConditionVariableCS(&b->snap_async_cv, &b->snap_async_cs, INFINITE);
+    if (b->snap_async_stop) {
+      LeaveCriticalSection(&b->snap_async_cs);
+      break;
+    }
+    const int k = b->snap_async_k;
+    const u32 pos = b->snap_async_pos;
+    const size_t nr = b->snap_async_nr, ds_bytes = b->snap_async_ds;
+    LeaveCriticalSection(&b->snap_async_cs);
+
+    snap_pipe pp = {0};
+    pp.on = 1;
+    if (nr) {
+      const size_t kvb = b->kvrowb;
+      char *sp = b->snap_kv[k];
+      for (uint32_t i = 0; i < m->n_kvl; i++) {
+        if (g->kv_len[i] >= g->n_ctx) continue;
+        const u32 len = g->kv_len[i], w = snap_swa_rows(m, g, i);
+        const size_t wn = (size_t)w * kvb;
+        char *kp = kv_ptr(b, 0, i, 0), *vp = kv_ptr(b, 1, i, 0);
+        snap_ring_slice(b, sp, kp, kvb, len, w, pos, 1, &pp);
+        sp += wn;
+        snap_ring_slice(b, sp, vp, kvb, len, w, pos, 1, &pp);
+        sp += wn;
+      }
+    }
+    if (ds_bytes) {
+      char *sp = b->snap_dskv[k];
+      for (u32 il = 0; il < m->ds->n_layer; il++) {
+        if (!ds_is_ring(b, il)) continue;
+        const u32 len = b->ds.kv_cap[il], w = ds_snap_rows(b, il);
+        const size_t wn = (size_t)w * b->ds.kv_rowb;
+        snap_ring_slice(b, sp, (char *)b->ds.kc[il], b->ds.kv_rowb, len, w, pos, 1, &pp);
+        sp += wn;
+        snap_ring_slice(b, sp, (char *)b->ds.vc[il], b->ds.kv_rowb, len, w, pos, 1, &pp);
+        sp += wn;
+      }
+      /* frnn at end of snap_dskv[k] was copied synchronously by the engine thread before launch */
+    }
+    snap_pipe_flush(b, &pp, 1);
+
+    EnterCriticalSection(&b->snap_async_cs);
+    b->snap_async_busy = 0;
+    WakeAllConditionVariable(&b->snap_async_cv);
+    LeaveCriticalSection(&b->snap_async_cs);
+  }
+  return 0;
+}
+static void snap_async_join(gpu_backend *b) {
+  if (!b->snap_async_init) return;
+  EnterCriticalSection(&b->snap_async_cs);
+  while (b->snap_async_busy) SleepConditionVariableCS(&b->snap_async_cv, &b->snap_async_cs, INFINITE);
+  LeaveCriticalSection(&b->snap_async_cs);
+}
+static void snap_async_shutdown(gpu_backend *b) {
+  if (!b->snap_async_init) return;
+  snap_async_join(b);
+  EnterCriticalSection(&b->snap_async_cs);
+  b->snap_async_stop = 1;
+  WakeAllConditionVariable(&b->snap_async_cv);
+  LeaveCriticalSection(&b->snap_async_cs);
+  if (b->snap_async_th) {
+    WaitForSingleObject(b->snap_async_th, INFINITE);
+    CloseHandle(b->snap_async_th);
+    b->snap_async_th = NULL;
+  }
+  DeleteCriticalSection(&b->snap_async_cs);
+  b->snap_async_init = 0;
+}
+static int snap_async_launch(gpu_backend *b, int k, u32 pos, size_t nr, size_t ds_bytes, u32 slack) {
+  if (!b->snap_async_init) {
+    InitializeCriticalSection(&b->snap_async_cs);
+    InitializeConditionVariable(&b->snap_async_cv);
+    b->snap_async_stop = 0;
+    b->snap_async_busy = 0;
+    b->snap_async_th = CreateThread(NULL, 0, snap_async_worker, b, 0, NULL);
+    if (!b->snap_async_th) {
+      DeleteCriticalSection(&b->snap_async_cs);
+      return 0;
+    }
+    b->snap_async_init = 1;
+  }
+  EnterCriticalSection(&b->snap_async_cs);
+  b->snap_async_k = k;
+  b->snap_async_pos = pos;
+  b->snap_async_nr = nr;
+  b->snap_async_ds = ds_bytes;
+  b->snap_async_slack = slack;
+  b->snap_async_busy = 1;
+  WakeConditionVariable(&b->snap_async_cv);
+  LeaveCriticalSection(&b->snap_async_cs);
+  return 1;
+}
+#else
+static void snap_async_join(gpu_backend *b) { (void)b; }
+static void snap_async_shutdown(gpu_backend *b) { (void)b; }
+#endif
 static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
   gpu_backend *b = (gpu_backend *)bk;
   ds_ctx_drain(b);
+  snap_async_join(b);
   const model *m = b->m;
   const graph *g = b->g;
   const size_t per = (size_t)m->n_vh * m->sd * m->sd * 4, rbytes = (size_t)m->n_rec * GDN_RING * m->conv_dim * 4;
@@ -8590,6 +10805,7 @@ static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
     b->lazy_mask = 0;
     b->lazy_rec = NULL;
     b->rec_n = 0;
+    b->ds.frnn_prev_valid = 0;
   }
   snap_pipe pp = {0};
   pp.on = snap_host() && b->snap_pin && snap_pipe_enabled();
@@ -8612,15 +10828,66 @@ static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
   }
   /* a ring slot is reused by a later position: keep the live window (or full ring when IE_SNAP_COMPACT_SWA=0) */
   const size_t kvb = b->kvrowb;
-  if (nr) {
-    if (!b->snap_kv[k]) {
-      if (snap_host()) {
-        b->snap_kv[k] = malloc(2u * nr * kvb);
-        if (!b->snap_kv[k]) ie_die("out of memory (prompt cache KV ring snapshot)");
-      } else {
-        HIP(H.Malloc((void **)&b->snap_kv[k], 2u * nr * kvb));
+  if (nr && !b->snap_kv[k]) {
+    if (snap_host()) {
+      b->snap_kv[k] = malloc(2u * nr * kvb);
+      if (!b->snap_kv[k]) ie_die("out of memory (prompt cache KV ring snapshot)");
+    } else {
+      HIP(H.Malloc((void **)&b->snap_kv[k], 2u * nr * kvb));
+    }
+  }
+  if (ds_bytes && !b->snap_dskv[k]) {
+    if (snap_host()) {
+      b->snap_dskv[k] = malloc(ds_bytes);
+      if (!b->snap_dskv[k]) ie_die("out of memory (dspark KV ring snapshot)");
+    } else {
+      HIP(H.Malloc((void **)&b->snap_dskv[k], ds_bytes));
+    }
+  }
+  int used_frnn_prev = 0;
+#ifdef _WIN32
+  if (save && m->arch == ARCH_INKLING2 && pp.on && !b->prof && !tr_f && !tr_gpu && snap_async_on() && (nr || ds_bytes)) {
+    u32 min_slack = UINT32_MAX;
+    for (uint32_t i = 0; i < m->n_kvl; i++) {
+      if (g->kv_len[i] >= g->n_ctx) continue;
+      const u32 len = g->kv_len[i], w = snap_swa_rows(m, g, i);
+      const u32 sl = len > w ? len - w : 0u;
+      if (sl < min_slack) min_slack = sl;
+    }
+    if (ds_bytes) {
+      for (u32 il = 0; il < m->ds->n_layer; il++) {
+        if (!ds_is_ring(b, il)) continue;
+        const u32 len = b->ds.kv_cap[il], w = ds_snap_rows(b, il);
+        const u32 sl = len > w ? len - w : 0u;
+        if (sl < min_slack) min_slack = sl;
       }
     }
+    if (min_slack >= 512u && min_slack != UINT32_MAX) {
+      /* Copy wrap-sensitive frnn (9.2 KB) synchronously into its exact tail offset, flush sc_ring+frnn (< 0.5 ms),
+       * then offload the 44 SWA KV rings (176.8 MB) to the background thread on b->snap_cs! */
+      if (ds_bytes) {
+        const size_t fb = (size_t)m->ds->dim * 4u;
+        char *frnn_dst = b->snap_dskv[k] + (ds_bytes - fb);
+        used_frnn_prev = b->ds.frnn_prev && b->ds.frnn_prev_valid && b->ds.frnn_prev_pos == pos;
+        void *frnn_src = used_frnn_prev ? (void *)b->ds.frnn_prev : (void *)b->ds.frnn;
+        snap_copy_pipe(b, (void *)frnn_dst, frnn_src, fb, 1, &pp);
+        if (used_frnn_prev) b->ds.frnn_prev_valid = 0;
+      }
+      snap_pipe_flush(b, &pp, 1);
+      if (!used_frnn_prev) {
+        b->live_snap = k;
+        b->live_snap_pos = pos;
+        b->live_hbuf = hbuf;
+      } else {
+        b->live_snap = -1;
+        b->live_hbuf = -1;
+      }
+      if (snap_async_launch(b, k, pos, nr, ds_bytes, min_slack - 64u)) return;
+      /* Thread creation failed (rare): fall through to synchronous ring copy below */
+    }
+  }
+#endif
+  if (nr) {
     char *sp = b->snap_kv[k];
     for (uint32_t i = 0; i < m->n_kvl; i++) {
       if (g->kv_len[i] >= g->n_ctx) continue;
@@ -8634,14 +10901,6 @@ static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
     }
   }
   if (ds_bytes) {
-    if (!b->snap_dskv[k]) {
-      if (snap_host()) {
-        b->snap_dskv[k] = malloc(ds_bytes);
-        if (!b->snap_dskv[k]) ie_die("out of memory (dspark KV ring snapshot)");
-      } else {
-        HIP(H.Malloc((void **)&b->snap_dskv[k], ds_bytes));
-      }
-    }
     char *sp = b->snap_dskv[k];
     for (u32 il = 0; il < m->ds->n_layer; il++) {
       if (!ds_is_ring(b, il)) continue;
@@ -8653,13 +10912,19 @@ static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
       sp += wn;
     }
     const size_t fb = (size_t)m->ds->dim * 4u;
-    snap_copy_pipe(b, save ? (void *)sp : (void *)b->ds.frnn, save ? (void *)b->ds.frnn : (void *)sp, fb, save, &pp);
+    used_frnn_prev = save && b->ds.frnn_prev && b->ds.frnn_prev_valid && b->ds.frnn_prev_pos == pos;
+    void *frnn_src = used_frnn_prev ? (void *)b->ds.frnn_prev : (void *)b->ds.frnn;
+    snap_copy_pipe(b, save ? (void *)sp : (void *)b->ds.frnn, save ? frnn_src : (void *)sp, fb, save, &pp);
+    if (!save || used_frnn_prev) b->ds.frnn_prev_valid = 0;
   }
   snap_pipe_flush(b, &pp, save);
-  if ((!nr && !ds_bytes) || m->arch == ARCH_INKLING2) {
+  if ((!nr && !ds_bytes) || (m->arch == ARCH_INKLING2 && !used_frnn_prev)) {
     b->live_snap = k;
     b->live_snap_pos = pos;
     b->live_hbuf = hbuf;
+  } else if (used_frnn_prev) {
+    b->live_snap = -1;
+    b->live_hbuf = -1;
   }
 }
 /* backend.snap_io / kv_io (the disk prompt cache): snapshot k is the linear attention states, the conv ring slots a run
@@ -8672,6 +10937,7 @@ static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
 static size_t gpu_snap_io(backend *bk, int k, int out, void *buf, uint32_t pos) {
   gpu_backend *b = (gpu_backend *)bk;
   ds_ctx_drain(b);
+  snap_async_join(b);
   const model *m = b->m;
   const graph *g = b->g;
   size_t nr = 0; /* ring rows (sliding window layers), as gpu_snap counts them */
@@ -8750,6 +11016,7 @@ static void gpu_host_free(backend *bk, void *p) {
 static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf) {
   gpu_backend *b = (gpu_backend *)bk;
   ds_ctx_drain(b);
+  snap_async_join(b);
   if (!n) {
     if (!out && !buf && p0) {
       kv_ensure(b, p0);
@@ -8768,7 +11035,7 @@ static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf) 
     HIP(H.StreamSynchronize(cur_stream));
   }
   const int kind = out ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice;
-  const size_t len = (size_t)n * b->kvrowb;
+  const size_t len = (size_t)n * b->kv_glob_rowb;
   char *p = buf;
   for (uint32_t i = 0; i < b->m->n_kvl; i++) {
     if (b->g->kv_len[i] < b->g->n_ctx) continue; /* a ring (sliding window): in the snapshot, gpu_snap_io */
@@ -8828,6 +11095,7 @@ static void gpu_accept(backend *bk, uint32_t k) {
   b->live_snap = -1;
   b->live_hbuf = -1;
   b->q16_ready_op = -1;
+  b->ds.frnn_prev_valid = 0;
   b->slot = (b->slot + k) % b->ns;
   /* with records: the slot holds the state after token 0 of the verify run; apply the records of tokens 1 .. k */
   if (b->rec_n && k) {
@@ -8902,6 +11170,7 @@ static int gpu_tree_ok(backend *bk, uint32_t pos, uint32_t T) {
   if (on < 0) on = !(getenv("IE_TREE") && getenv("IE_TREE")[0] == '0');
   if (b->m->arch == ARCH_INKLING2) {
     const int ink2 = b->k[K_INK_REL_ATTN_VER_TREE_R8] && b->kvb == 2u && !b->kvq8 && !b->kvq4 && !b->kvrot &&
+                     !b->ink_glob_kv_mode &&
                      b->sc_hist && b->k[K_INK_SCONV_HIST_R4] && b->k[K_INK_SCONV_COMMIT_R4];
     return on && b->has_cl && ink2 && b->at_part && b->at_count && !mk.on &&
            T >= 2u && T <= 8u && T <= b->vmax && pos + T <= b->g->n_ctx;
@@ -9045,6 +11314,7 @@ static void gpu_accept_tree(backend *bk, const uint8_t *path, uint32_t k) {
   b->live_snap = -1;
   b->live_hbuf = -1;
   b->q16_ready_op = -1;
+  b->ds.frnn_prev_valid = 0;
   const model *m = b->m;
   const graph *g = b->g;
   const u32 pos = b->tr_pos;
@@ -9063,7 +11333,8 @@ static void gpu_accept_tree(backend *bk, const uint8_t *path, uint32_t k) {
            (unsigned long long)m->conv_dim * 4u);
       } else {
         const u32 kl = g->kv_len[L->kvi];
-        for (int v = 0; v < 2; v++) CL(kv_ptr(b, v, L->kvi, (pos + f) % kl), kv_ptr(b, v, L->kvi, (pos + i) % kl), b->kvrowb);
+        const size_t lrb = kv_layer_rowb(b, L->kvi);
+        for (int v = 0; v < 2; v++) CL(kv_ptr(b, v, L->kvi, (pos + f) % kl), kv_ptr(b, v, L->kvi, (pos + i) % kl), lrb);
       }
     }
     const int rb[3] = {g->h_out, g->df_feat, g->ds_feat};
@@ -9553,7 +11824,28 @@ static void gpu_close(backend *bk) {
         fprintf(stderr, "  %-18s %5.1f per launch %9.2f us each %8.3f ms per launch\n", kname[k],
                 (double)mk.pcnt[k] / mk.psteps, mk.pus[k] / mk.pcnt[k], mk.pus[k] / 1e3 / mk.psteps);
   }
+  snap_async_shutdown(b);
   HIP(H.DeviceSynchronize());
+  if (b->moe_c_on && b->moe_c) {
+    const uint64_t tot_ref = b->moe_c_hits + b->moe_c_misses;
+    const double hrate = tot_ref ? (100.0 * (double)b->moe_c_hits / (double)tot_ref) : 0.0;
+    fprintf(stderr, "gpu: H38 cache stats: slots=%u layers=%u hits=%llu misses=%llu (hit_rate=%.2f%%) dma=%.2f GiB waves=%llu subbatches=%llu\n",
+            b->moe_c_slots, b->moe_c_nlayers,
+            (unsigned long long)b->moe_c_hits, (unsigned long long)b->moe_c_misses, hrate,
+            (double)b->moe_c_dma_bytes / (1024.0 * 1024.0 * 1024.0),
+            (unsigned long long)b->moe_c_waves, (unsigned long long)b->moe_c_subbatches);
+    for (u32 ip = 0; ip < b->m->n_layer; ip++) {
+      ink_moe_cache_layer *L = &b->moe_c[ip];
+      if (!L->active) continue;
+      if (L->slab_dev) H.Free(L->slab_dev);
+      if (L->pf_offs_pin) H.HostFree(L->pf_offs_pin);
+      if (L->pf_offs_ev) H.EventDestroy(L->pf_offs_ev);
+    }
+    free(b->moe_c), b->moe_c = NULL;
+    if (b->moe_rt_pin) H.HostFree(b->moe_rt_pin), b->moe_rt_pin = NULL;
+    if (b->moe_rt_dev) H.Free(b->moe_rt_dev), b->moe_rt_dev = NULL;
+    b->moe_c_on = 0;
+  }
   gpu_trace_flush();
   if (b->saluki_mod) H.ModuleUnload(b->saluki_mod);
   if (b->inkling_mod) H.ModuleUnload(b->inkling_mod);
@@ -9603,6 +11895,7 @@ static void gpu_close(backend *bk) {
     }
     for (u32 il = 0; il < 8u; il++) H.Free(b->ds.kc[il]), H.Free(b->ds.vc[il]);
     H.Free(b->ds.ctx_q8), H.Free(b->ds.ctx_kv), H.Free(b->ds.frnn);
+    if (b->ds.frnn_prev) H.Free(b->ds.frnn_prev);
     H.Free(b->ds.h), H.Free(b->ds.xn), H.Free(b->ds.xq), H.Free(b->ds.q), H.Free(b->ds.k), H.Free(b->ds.v);
     H.Free(b->ds.att), H.Free(b->ds.aq), H.Free(b->ds.gu), H.Free(b->ds.gq), H.Free(b->ds.hidden);
     H.Free(b->ds.state), H.Free(b->ds.cat_q8), H.Free(b->ds.raw768), H.Free(b->ds.lat_q8), H.Free(b->ds.delta);
@@ -9668,6 +11961,7 @@ static void gpu_close(backend *bk) {
     for (uint32_t i = 0; i < b->g->n_ops; i++) H.EventDestroy(b->pev[i]);
     free(b->pev), free(b->pms);
   }
+  route_stats_finish(b);
   free(b->hk), free(b->hv), free(b->d), free(b);
 }
 

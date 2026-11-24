@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Standalone generator for the Inkling-2-Mini 40-Round Telemetry HTML Dashboard.
+"""Standalone generator for the Inkling-2-Mini Telemetry HTML Dashboard.
 
-Reads results/inkling2/40round-ledger.json and renders a 100% self-contained
+Reads docs/40round-ledger.json and renders a 100% self-contained
 dark telemetry HTML dashboard (inline CSS + inline JS + inline JSON, zero CDN links,
-works offline via file://) to results/inkling2/40round-dashboard.html.
+works offline via file://) to docs/index.html.
 
 Usage:
-  python bench/render_40r_dashboard.py [--in LEDGER.json] [--out DASHBOARD.html]
+  python scripts/render_40r_dashboard.py [--in LEDGER.json] [--out DASHBOARD.html]
 """
 
 import argparse
@@ -15,8 +15,8 @@ import os
 import sys
 
 LAB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_IN = os.path.join(LAB, "results", "inkling2", "40round-ledger.json")
-DEFAULT_OUT = os.path.join(LAB, "results", "inkling2", "40round-dashboard.html")
+DEFAULT_IN = os.path.join(LAB, "docs", "40round-ledger.json")
+DEFAULT_OUT = os.path.join(LAB, "docs", "index.html")
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -24,19 +24,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RX 9070 XT Local LLM Benchmarks (RDNA4 / gfx1201): Inkling-2-Mini &amp; Saluki-27B | rdna4-amd-infer</title>
-<meta name="description" content="AMD Radeon RX 9070 XT (RDNA4 / gfx1201) C11 LLM inference engine with 186 zero-spill custom AMDGPU kernels. No ROCm install on Windows. Inkling-2-Mini IQ3_XXS and Saluki-27B Qwen3.8 IQ2-mix benchmarks.">
-<meta name="keywords" content="RX 9070 XT LLM, AMD RDNA4 LLM, gfx1201, Inkling-2-Mini 26B IQ3_XXS benchmark, Qwen3.8 27B 16GB VRAM, Saluki 27B IQ2-mix, local LLM Windows no ROCm, GGUF inference engine, DSpark speculative decoding, AMDGPU WMMA, wave32 kernels, 128K context 16GB">
+<meta name="description" content="AMD Radeon RX 9070 XT (RDNA4 / gfx1201) C11 LLM inference engine with 258 custom AMDGPU kernels (171 zero-spill Inkling-2-Mini + 81 Saluki-27B + 6 ViT). No ROCm install on Windows. Up to 256K context + DSpark in 16GB VRAM.">
+<meta name="keywords" content="RX 9070 XT LLM, AMD RDNA4 LLM, gfx1201, Inkling-2-Mini 26B IQ3_XXS benchmark, Qwen3.8 27B 16GB VRAM, Saluki 27B IQ2-mix, local LLM Windows no ROCm, GGUF inference engine, DSpark speculative decoding, AMDGPU WMMA, wave32 kernels, 256K context 16GB">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://saloqt.github.io/rdna4-amd-infer/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="rdna4-amd-infer">
 <meta property="og:title" content="RX 9070 XT Local LLM Engine (RDNA4 / gfx1201): Inkling-2-Mini IQ3_XXS &amp; Saluki-27B IQ2-mix">
-<meta property="og:description" content="186 zero-spill custom AMDGPU kernels for AMD RX 9070 XT (16GB VRAM). Pure C11, no Windows ROCm install, matched OMP prefill and medium-reasoning decode benchmarks.">
+<meta property="og:description" content="258 custom AMDGPU kernels for AMD RX 9070 XT (16GB VRAM). Pure C11, no Windows ROCm install, 52-round Inkling-2-Mini telemetry (6,135 tok/s 4K prefill, 256K context + DSpark) and Saluki-27B benchmarks.">
 <meta property="og:url" content="https://saloqt.github.io/rdna4-amd-infer/">
 <meta property="og:image" content="https://saloqt.github.io/rdna4-amd-infer/progress-chart.svg">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="rdna4-amd-infer: RX 9070 XT (RDNA4) Local LLM Engine &amp; 37-Round Telemetry">
-<meta name="twitter:description" content="186 custom gfx1201 kernels on RX 9070 XT 16GB Windows: Inkling-2-Mini IQ3_XXS and Saluki-27B IQ2-mix matched OMP prefill + decode benchmarks. No system ROCm required.">
+<meta name="twitter:title" content="rdna4-amd-infer: RX 9070 XT (RDNA4) Local LLM Engine &amp; 52-Round Telemetry">
+<meta name="twitter:description" content="258 custom gfx1201 kernels on RX 9070 XT 16GB Windows: Inkling-2-Mini IQ3_XXS (6,135 tok/s prefill, 256K ctx + DSpark) and Saluki-27B IQ2-mix benchmarks. No system ROCm required.">
 <meta name="twitter:image" content="https://saloqt.github.io/rdna4-amd-infer/progress-chart.svg">
 <script type="application/ld+json">
 {
@@ -45,13 +45,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     {
       "@type": "SoftwareSourceCode",
       "name": "rdna4-amd-infer",
-      "description": "Pure C11 + AMDGPU gfx1201 local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4) with 186 zero-spill custom kernels, DSpark/MTP speculative decoding, and no system ROCm install required on Windows.",
+      "description": "Pure C11 + AMDGPU gfx1201 local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4) with 258 custom kernels, DSpark/MTP speculative decoding, 256K context in 16GB VRAM, and no system ROCm install required on Windows.",
       "url": "https://saloqt.github.io/rdna4-amd-infer/",
       "codeRepository": "https://github.com/SaloQT/rdna4-amd-infer",
       "programmingLanguage": ["C", "AMDGPU Assembly", "Python"],
       "operatingSystem": ["Windows 11", "Linux"],
       "runtimePlatform": "AMD Radeon RX 9070 XT (RDNA4 / gfx1201, 16GB VRAM)",
-      "keywords": "RX 9070 XT, RDNA4, gfx1201, local LLM, GGUF, Inkling-2-Mini, Qwen3.8-27B, Saluki-27B, DSpark, speculative decoding, WMMA"
+      "keywords": "RX 9070 XT, RDNA4, gfx1201, local LLM, GGUF, Inkling-2-Mini, Qwen3.8-27B, Saluki-27B, DSpark, speculative decoding, WMMA, 256K context"
     },
     {
       "@type": "FAQPage",
@@ -69,7 +69,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           "name": "How fast does Inkling-2-Mini (26B IQ3_XXS) run on an AMD RX 9070 XT 16GB?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "On a single RX 9070 XT 16GB on Windows WDDM, rdna4-amd-infer reaches 189.3 tok/s on a medium-reasoning HTML snake prompt (148.2 tok/s at 30K-42K OMP context, 306.4 tok/s short code peak), 3,792 tok/s on 28.7K cold OMP prefill (7.58 s TTFT), and 5,196 tok/s at 4K prefill."
+            "text": "On a single RX 9070 XT 16GB on Windows WDDM, rdna4-amd-infer reaches 6,135 tok/s at 4K prefill (5,716 tok/s at 16K), 126.6 tok/s plain T=1 decode, 319.3 tok/s short code peak with DSpark, 191.2 tok/s live greedy ie-serve, 90.2 tok/s at filled 128K context, and 54.5 tok/s at filled 256K context with DSpark."
           }
         },
         {
@@ -77,7 +77,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           "name": "Can Qwen3.8-27B (Saluki-27B IQ2-mix) run 128K context inside 16GB VRAM on RX 9070 XT?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Yes. With growing q8 KV cache (4.85 GB at 128K vs 12.1 GB FP16), 64 custom gfx1201 kernels, and MTP7 speculative decoding, Saluki-27B hits 142.1 tok/s on medium-reasoning HTML snake (109.7 tok/s avg at 24K-40K OMP context, 166 tok/s writing code), 1,134-1,242 tok/s 23.8K cold OMP prefill, and 0.61 s disk-cache restarts."
+            "text": "Yes. With growing q8 KV cache (4.85 GB at 128K vs 12.1 GB FP16), 81 custom gfx1201 kernels, and MTP7 speculative decoding, Saluki-27B hits 142.1 tok/s on medium-reasoning HTML snake (109.7 tok/s avg at 24K-40K OMP context, 166 tok/s writing code), 1,134-1,242 tok/s 23.8K cold OMP prefill, and 0.61 s disk-cache restarts."
           }
         }
       ]
@@ -782,9 +782,9 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   </details>
 
   <div class="section-bar">
-    <div class="section-title">Telemetry Frontiers (R00 Phase 7 Baseline &rarr; R40) <span class="pill" id="chartHint">Solid step-line = Promoted Frontier &middot; Green = Promoted &middot; Amber = Rejected</span></div>
+    <div class="section-title"><span id="frontiersTitle">Telemetry Frontiers (R00 Phase 7 Baseline &rarr; R52)</span> <span class="pill" id="chartHint">Solid step-line = Promoted Frontier &middot; Green = Promoted &middot; Amber = Rejected</span></div>
     <div class="seg-ctrl" id="axisToggle">
-      <button class="seg-btn active" data-axis="full">Full R00-R40 Axis</button>
+      <button class="seg-btn active" data-axis="full" id="fullAxisBtn">Full R00-R52 Axis</button>
       <button class="seg-btn" data-axis="fit">Zoom Populated</button>
     </div>
   </div>
@@ -802,7 +802,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     <div class="chart-card">
       <div class="chart-head">
         <span class="chart-title">2. Prefill Throughput (tok/s)</span>
-        <span class="chart-sub">Higher is better &middot; chunk=512 f16 KV</span>
+        <span class="chart-sub">Higher is better &middot; f16 KV (chunk=512 R00-R49, chunk=1024 R50+)</span>
       </div>
       <div class="chart-legend" id="leg-prefill"></div>
       <div class="chart-svg-wrap" id="chart-prefill"></div>
@@ -873,7 +873,9 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   const ROUNDS = (DATA.rounds || []).slice().sort((a, b) => (a.round || 0) - (b.round || 0));
   const HIST = DATA.historical_milestones || [];
   const CAMP = DATA.campaign || {};
-  const TARGET_ROUNDS = CAMP.target_rounds || 40;
+  const MAX_RECORDED_ROUND = ROUNDS.length ? Math.max.apply(null, ROUNDS.map((r) => r.round || 0)) : 0;
+  const TARGET_ROUNDS = Math.max(CAMP.target_rounds || 52, MAX_RECORDED_ROUND);
+  const MAX_ROUND_LABEL = "R" + String(TARGET_ROUNDS).padStart(2, "0");
 
   // Historical anchors from verified baselines
   const STOCK = HIST.find((h) => h.id === "stock_r0") || { t1_tok_s: 80.0, pf4k_tok_s: 1118.0, ttft_4k_ms: 3663.7, launches_per_step: 2222 };
@@ -917,6 +919,26 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   }
   function isAcceptedStatus(st) {
     return st === "baseline" || st === "promoted";
+  }
+  function isNonZeroMask(v) {
+    if (v === null || v === undefined) return false;
+    const s = String(v).trim();
+    if (!s) return false;
+    return !/^0x0+$/i.test(s) && s !== "0";
+  }
+  function formatRoundMask(r) {
+    if (!r) return "";
+    const base = String(r.ink_mask || "").trim();
+    const parts = base ? [base] : [];
+    const m2 = String(r.ink_mask2 || "").trim();
+    const m3 = String(r.ink_mask3 || "").trim();
+    if (isNonZeroMask(m2) && !/\bmask2=/i.test(base)) parts.push("mask2=" + m2);
+    if (isNonZeroMask(m3) && !/\bmask3=/i.test(base)) parts.push("mask3=" + m3);
+    return parts.join(" | ");
+  }
+  function updateSortBtnLabel() {
+    const btn = document.getElementById("sortBtn");
+    if (btn) btn.textContent = STATE.sortAsc ? "Order: R00 \u2191" : ("Order: " + MAX_ROUND_LABEL + " \u2193");
   }
 
   // Compute composite % frontier gain vs R00 for each round
@@ -990,15 +1012,25 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
 
   // ---------------- HEADER & PROGRESS ----------------
   function renderHeader() {
-    document.getElementById("campaignTitle").textContent = CAMP.title || "Inkling-2-Mini 40-Round Optimization Campaign";
+    document.getElementById("campaignTitle").textContent = CAMP.title || ("Inkling-2-Mini " + TARGET_ROUNDS + "-Round Optimization Campaign");
     document.getElementById("campaignSub").textContent =
       (CAMP.hardware || "RX 9070 XT gfx1201") + "  |  " + (CAMP.model || "Inkling-2-Mini-fast") + "  |  " + (CAMP.engine || "amd-infer");
+
+    const fTitle = document.getElementById("frontiersTitle");
+    if (fTitle) fTitle.textContent = "Telemetry Frontiers (R00 Phase 7 Baseline \u2192 " + MAX_ROUND_LABEL + ")";
+    const fullBtn = document.getElementById("fullAxisBtn");
+    if (fullBtn) fullBtn.textContent = "Full R00-" + MAX_ROUND_LABEL + " Axis";
+    updateSortBtnLabel();
 
     const promoted = ROUNDS.filter((r) => r.status === "promoted").length;
     const rejected = ROUNDS.filter((r) => r.status === "rejected").length;
     const optRounds = ROUNDS.filter((r) => r.round > 0).length;
     const exactOk = ROUNDS.filter((r) => r.parity && (r.parity.status === "EXACT" || r.parity.status === "BASELINE" || r.parity.status === "KLD-OK")).length;
-    const latestMask = (ROUNDS.slice().reverse().find((r) => isAcceptedStatus(r.status) && r.ink_mask) || ROUNDS.slice().reverse().find((r) => r.ink_mask) || {}).ink_mask || "0x67dfc0369c3ffff";
+    const latestMaskRound =
+      ROUNDS.slice().reverse().find((r) => isAcceptedStatus(r.status) && formatRoundMask(r)) ||
+      ROUNDS.slice().reverse().find((r) => formatRoundMask(r)) ||
+      null;
+    const latestMask = formatRoundMask(latestMaskRound) || "0x67dfc0369c3ffff";
 
     const pills = [
       `<span class="pill cy">MASK ${esc(latestMask)}</span>`,
@@ -1405,9 +1437,18 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       }
     }
 
-    // X-axis ticks
-    const stepX = maxX <= 10 ? 1 : (maxX <= 20 ? 2 : 5);
-    for (let x = 0; x <= maxX; x += stepX) {
+    // X-axis ticks (scales cleanly through R52+)
+    const stepX = maxX <= 10 ? 1 : (maxX <= 24 ? 2 : (maxX <= 55 ? 5 : 10));
+    const xTicks = [];
+    for (let x = 0; x <= maxX; x += stepX) xTicks.push(x);
+    if (xTicks[xTicks.length - 1] !== maxX) {
+      if (maxX - xTicks[xTicks.length - 1] < stepX * 0.45 && xTicks.length > 1) {
+        xTicks[xTicks.length - 1] = maxX;
+      } else {
+        xTicks.push(maxX);
+      }
+    }
+    for (const x of xTicks) {
       const px = xScale(x);
       svg += `<line x1="${px.toFixed(1)}" y1="${padT + plotH}" x2="${px.toFixed(1)}" y2="${padT + plotH + 4}" stroke="#2e4370" stroke-width="1"/>`;
       svg += `<text x="${px.toFixed(1)}" y="${padT + plotH + 18}" text-anchor="middle" fill="#6f84ab" font-family="var(--font-mono)" font-size="10">R${String(x).padStart(2, "0")}</text>`;
@@ -1456,17 +1497,25 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         svg += `<path d="${fr.d}" fill="none" stroke="${s.color}" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>`;
       }
 
-      // Markers
+      // Markers (slightly tighter when plotting >50 rounds)
+      const compact = maxX > 50;
+      const baseHalf = compact ? 3.9 : 4.5;
+      const baseSize = baseHalf * 2;
+      const promR = compact ? 3.7 : 4.6;
+      const promSw = compact ? 1.6 : 2.0;
+      const rejDx = compact ? 4.0 : 4.8;
+      const rejTop = compact ? 3.2 : 3.8;
+      const rejBot = compact ? 4.4 : 5.2;
       for (const p of pts) {
         const st = p.r.status;
         if (st === "baseline") {
-          svg += `<rect x="${(p.x - 4.5).toFixed(1)}" y="${(p.y - 4.5).toFixed(1)}" width="9" height="9" transform="rotate(45 ${p.x.toFixed(1)} ${p.y.toFixed(1)})" fill="${s.color}" stroke="#090a0d" stroke-width="1.6"/>`;
+          svg += `<rect x="${(p.x - baseHalf).toFixed(1)}" y="${(p.y - baseHalf).toFixed(1)}" width="${baseSize.toFixed(1)}" height="${baseSize.toFixed(1)}" transform="rotate(45 ${p.x.toFixed(1)} ${p.y.toFixed(1)})" fill="${s.color}" stroke="#090a0d" stroke-width="1.6"/>`;
         } else if (st === "promoted") {
-          svg += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4.6" fill="#00e599" stroke="${s.color}" stroke-width="2"/>`;
+          svg += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${promR.toFixed(1)}" fill="#00e599" stroke="${s.color}" stroke-width="${promSw.toFixed(1)}"/>`;
         } else {
           // Rejected marker: amber/crimson downward triangle
           const x = p.x, y = p.y;
-          svg += `<polygon points="${x.toFixed(1)},${(y + 5.2).toFixed(1)} ${(x - 4.8).toFixed(1)},${(y - 3.8).toFixed(1)} ${(x + 4.8).toFixed(1)},${(y - 3.8).toFixed(1)}" fill="#ffaa00" stroke="#ff3b30" stroke-width="1.2"/>`;
+          svg += `<polygon points="${x.toFixed(1)},${(y + rejBot).toFixed(1)} ${(x - rejDx).toFixed(1)},${(y - rejTop).toFixed(1)} ${(x + rejDx).toFixed(1)},${(y - rejTop).toFixed(1)}" fill="#ffaa00" stroke="#ff3b30" stroke-width="1.2"/>`;
         }
       }
 
@@ -1475,9 +1524,10 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         ? fr.bestPoints
         : [fr.bestPoints[0], fr.bestPoints[fr.bestPoints.length - 1]];
       for (const p of labelTargets) {
+        const lx = Math.max(padL + 14, Math.min(W - padR - 14, p.x));
         const ly = p.y - 9;
-        if (canPlaceLabel(p.x, ly)) {
-          svg += `<text x="${p.x.toFixed(1)}" y="${Math.max(padT + 9, ly).toFixed(1)}" text-anchor="middle" fill="${s.color}" font-family="var(--font-mono)" font-size="9.5" font-weight="600">R${String(p.r.round).padStart(2, "0")}</text>`;
+        if (canPlaceLabel(lx, ly)) {
+          svg += `<text x="${lx.toFixed(1)}" y="${Math.max(padT + 9, ly).toFixed(1)}" text-anchor="middle" fill="${s.color}" font-family="var(--font-mono)" font-size="9.5" font-weight="600">R${String(p.r.round).padStart(2, "0")}</text>`;
         }
       }
     }
@@ -1577,6 +1627,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         "r" + String(r.round).padStart(2, "0"),
         "w" + (r.wave || ""),
         r.name, r.target, r.status, r.hypothesis, r.notes,
+        formatRoundMask(r),
         (r.source || {}).title, (r.source || {}).url
       ].join(" ").toLowerCase();
       return hay.includes(q);
@@ -1625,6 +1676,8 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       if (isNum(m.vram_free_mb)) sysParts.push(fmt(m.vram_free_mb, 0) + " MB");
 
       const openCls = STATE.expanded[r.round] ? "open" : "";
+      const maskDisp = formatRoundMask(r) || "--";
+      const refTag = isNum(p.ref_round) ? ` (vs R${String(p.ref_round).padStart(2, "0")})` : "";
 
       html.push(`
         <tr class="main-row status-${esc(r.status)}" data-round="${r.round}">
@@ -1661,13 +1714,13 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
             <div class="detail-grid">
               <div class="detail-panel">
                 <h4>Notes &amp; Config</h4>
-                <div class="detail-kv"><span>Mask</span><span>${esc(r.ink_mask || "--")}</span></div>
+                <div class="detail-kv"><span>Mask</span><span>${esc(maskDisp)}</span></div>
                 <div class="detail-kv"><span>Env</span><span>${esc(JSON.stringify(r.env || {}))}</span></div>
                 <div class="detail-kv"><span>Bench Wall</span><span>${isNum(m.total_bench_wall_s) ? fmt(m.total_bench_wall_s, 1) + " s" : "--"}</span></div>
                 <div style="margin-top:6px;color:var(--muted);font-family:var(--font-sans)">${esc(r.notes || "No extra notes.")}</div>
               </div>
               <div class="detail-panel">
-                <h4>Parity SHAs</h4>
+                <h4>Parity SHAs${esc(refTag)}</h4>
                 <div class="detail-kv"><span>t1_233</span><span>${esc((shas.t1_sha || m.t1_sha || "--").slice(0, 16))} (${esc((p.checks || {}).t1_sha || "--")})</span></div>
                 <div class="detail-kv"><span>ds5_233</span><span>${esc((shas.ds5_233_sha || m.ds5_233_sha || "--").slice(0, 16))} (${esc((p.checks || {}).ds5_233_sha || "--")})</span></div>
                 <div class="detail-kv"><span>ds5_4k</span><span>${esc((shas.ds5_4k_sha || m.ds5_4k_sha || "--").slice(0, 16))} (${esc((p.checks || {}).ds5_4k_sha || "--")})</span></div>
@@ -1717,14 +1770,14 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     renderTable();
   });
 
-  document.getElementById("sortBtn").addEventListener("click", (e) => {
+  document.getElementById("sortBtn").addEventListener("click", () => {
     STATE.sortAsc = !STATE.sortAsc;
-    e.target.textContent = STATE.sortAsc ? "Order: R00 ↑" : "Order: R40 ↓";
+    updateSortBtnLabel();
     renderTable();
   });
 
   document.getElementById("footNote").textContent =
-    "Offline self-contained telemetry dashboard generated by bench/render_40r_dashboard.py from results/inkling2/40round-ledger.json · Zero external CDN dependencies.";
+    "Offline self-contained telemetry dashboard generated by scripts/render_40r_dashboard.py from docs/40round-ledger.json · Zero external CDN dependencies.";
 
   renderHeader();
   renderKPIs();

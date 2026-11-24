@@ -156,10 +156,11 @@ int main(int argc, char **argv) {
             m.n_used, m.eff, m.sff);
 
   if (!chunk && getenv("IE_CHUNK")) chunk = (uint32_t)atoi(getenv("IE_CHUNK"));
-  if (!chunk) chunk = 512u;
-  if (chunk < 1 || chunk > 512) ie_die("--chunk: 1 to 512");
+  if (!chunk) chunk = (m.arch == ARCH_INKLING2) ? 1024u : 512u;
+  if (chunk < 1 || chunk > 1024) ie_die("--chunk: 1 to 1024");
   const int gpu = !strcmp(be, "gpu"), use_pf = gpu && !dump;
   if (!use_pf) chunk = 1;
+  else chunk = gpu_chunk_clamp(chunk, &m, n_ctx);
   if ((kld_save || kld_base) && !use_pf) ie_die("--kld-save / --kld: GPU only, not with --dump-logits");
   uint32_t gT = draft ? spec_verify_max() : 1u;
   if (draft + 1u > gT) gT = draft + 1u;

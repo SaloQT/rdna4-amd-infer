@@ -896,6 +896,15 @@ static int host_set(uint32_t i, int *given) {
   return i < 1024u && set[i];
 }
 
+static int ink_moe_cache_env(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_MOE_CACHE_SLOTS");
+    v = (e && *e && (strcmp(e, "auto") == 0 || strcmp(e, "AUTO") == 0 || atoi(e) > 0)) ? 1 : 0;
+  }
+  return v;
+}
+
 static void sink_layer(const model *m, layer *L, uint32_t i) {
   if (!ie_mat_sink) return;
   mat *all[] = {&L->wq, &L->wk, &L->wv, &L->wqkv, &L->wo, &L->wgate, &L->wup, &L->wdown, &L->wgu,
@@ -910,8 +919,10 @@ static void sink_layer(const model *m, layer *L, uint32_t i) {
   int given;
   const int inset = host_set(i, &given);
   const int host = given ? inset : nl > 0 && i + (uint32_t)nl >= m->n_layer;
+  const int moe_cache = (m->arch == ARCH_INKLING2 && ink_moe_cache_env() &&
+                         (i < m->loop_start || i >= m->loop_end));
   for (unsigned k = 0; k < sizeof all / sizeof all[0]; k++) {
-    if (host) all[k]->host = 1;
+    if (host || (moe_cache && (all[k] == &L->egu || all[k] == &L->ed))) all[k]->host = 1;
     ie_mat_sink(all[k]);
     if (all[k]->lora) {
       all[k]->lora->a.host = all[k]->lora->b.host = host;
@@ -2505,11 +2516,12 @@ void graph_cap_logits(graph *g) {
   }
 }
 
-void ie_ink_parse_mask(uint64_t *lo, uint64_t *hi) {
-  uint64_t m_lo = IE_INK_DEFAULT_MASK, m_hi = IE_INK_DEFAULT_MASK2;
+void ie_ink_parse_mask(uint64_t *lo, uint64_t *hi, uint64_t *hi3) {
+  uint64_t m_lo = IE_INK_DEFAULT_MASK, m_hi = IE_INK_DEFAULT_MASK2, m_h3 = IE_INK_DEFAULT_MASK3;
   const char *e1 = getenv("IE_INKLING_KERNEL_MASK");
   const char *e2 = getenv("IE_INKLING_KERNEL_MASK2");
-  int hex128 = 0;
+  const char *e3 = getenv("IE_INKLING_KERNEL_MASK3");
+  int hex128 = 0, hex192 = 0;
   if (e1 && *e1) {
     const char *p = e1;
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
@@ -2517,6 +2529,7 @@ void ie_ink_parse_mask(uint64_t *lo, uint64_t *hi) {
       p += 2;
       m_lo = 0ULL;
       m_hi = 0ULL;
+      m_h3 = 0ULL;
       uint32_t digits = 0u;
       for (; *p; p++) {
         uint64_t nib;
@@ -2524,57 +2537,139 @@ void ie_ink_parse_mask(uint64_t *lo, uint64_t *hi) {
         else if (*p >= 'a' && *p <= 'f') nib = (uint64_t)(*p - 'a' + 10);
         else if (*p >= 'A' && *p <= 'F') nib = (uint64_t)(*p - 'A' + 10);
         else break;
+        m_h3 = (m_h3 << 4) | (m_hi >> 60);
         m_hi = (m_hi << 4) | (m_lo >> 60);
         m_lo = (m_lo << 4) | nib;
         digits++;
       }
       hex128 = (digits > 16u);
+      hex192 = (digits > 32u);
     } else {
       m_lo = (uint64_t)strtoull(e1, NULL, 0);
       m_hi = 0ULL;
+      m_h3 = 0ULL;
     }
   }
   if (!hex128 && e2 && *e2) m_hi = (uint64_t)strtoull(e2, NULL, 0);
+  if (!hex192 && e3 && *e3) m_h3 = (uint64_t)strtoull(e3, NULL, 0);
   if (lo) *lo = m_lo;
   if (hi) *hi = m_hi;
+  if (hi3) *hi3 = m_h3;
+}
+
+static int buf_used_outside(const graph *g, int id, uint32_t lo, uint32_t hi) {
+  if (id < 0) return 0;
+  for (uint32_t j = 0; j < g->n_ops; j++) {
+    if (j >= lo && j <= hi) continue;
+    const op *q = &g->ops[j];
+    if (q->a == id || q->b == id || q->c == id || q->res == id || q->gt == id || q->qo == id || q->nout == id || q->nq == id)
+      return 1;
+  }
+  return 0;
 }
 
 void graph_cap_exp_gu(graph *g, const model *m) {
-  if (!m || m->arch != ARCH_INKLING2 || g->T <= 16u) return;
+  if (!m || m->arch != ARCH_INKLING2) return;
   const char *cap_env = getenv("IE_INK_CAP_EXP_GU");
   if (cap_env && cap_env[0] == '0') return;
+  /* R41 (H40): On GPU, OP_REL_ATTN T=1 caps max_sp <= 64 (T>1 uses b->at_part), so shared scores needs at most
+   * n_head * 64 * (hd + 2) * 4 B (0.76 MiB vs 3.00 MiB at 32K / 9.00 MiB at 98K), safe even with IE_INKLING_KERNELS=0. */
+  {
+    const uint32_t gpu_rel_sc = m->n_head * 64u * (m->hd + 2u) * 4u;
+    for (uint32_t i = 0; i < g->n_ops; i++) {
+      if (g->ops[i].kind != OP_REL_ATTN || g->ops[i].c < 0) continue;
+      buf *sb = &g->bufs[g->ops[i].c];
+      if (sb->stride == 0u && sb->size > gpu_rel_sc) sb->size = gpu_rel_sc;
+    }
+  }
+  if (g->T <= 16u) return;
   const char *ink_env = getenv("IE_INKLING_KERNELS");
   if (ink_env && strcmp(ink_env, "0") == 0) return;
   const char *dmp = getenv("IE_DUMP_GPU_OPS");
   if (dmp && dmp[0] != '0') return;
-  if (getenv("IE_GEMV_NOBATCH") || getenv("IE_GEMM_RQ_EXP_NO")) return;
-  uint64_t mask = 0ULL, mask2 = 0ULL;
-  ie_ink_parse_mask(&mask, &mask2);
-  if (((mask >> 57) & 1ULL) == 0ULL && ((mask2 >> (70u - 64u)) & 1ULL) == 0ULL) return;
-  for (uint32_t i = 0; i + 1u < g->n_ops; i++) {
-    const op *o0 = &g->ops[i], *o1 = &g->ops[i + 1u];
-    if (o0->kind != OP_GEMV_EXP || o1->kind != OP_SITU) continue;
-    if (!o0->w || o0->w->kind != MAT_RAWQ || o0->w->sub != 18u) continue;
-    if (o1->a != o0->b || o0->b < 0 || o1->aoff != 0u || o0->boff != 0u) continue;
-    if (o1->nh != o0->nh || o1->b >= 0 || o1->qo < 0) continue;
-    if (o1->n == 0u || (o1->n & 31u) != 0u || o0->w->rows != 2u * o1->n) continue;
-    if (o0->w->nb < 8u || (o0->w->nb & 7u) != 0u) continue;
-    if (g->bufs[o1->qo].stride != o1->nh * o1->bstr || (o1->bstr & 3u) != 0u) continue;
-    if (o0->astr != 0u && g->bufs[o0->a].stride != o0->nh * o0->astr) continue;
-    const int ye = o0->b;
-    int extra_use = 0;
-    for (uint32_t j = 0; j < g->n_ops; j++) {
-      if (j == i || j == i + 1u) continue;
-      const op *q = &g->ops[j];
-      if (q->a == ye || q->b == ye || q->c == ye || q->res == ye || q->gt == ye || q->qo == ye || q->nout == ye || q->nq == ye) {
-        extra_use = 1;
-        break;
+  uint64_t mask = 0ULL, mask2 = 0ULL, mask3 = 0ULL;
+  ie_ink_parse_mask(&mask, &mask2, &mask3);
+  /* (1) Cap exp_gu when any fused prefill IQ3_XXS+SITU WMMA kernel is active (bits 57, 70, 102, 104). */
+  const int has_iq3_situ_pf =
+      !getenv("IE_GEMV_NOBATCH") && !getenv("IE_GEMM_RQ_EXP_NO") &&
+      ((((mask  >> 57) & 1ULL) != 0ULL) ||
+       (((mask2 >> (70u - 64u)) & 1ULL) != 0ULL) ||
+       (((mask2 >> (102u - 64u)) & 1ULL) != 0ULL) ||
+       (((mask2 >> (104u - 64u)) & 1ULL) != 0ULL));
+  if (has_iq3_situ_pf) {
+    for (uint32_t i = 0; i + 1u < g->n_ops; i++) {
+      const op *o0 = &g->ops[i], *o1 = &g->ops[i + 1u];
+      if (o0->kind != OP_GEMV_EXP || o1->kind != OP_SITU) continue;
+      if (!o0->w || o0->w->kind != MAT_RAWQ || o0->w->sub != 18u) continue;
+      if (o1->a != o0->b || o0->b < 0 || o1->aoff != 0u || o0->boff != 0u) continue;
+      if (o1->nh != o0->nh || o1->b >= 0 || o1->qo < 0) continue;
+      if (o1->n == 0u || (o1->n & 31u) != 0u || o0->w->rows != 2u * o1->n) continue;
+      if (o0->w->nb < 8u || (o0->w->nb & 7u) != 0u) continue;
+      if (g->bufs[o1->qo].stride != o1->nh * o1->bstr || (o1->bstr & 3u) != 0u) continue;
+      if (o0->astr != 0u && g->bufs[o0->a].stride != o0->nh * o0->astr) continue;
+      const int ye = o0->b;
+      if (buf_used_outside(g, ye, i, i + 1u)) continue;
+      buf *b = &g->bufs[ye];
+      b->rows = 16u;
+      b->size = b->stride * 16u;
+    }
+  }
+  /* (2) Cap k_conv/k_clip/v_conv/v_norm to 16 rows when fused KV pipeline (bit 25 R2 or bit 75 R8) handles T >= 17. */
+  const int kv_q_env = (getenv("IE_KV_Q8") && getenv("IE_KV_Q8")[0] != '0') ||
+                       (getenv("IE_KV_Q4") && getenv("IE_KV_Q4")[0] != '0') ||
+                       (getenv("IE_MEGAKERNEL") && getenv("IE_MEGAKERNEL")[0] != '0');
+  const char *gkve = getenv("IE_INK_GLOB_KV");
+  const int glob_kv_on = gkve && *gkve && strcmp(gkve, "f16") != 0 && strcmp(gkve, "0") != 0;
+  const int has_kv_fuse = !kv_q_env && m->n_kv == 8u && m->hd == 128u &&
+                          ((((mask >> 25) & 1ULL) != 0ULL) || (((mask2 >> (75u - 64u)) & 1ULL) != 0ULL));
+  if (has_kv_fuse) {
+    for (uint32_t i = 0; i + 4u < g->n_ops; i++) {
+      const op *o0 = &g->ops[i];
+      if (o0->kind != OP_SCONV || o0->n != 1024u) continue;
+      uint32_t n_span = 0u;
+      const op *okc = NULL, *ov = NULL, *ovc = NULL, *okv = NULL;
+      if (g->ops[i + 1u].kind == OP_VCLIP && g->ops[i + 2u].kind == OP_SCONV &&
+          g->ops[i + 3u].kind == OP_VCLIP && g->ops[i + 4u].kind == OP_KV) {
+        okc = &g->ops[i + 1u]; ov = &g->ops[i + 2u]; ovc = &g->ops[i + 3u]; okv = &g->ops[i + 4u];
+        n_span = 5u;
+      } else if (i + 5u < g->n_ops && g->ops[i + 1u].kind == OP_VCLIP && g->ops[i + 2u].kind == OP_GEMV_Q8 &&
+                 g->ops[i + 3u].kind == OP_SCONV && g->ops[i + 4u].kind == OP_VCLIP && g->ops[i + 5u].kind == OP_KV) {
+        const op *ovd = &g->ops[i + 2u];
+        okc = &g->ops[i + 1u]; ov = &g->ops[i + 3u]; ovc = &g->ops[i + 4u]; okv = &g->ops[i + 5u];
+        if (ovd->b == ov->c && ovd->a != o0->b && ovd->a != okc->b) n_span = 6u;
+      }
+      if (!n_span || okc->a != o0->b || okc->aoff != 0u || ov->n != 1024u || ovc->a != ov->b || ovc->aoff != 0u) continue;
+      if (okv->a != okc->b || okv->b != ovc->b || o0->escale != ov->escale) continue;
+      if (!(okc->clamp > 0.0f) || okc->v || okc->norope || ovc->v || ovc->clamp != 0.0f) continue;
+      if (g->kv_len[okv->kvi] == 0u) continue;
+      if (glob_kv_on && g->kv_len[okv->kvi] >= g->n_ctx) continue;
+      const int ids[4] = {o0->b, okc->b, ov->b, ovc->b};
+      int ok = 1;
+      for (int t = 0; t < 4; t++)
+        if (ids[t] < 0 || buf_used_outside(g, ids[t], i, i + n_span - 1u)) { ok = 0; break; }
+      if (!ok) continue;
+      for (int t = 0; t < 4; t++) {
+        buf *b = &g->bufs[ids[t]];
+        b->rows = 16u;
+        b->size = b->stride * 16u;
       }
     }
-    if (extra_use) continue;
-    buf *b = &g->bufs[ye];
-    b->rows = 16u;
-    b->size = b->stride * 16u;
+  }
+  /* (3) Prepared Wave 10 H02 hook (inactive until bit 113 atomic-scatter IQ4_NL prefill is enabled): cap exp_down to 16 rows. */
+  const int has_iq4_scatter =
+      !getenv("IE_GEMV_NOBATCH") && !getenv("IE_GEMM_RQ_EXP_NO") &&
+      (((mask2 >> (113u - 64u)) & 1ULL) != 0ULL);
+  if (has_iq4_scatter) {
+    for (uint32_t i = 0; i + 1u < g->n_ops; i++) {
+      const op *o0 = &g->ops[i], *o1 = &g->ops[i + 1u];
+      if (o0->kind != OP_GEMV_EXP || o1->kind != OP_MOE_SUM) continue;
+      if (!o0->w || o0->w->kind != MAT_RAWQ || o0->w->sub != 20u) continue;
+      if (o1->a != o0->b || o0->b < 0 || o1->aoff != 0u || o0->boff != 0u) continue;
+      if (buf_used_outside(g, o0->b, i, i + 1u)) continue;
+      buf *b = &g->bufs[o0->b];
+      b->rows = 16u;
+      b->size = b->stride * 16u;
+    }
   }
 }
 
@@ -3282,6 +3377,10 @@ static int inkling_build(gb *B, const model *m, uint32_t n_ctx, int x, int *bloc
 
     o = emit(B, OP_GATE, att, agate, -1), o->n = qd;
     int aq = L->wo.kind != MAT_F32 ? fuse_quant(B, qd, "attn_q8") : -1;
+    if (aq >= 0) {
+      /* Wave 11 H15 (bit 110): keep REL_ATTN inputs & scores disjoint from attn_q8 for fused [REL_ATTN, GATE(qo)] */
+      use_last(B, q_clip), use_last(B, r_clip), use_last(B, sink), use_last(B, sc), use_last(B, agate);
+    }
     int aout = matvec(B, &L->wo, att, aq, "attn_out", NULL, -1);
     int apc = new_buf(g, "attn_pc", dim * 4u);
     o = emit(B, OP_SCONV, aout, apc, -1);
@@ -3341,6 +3440,7 @@ static int inkling_build(gb *B, const model *m, uint32_t n_ctx, int x, int *bloc
 
     int x2 = new_buf(g, "x", dim * 4u);
     o = emit(B, OP_ADD, ffn_inp, fpc, x2), o->n = dim;
+    if (ink_moe_cache_env() && (ip < m->loop_start || ip >= m->loop_end)) use_last(B, hq);
     use_last(B, mq); use_last(B, yd); use_last(B, rt); use_last(B, ysum);
     x = x2;
   }

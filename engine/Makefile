@@ -5,7 +5,7 @@
 
 CC      ?= gcc
 CXX     ?= g++
-CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -D_GNU_SOURCE
+CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function
 LDLIBS  = -lm -ldl
 PYTHON  ?= python3
 
@@ -21,7 +21,7 @@ SRC = $(ENGINE_SRC) src/main.c
 HDR = src/common.h src/gguf.h src/model.h src/backend.h src/gen.h core/ie_core.h core/ie_ext.h src/iq3s_grid.h $(B)/ie_mk_gen.h prof/sm_profiler.h
 CFLAGS += -I$(B)
 
-all: $(B)/ie-run $(B)/ie-serve $(B)/smp_demo $(B)/smp_demo.hsaco $(B)/ie_kernels.hsaco $(B)/ie_mk.hsaco $(B)/ie_mk_mtp.hsaco $(B)/ie_mk_flint.hsaco $(B)/ie_mk_flintl.hsaco $(B)/ie_mk_inkling.hsaco $(B)/ie_mk_inkling_ver.hsaco
+all: $(B)/ie-run $(B)/ie-serve $(B)/smp_demo $(B)/smp_demo.hsaco $(B)/ie_kernels.hsaco $(B)/ie_kernels_q8.hsaco $(B)/ie_kernels_q4.hsaco $(B)/ie_inkling_kernels.hsaco $(B)/ie_saluki_kernels.hsaco $(B)/ie_vision_kernels.hsaco $(B)/ie_mk.hsaco $(B)/ie_mk_mtp.hsaco $(B)/ie_mk_flint.hsaco $(B)/ie_mk_flintl.hsaco $(B)/ie_mk_inkling.hsaco $(B)/ie_mk_inkling_ver.hsaco
 
 $(B):
 	mkdir -p $(B)
@@ -30,8 +30,8 @@ $(B)/ie-run: $(SRC) $(HDR) | $(B)
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 # ie-serve: the OpenAI-compatible HTTP server (SERVE.md)
-SERVE_SRC = $(ENGINE_SRC) src/tok.c src/json.c src/chat.c src/serve.c
-SERVE_HDR = $(HDR) src/tok.h src/tok_unicode.h src/json.h src/chat.h
+SERVE_SRC = $(ENGINE_SRC) src/tok.c src/json.c src/chat.c src/vision.c src/serve.c
+SERVE_HDR = $(HDR) src/tok.h src/tok_unicode.h src/json.h src/chat.h src/vision.h
 $(B)/ie-serve: $(SERVE_SRC) $(SERVE_HDR) | $(B)
 	$(CC) $(CFLAGS) -o $@ $(SERVE_SRC) $(LDLIBS) -lpthread
 
@@ -69,6 +69,37 @@ $(B)/ie_kernels.o: $(B)/ie_kernels.ll
 	$(GPU_CC) -nogpulib --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -O3 -c -o $@ $<
 
 $(B)/ie_kernels.hsaco: $(B)/ie_kernels.o
+	$(GPU_LD) -shared -o $@ $<
+
+$(B)/ie_kernels_q8.ll: kernels/ie_kernels.c $(wildcard kernels/*.inc) core/ie_core.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -DIE_KV_Q8 -I$(B) -S -emit-llvm -o $@.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+
+$(B)/ie_kernels_q4.ll: kernels/ie_kernels.c $(wildcard kernels/*.inc) core/ie_core.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -DIE_KV_Q4 -I$(B) -S -emit-llvm -o $@.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+
+$(B)/ie_inkling_kernels.ll: kernels/ie_inkling_kernels.c $(wildcard kernels/ie_inkling_*.inc) core/ie_core.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -S -emit-llvm -o $@.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+
+$(B)/ie_saluki_kernels.ll: kernels/ie_saluki_kernels.c $(wildcard kernels/*.inc) core/ie_core.h | $(B)
+	$(GPU_CC) -x c -std=c11 --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -nogpulib -O3 -I$(B) -S -emit-llvm -o $@.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+
+$(B)/ie_vision_kernels.ll: kernels/ie_vision_kernels.c core/ie_core.h | $(B)
+	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -S -emit-llvm -o $@.tmp $<
+	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
+	rm -f $@.tmp
+
+$(B)/ie_kernels_q8.o $(B)/ie_kernels_q4.o $(B)/ie_inkling_kernels.o $(B)/ie_saluki_kernels.o $(B)/ie_vision_kernels.o: $(B)/%.o: $(B)/%.ll
+	$(GPU_CC) -nogpulib --target=amdgcn-amd-amdhsa -mcpu=$(GPU_ARCH) -O3 -c -o $@ $<
+
+$(B)/ie_kernels_q8.hsaco $(B)/ie_kernels_q4.hsaco $(B)/ie_inkling_kernels.hsaco $(B)/ie_saluki_kernels.hsaco $(B)/ie_vision_kernels.hsaco: $(B)/%.hsaco: $(B)/%.o
 	$(GPU_LD) -shared -o $@ $<
 
 # The megakernel (kernels/ie_mk.c, IE_MK=1): the kernels of a run as
