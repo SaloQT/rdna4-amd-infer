@@ -20,6 +20,20 @@ Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c)
 
 ---
 
+## Live Real-Time Demo (1x Speed, RX 9070 XT 16 GB)
+
+Unedited 1x screen recording of `Inkling-2-Mini` (`26B IQ3_XXS`, `Q4_K` DSpark, `temp 0.6 / top_p 0.85 / top_k 20`, medium reasoning) running locally via `ie-serve` + Open WebUI on a single RX 9070 XT 16 GB (Windows WDDM, simultaneously capturing video on the same GPU): `3,882` output tokens in `35.62 s` (`109.0 tok/s`, `3.25` tok/step) generating and rendering a live 3D Rubik's Cube.
+
+<p align="center">
+  <a href="https://github.com/SaloQT/rdna4-amd-infer/releases/download/media-demo/inkling2-live-demo-1080p.mp4">
+    <img src="docs/inkling2-live-demo.webp" alt="Real-time 1x speed live demo of Inkling-2-Mini 26B IQ3_XXS running on AMD Radeon RX 9070 XT 16GB via ie-serve and Open WebUI generating a 3D Rubik's Cube" width="100%"/>
+  </a>
+  <br/>
+  <sub><i>Auto-playing 24-bit animated WebP (1280x634, 12 fps, real-time 1x) · <a href="https://github.com/SaloQT/rdna4-amd-infer/releases/download/media-demo/inkling2-live-demo-1080p.mp4">Watch / download full 1920x950 30 fps H.264 MP4 (8.6 MB)</a></i></sub>
+</p>
+
+---
+
 <p align="center">
   <a href="https://saloqt.github.io/rdna4-amd-infer/">
     <img src="docs/progress-chart.svg" alt="AMD Radeon RX 9070 XT RDNA4 Inkling-2-Mini 26B IQ3_XXS 52-Round Optimization Benchmarks" width="100%"/>
