@@ -91,7 +91,7 @@ $(B)/ie_saluki_kernels.ll: kernels/ie_saluki_kernels.c $(wildcard kernels/*.inc)
 	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
 	rm -f $@.tmp
 
-$(B)/ie_vision_kernels.ll: kernels/ie_vision_kernels.c core/ie_core.h | $(B)
+$(B)/ie_vision_kernels.ll: kernels/ie_vision_kernels.c $(wildcard kernels/ie_vision_*.inc) core/ie_core.h | $(B)
 	$(GPU_CC) $(GPU_CFLAGS) -I$(B) -S -emit-llvm -o $@.tmp $<
 	sed -E '/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/' $@.tmp > $@
 	rm -f $@.tmp

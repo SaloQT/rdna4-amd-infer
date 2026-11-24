@@ -3736,7 +3736,7 @@ static void gen_setup_mrope(gen_ctx *c, const gen_params *p, uint32_t n_prompt) 
   backend *b = c->b;
   const model *m = c->m;
   const graph *g = c->g;
-  if (!b->set_rope) return;
+  if (!b->set_rope || m->n_rot == 0u || m->arch == ARCH_INKLING2) return;
   const uint32_t h2 = m->n_rot / 2u;
   if (!p->n_imgs) {
     if (c->rope_custom_n) {

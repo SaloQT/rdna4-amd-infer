@@ -115,6 +115,16 @@ static void IMG(chat_prompt *p, const char *url, size_t len) {
   sb_puts(&p->text, "<|vision_start|><|image_pad|><|vision_end|>");
   seg_push(p, SEG_IMG, idx, 0);
 }
+static void INK_IMG(chat_prompt *p, const char *url, size_t len) {
+  if (p->n_imgs == p->cap_imgs) {
+    p->cap_imgs = p->cap_imgs ? 2 * p->cap_imgs : 4;
+    p->imgs = realloc(p->imgs, p->cap_imgs * sizeof(chat_img));
+    if (!p->imgs) abort();
+  }
+  const size_t idx = p->n_imgs++;
+  p->imgs[idx] = (chat_img){url, len};
+  seg_push(p, SEG_IMG, p->text.n, idx);
+}
 
 void chat_prompt_free(chat_prompt *p) {
   sb_free(&p->text);
@@ -1061,12 +1071,24 @@ int chat_render_inkling2(const jval *msgs, const jval *tools, const jval *effort
             }
             if (!allow_images) {
               sb_free(&rname);
-              snprintf(err, errn, "only text content is supported");
+              snprintf(err, errn, "only text content is supported (pass --mmproj to enable images)");
+              goto done;
+            }
+            const char *url = NULL;
+            size_t ulen = 0;
+            int ir = extract_image_url(part, &url, &ulen);
+            if (ir == 0) {
+              const jval *u = json_get(part, "url");
+              if (u && u->t == J_STR) { url = u->str; ulen = u->slen; ir = 1; }
+            }
+            if (ir <= 0 || !ulen) {
+              sb_free(&rname);
+              snprintf(err, errn, "image content part missing valid image_url");
               goto done;
             }
             INK_RTOK();
             CTRL(p, "<|content_image|>");
-            CTRL(p, "<|unused_200054|>");
+            INK_IMG(p, url, ulen);
             CTRL(p, "<|end_message|>");
           } else if (pt->t == J_STR &&
                      (!strcmp(pt->str, "audio") || !strcmp(pt->str, "input_audio") || !strcmp(pt->str, "audio_url"))) {

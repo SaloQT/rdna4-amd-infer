@@ -382,3 +382,5 @@ KERNEL ie_vis_attn(const G float *qkv, G float *out, u32 N, u32 n_head, u32 hd, 
     if (l + 64u < hd) op[l + 64u] = a2 * inv;
   }
 }
+
+#include "ie_vision_wmma_r14.inc"

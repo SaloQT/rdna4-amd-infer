@@ -11,7 +11,7 @@
 # (bench\inkling2_serve_sweep.py); -Draft 0 is plain decode, -DsSplit:$false disables split head.
 # -DiskCache DIR keeps prompt checkpoints on disk (IE_DISK_CACHE), so a restarted server or a reopened chat continues
 # instead of re-reading the prompt (9.8K tokens: 0.9 s against 8.2 s), with or without DSpark.
-#   powershell -File engine\serve-inkling2.ps1 [-Kv f16|q8|q4] [-Ctx 98304] [-Port 8090] [-Draft 5] [-GlobKv f16|q4|q4k|q4rot] [-DsGlobWin 0] [-MoeCacheSlots ''] [-DryRun]
+#   powershell -File engine\serve-inkling2.ps1 [-Kv f16|q8|q4] [-Ctx 98304] [-Port 8090] [-Draft 5] [-GlobKv f16|q4|q4k|q4rot] [-DsGlobWin 0] [-MoeCacheSlots ''] [-Mmproj PATH] [-NoVision] [-DryRun]
 # For -Ctx > 131072 (e.g. -Ctx 262144) with -Kv f16, unoverridden defaults select the verified 256K + DSpark
 # profile (-Chunk 512, IE_INK_GLOB_KV=q4rot, IE_DS_GLOB_WIN=8192, IE_DS_ROPE_OTF=1, IE_MOE_CACHE_SLOTS=auto).
 param(
@@ -22,6 +22,8 @@ param(
   [ValidateSet('f16', 'q4', 'q4k', 'q4rot')][string]$GlobKv = 'f16',
   [int]$DsGlobWin = 0,
   [string]$MoeCacheSlots = '',
+  [AllowEmptyString()][string]$Mmproj = '',
+  [switch]$NoVision,
   [string]$Name = 'inkling2-uncensored',
   [ValidateSet('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')][string]$Effort = 'high',
   [int]$Chunk = 1024,
@@ -46,6 +48,23 @@ $modelPath = if ($Model) { $Model } elseif (Test-Path -LiteralPath $fastModel -P
 $dsparkQ4k = Join-Path $lab 'models\DSpark\Inkling-2-Mini-DSpark-Q4_K.gguf'
 $dsparkQ8 = Join-Path $lab 'models\DSpark\Inkling-2-Mini-DSpark-Q8_0.gguf'
 $dsparkPath = if ($Dspark) { $Dspark } elseif (Test-Path -LiteralPath $dsparkQ4k -PathType Leaf) { $dsparkQ4k } else { $dsparkQ8 }
+$mmprojQ8 = Join-Path $lab 'models\mmproj-Inkling-2-Mini-Q8_0.gguf'
+$mmprojF16 = Join-Path $lab 'models\mmproj-Inkling-2-Mini-Uncensored-F16.gguf'
+$mmprojPath = ''
+if ($NoVision) {
+  $mmprojPath = ''
+} elseif ($PSBoundParameters.ContainsKey('Mmproj')) {
+  if ([string]::IsNullOrEmpty($Mmproj) -or $Mmproj -eq 'none' -or $Mmproj -eq 'off') {
+    $mmprojPath = ''
+  } else {
+    $mmprojPath = $Mmproj
+    if (-not (Test-Path -LiteralPath $mmprojPath -PathType Leaf)) { throw "missing mmproj $mmprojPath" }
+  }
+} elseif (Test-Path -LiteralPath $mmprojQ8 -PathType Leaf) {
+  $mmprojPath = $mmprojQ8
+} elseif (Test-Path -LiteralPath $mmprojF16 -PathType Leaf) {
+  $mmprojPath = $mmprojF16
+}
 $hsaco = Join-Path $here 'build\ie_kernels.hsaco'
 $exe = Join-Path $here 'build\ie-serve.exe'
 foreach ($f in @($modelPath, $hsaco, $exe)) {
@@ -129,6 +148,9 @@ $serveArgs = @(
 )
 if ($useDspark) {
   $serveArgs += @('--dspark', $dsparkPath, '--draft', "$Draft", '--draft-pmin', $pminStr)
+}
+if ($mmprojPath) {
+  $serveArgs += @('--mmproj', $mmprojPath)
 }
 $serveArgs += $pass
 

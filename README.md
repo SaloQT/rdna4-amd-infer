@@ -1,8 +1,8 @@
 # <img src="docs/icons/chip.svg" width="24" height="24" align="absmiddle" alt=""/> rdna4-amd-infer: RX 9070 XT LLM Engine
 
-**Fast local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4 / `gfx1201`) built on top of Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c), adding Windows 11 WDDM support (no system ROCm install) and 258 custom AMDGPU kernels (`171` Inkling-2-Mini with `0/0` VGPR spills, `81` Saluki-27B, `6` ViT vision).**
+**Fast local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4 / `gfx1201`) built on top of Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c), adding Windows 11 WDDM support (no system ROCm install) and 264 custom AMDGPU kernels (`171` Inkling-2-Mini with `0/0` VGPR spills, `81` Saluki-27B, `12` ViT vision including `6` RDNA4 WMMA).**
 
-Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c) · Windows WDDM port + 258 custom `gfx1201` kernels + DSpark/shortlist/256K long-context/dashboard added here · Linux ROCm ready · GGUF v3 · OpenAI-compatible `ie-serve` API.
+Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c) · Windows WDDM port + 264 custom `gfx1201` kernels + DSpark/shortlist/256K long-context/0-VRAM WMMA vision/dashboard added here · Linux ROCm ready · GGUF v3 · OpenAI-compatible `ie-serve` API.
 
 > **Upstream Credit & License Note:** The base C11 runtime, formally verified core (`engine/core/ie_core.h`), base `gfx1201` kernels, and `ie-serve` architecture come from Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c) (and `engine/src/iq3s_grid.h` carries ggml's MIT header). Because upstream `hanw/amd.c` does not currently include a `LICENSE` file, this repository intentionally does **not** apply a separate open-source license over Han's upstream code. All credit for the base engine belongs to Han Wang; if upstream adds a license (or requests changes/removal of upstream files), this repo will follow immediately.
 
@@ -13,7 +13,7 @@ Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c)
 </p>
 
 **Exact quants tested above (single 16GB RX 9070 XT, Windows WDDM, streaming):**
-- **Inkling-2-Mini (26B MoE):** `IQ3_XXS` GGUF (`output.weight` `Q4_K`), `Q4_K` DSpark 5x0.6 + 0-VRAM `60K+4K` shortlist, `f16` KV cache (default 96K ctx; up to **256K filled ctx + DSpark** with global `q4rot` KV + outer-layer SLRU MoE cache)
+- **Inkling-2-Mini (26B MoE):** `IQ3_XXS` GGUF (`output.weight` `Q4_K`), `Q4_K` DSpark 5x0.6 + 0-VRAM `60K+4K` shortlist, `f16` KV cache (default 96K ctx; up to **256K filled ctx + DSpark** with global `q4rot` KV + outer-layer SLRU MoE cache) + **0-VRAM RDNA4 WMMA ViT vision** (`28.4 - 83.8 ms`)
 - **Saluki-27B (`Qwen3.8-27B`):** `IQ2-mix` GGUF, `IQ3_S` MTP7 (65K draft vocab), `q8` KV cache (128K ctx) + 0-VRAM ViT vision
 
 <img src="docs/icons/chart.svg" width="15" height="15" align="absmiddle" alt=""/> **[Open Interactive 52-Round Telemetry Dashboard](https://saloqt.github.io/rdna4-amd-infer/)**: hover tooltips, frontier lines, filterable ledger, and research links for every round (`R00-R52`).
@@ -97,6 +97,18 @@ powershell -File serve-inkling2.ps1 -Ctx 262144
 powershell -File serve-inkling2.ps1 -Ctx 131072 -GlobKv q4rot -DsGlobWin 8192 -MoeCacheSlots auto
 ```
 
+### 1c. Zero-Persistent-VRAM RDNA4 WMMA Vision (Inkling-2-Mini `inkling2v`)
+
+Inkling-2-Mini (`OpenUncensored/Inkling-2-Mini-Uncensored`) supports native multimodal image input via 6 custom RDNA4 (`gfx1201`) WMMA vision kernels ([`engine/kernels/ie_vision_wmma_r14.inc`](engine/kernels/ie_vision_wmma_r14.inc): FP16 & Q8_0 WMMA GEMM, inline 2D Axial RoPE `hd=64` WMMA FlashAttention, fused LayerNorm, patch-prep, and 2x2 spatial merge; all 6 at `<= 94` VGPR, `0/0` spills, `4` WGs/CU):
+- **Zero persistent VRAM (`0.00 MiB` delta):** Double-buffered async H2D weight streaming borrows Inkling-2's idle LLM prefill arena inside `ie-serve` (`102.8 MiB` peak at `1280x1280` `Q8_0` inside the `140.0 MiB` 256K arena; fixed 4 MiB VMM fallback standalone). Live 256K `ie-serve` DXGI stayed flat at `11.04 / 12.15 GiB` (`+1.11 GiB` reserve, `0.00 MiB` leak across mixed resolutions).
+- **24.4x faster than scalar ViT (`Q8_0` default):** Download [`mmproj-Inkling-2-Mini-Q8_0.gguf`](https://huggingface.co/AtomicChat/Inkling-2-Mini-GGUF) (`346 MB`, default; `1.12x - 1.74x` faster than F16 over PCIe) or [`mmproj-Inkling-2-Mini-Uncensored-F16.gguf`](https://huggingface.co/AtomicChat/Inkling-2-Mini-Uncensored-GGUF) (`639 MB`, fallback) into `models/`. `serve-inkling2.ps1` auto-detects it (`-Mmproj PATH` / `-NoVision` overrides).
+
+| Resolution (`inkling2v` `Q8_0`) | Merged Tokens | WMMA Encode Latency | CPU vs GPU Cosine | Live E2E (`64K` / `256K q4rot` + DSpark) |
+|---|---:|---:|---:|---|
+| **`640x640`** (`16x16`) | `256` tok | **`28.4 ms`** | `0.999989` | **5/5 PASS** (OCR, spatial color/shape, bar chart, |
+| **`1040x1040`** (`26x26`) | `676` tok | **`53.4 ms`** | `0.999989` | 2x2 hi-res grid, multi-turn vision+KV cache hit); |
+| **`1280x1280`** (`32x32`) | `1,024` tok | **`83.8 ms`** (`24.4x` vs scalar) | `0.999985 - 0.999998` | `155 - 215 tok/s` (64K), `121 - 165 tok/s` (256K) |
+
 ### 2. Saluki-27B (`Qwen3.8 IQ2-mix` · 128K · 16GB)
 
 <p align="center">
@@ -145,7 +157,7 @@ pip install rocm-sdk-core rocm-sdk-libraries rocm-sdk-device-gfx1201
 ```
 
 ```bash
-# 1. Build host engine + all 258 custom gfx1201 kernels (0 Inkling-2 spills)
+# 1. Build host engine + all 264 custom gfx1201 kernels (0 Inkling-2/vision spills)
 cd engine && sh build-win.sh
 
 # 2. Optional: shrink Inkling-2 output.weight Q8_0 -> Q4_K (-231 MB VRAM)
@@ -174,10 +186,10 @@ cd engine && make
 | Path | Contents |
 |---|---|
 | [`engine/src/`](engine/src) | Pure C11 engine (based on [`hanw/amd.c`](https://github.com/hanw/amd.c)): GGUF v3, HIP loader, arena planner, DSpark/MTP/DFlash, disk cache, HTTP server, ViT vision |
-| [`engine/kernels/`](engine/kernels) | Base `gfx1201` kernels (`hanw/amd.c`) + **171 Inkling-2** (`0/0` spills) + **81 Saluki-27B** + **6 ViT** custom kernels |
+| [`engine/kernels/`](engine/kernels) | Base `gfx1201` kernels (`hanw/amd.c`) + **171 Inkling-2** (`0/0` spills) + **81 Saluki-27B** + **12 ViT** (`6` RDNA4 WMMA + `6` Qwen3.5) custom kernels |
 | [`engine/core/`](engine/core) & [`engine/laws/`](engine/laws) | Formally verified indexing/quantization core (`ie_core.h`) + law checks from [`hanw/amd.c`](https://github.com/hanw/amd.c) |
-| [`engine/tools/`](engine/tools) & [`engine/tests/`](engine/tests) | Per-module build scripts, `objdump` checks, CPU unit, DRY, shortlist & cache tests |
-| [`engine/serve-inkling2.ps1`](engine/serve-inkling2.ps1) | Production Inkling-2-Mini launcher (`chunk=1024`, Q4\_K DSpark, 0-VRAM shortlist, auto 256K long-context preset) |
+| [`engine/tools/`](engine/tools) & [`engine/tests/`](engine/tests) | Per-module build scripts, `objdump` checks, CPU unit, DRY, shortlist, vision & cache tests |
+| [`engine/serve-inkling2.ps1`](engine/serve-inkling2.ps1) | Production Inkling-2-Mini launcher (`chunk=1024`, Q4\_K DSpark, 0-VRAM shortlist, 0-VRAM WMMA ViT vision, auto 256K long-context preset) |
 | [`engine/serve-saluki.ps1`](engine/serve-saluki.ps1) | Production Saluki-27B launcher (128K q8 KV, MTP7, ViT vision, disk prompt cache) |
 | [`data/inkling2-shortlist/`](data/inkling2-shortlist) | Portable 0-VRAM `60K+4K` Inkling-2 Band-B frequency shortlist (`240 KB`) |
 | [`scripts/`](scripts) | Requantizer, shortlist builder, wall-clock harness & offline HTML dashboard generator |
@@ -208,7 +220,7 @@ cd engine && make
 <summary><img src="docs/icons/help.svg" width="14" height="14" align="absmiddle" alt=""/> <b>FAQ: Upstream Credit, License, RX 9070 XT & 16GB VRAM</b></summary>
 
 - **What is upstream (`hanw/amd.c`) vs. what was added here?**
-  The base C11 engine (`amd-infer`), formally verified core (`core/ie_core.h`), Lean laws, base `gfx1201` runtime/kernels, and base `ie-serve` HTTP server are by Han Wang ([`hanw/amd.c`](https://github.com/hanw/amd.c)). This repo adds the Windows 11 WDDM port (`build-win.sh` via user-space `rocm-sdk` wheels), native raw `IQ1_S`/`IQ1_M`/`IQ2_*`/`IQ3_XXS`/`Q2_K` quant loaders, 258 custom `gfx1201` kernels (`171` Inkling-2-Mini with `0/0` spills + `81` Saluki-27B + `6` ViT), FLUTE SoA `IQ3_XXS` repack, native DSpark + 0-VRAM `60K+4K` Band-B shortlist, filled 128K-256K global `q4rot` KV + outer-layer SLRU MoE cache, ephemeral host-RAM prefix-cache immunity, `O(1)` hash-chain DRY loop penalty, compact SWA disk checkpoints, and the 52-round telemetry dashboard.
+  The base C11 engine (`amd-infer`), formally verified core (`core/ie_core.h`), Lean laws, base `gfx1201` runtime/kernels, and base `ie-serve` HTTP server are by Han Wang ([`hanw/amd.c`](https://github.com/hanw/amd.c)). This repo adds the Windows 11 WDDM port (`build-win.sh` via user-space `rocm-sdk` wheels), native raw `IQ1_S`/`IQ1_M`/`IQ2_*`/`IQ3_XXS`/`Q2_K` quant loaders, 264 custom `gfx1201` kernels (`171` Inkling-2-Mini with `0/0` spills + `81` Saluki-27B + `12` ViT including `6` RDNA4 WMMA), FLUTE SoA `IQ3_XXS` repack, native DSpark + 0-VRAM `60K+4K` Band-B shortlist, filled 128K-256K global `q4rot` KV + outer-layer SLRU MoE cache, 0-VRAM Inkling-2 WMMA vision, ephemeral host-RAM prefix-cache immunity, `O(1)` hash-chain DRY loop penalty, compact SWA disk checkpoints, and the 52-round telemetry dashboard.
 - **Why is there no `LICENSE` file in this repo?**
   Upstream [`hanw/amd.c`](https://github.com/hanw/amd.c) does not currently declare a license, so default copyright applies to the upstream code and this repo intentionally does not place an MIT/Apache license over it. If `hanw/amd.c` adds a license, this repo will adopt matching terms (or strip down to our newly written kernel/script files if requested).
 - **Do I need a system ROCm install on Windows to run LLMs on an RX 9070 XT?**
@@ -218,7 +230,7 @@ cd engine && make
 - **Does `ie-serve` work with Open WebUI, OpenCode, OMP, Cline, or standard OpenAI SDKs?**
   Yes. `ie-serve` exposes `/v1/chat/completions`, `/v1/models`, streaming SSE, reasoning effort (`--effort`), tool calling (`--tool-temp 0`), multimodal image inputs, and `O(1)` DRY loop-penalty protection.
 - **What GPU architectures are supported?**
-  The custom `258`-kernel specializations target AMD RDNA4 (`gfx1201`: Radeon RX 9070 XT / RX 9070) using native `wave32` and RDNA4 WMMA instructions. Base C11/HIP kernels can be built for other `amdgcn` targets via `GPU_ARCH=...` in `engine/Makefile`.
+  The custom `264`-kernel specializations target AMD RDNA4 (`gfx1201`: Radeon RX 9070 XT / RX 9070) using native `wave32` and RDNA4 WMMA instructions. Base C11/HIP kernels can be built for other `amdgcn` targets via `GPU_ARCH=...` in `engine/Makefile`.
 
 </details>
 

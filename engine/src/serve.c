@@ -1202,6 +1202,7 @@ static void *engine_main(void *arg) {
     TOOL_CALL_OPEN_ID = tok_find(TK, "<|content_invoke_tool_json|>");
     TOOL_CALL_CLOSE_ID = tok_find(TK, "<|end_message|>");
     THINK_END_ID = tok_find(TK, "<|content_text|>");
+    IMAGE_PAD_ID = tok_find(TK, "<|unused_200054|>");
     const int64_t end_sampling = tok_find(TK, "<|content_model_end_sampling|>");
     STOP_IDS[0] = eos >= 0 ? eos : end_sampling;
     STOP_IDS[1] = tok_find(TK, "<|endoftext|>");
@@ -1256,8 +1257,11 @@ static void *engine_main(void *arg) {
   B = gpu ? gpu_open(&M, &GR, O.hsaco) : cpu_open(&M, &GR);
   gen_init(&GC, B, &M, &GR);
   if (O.mmproj) {
-    if (VISION_START_ID < 0 || VISION_END_ID < 0 || IMAGE_PAD_ID < 0)
+    if (INKLING2) {
+      if (IMAGE_PAD_ID < 0) ie_die("--mmproj: Inkling-2 model vocabulary lacks <|unused_200054|>");
+    } else if (VISION_START_ID < 0 || VISION_END_ID < 0 || IMAGE_PAD_ID < 0) {
       ie_die("--mmproj: model vocabulary lacks <|vision_start|>/<|image_pad|>/<|vision_end|>");
+    }
     VIS = vision_open(O.mmproj, gpu ? O.hsaco : NULL, M.dim);
   }
   const char *dcd = getenv("IE_DISK_CACHE");
@@ -1449,13 +1453,19 @@ static void prompt_tokens(const chat_prompt *p, tok_ids *out, gen_params *gp, in
     tok_encode(TK, p->text.p, p->text.n, 1, out);
     return;
   }
-  if (INKLING2) { /* gaps hold template control tags; SEG_TEXT holds untrusted message text */
+  if (INKLING2) { /* gaps hold template control tags; SEG_TEXT holds untrusted message text; SEG_IMG holds image slot */
     size_t pos = 0;
     for (size_t i = 0; i < p->n_seg; i++) {
       const chat_seg *s = &p->seg[i];
       if (s->off > pos) tok_encode(TK, p->text.p + pos, s->off - pos, 1, out);
-      tok_encode(TK, p->text.p + s->off, s->n, 0, out);
-      pos = s->off + s->n;
+      if (s->kind == SEG_IMG) {
+        if (img_slots) img_slots[s->n] = out->n;
+        tok_ids_push(out, (uint32_t)IMAGE_PAD_ID);
+        pos = s->off;
+      } else {
+        tok_encode(TK, p->text.p + s->off, s->n, 0, out);
+        pos = s->off + s->n;
+      }
     }
     if (p->text.n > pos) tok_encode(TK, p->text.p + pos, p->text.n - pos, 1, out);
     return;
@@ -1596,7 +1606,7 @@ static void handle_chat(int fd, const request *r) {
   chat_prompt cp;
   if (FLINT      ? !chat_render_flint(json_get(root, "messages"), tools, &cp, err, sizeof err)
       : MIMO     ? !chat_render_mimo(json_get(root, "messages"), tools, think, &cp, err, sizeof err)
-      : INKLING2 ? !chat_render_inkling2(json_get(root, "messages"), tools, ef, ink_eff_str, 0, &cp, err, sizeof err)
+      : INKLING2 ? !chat_render_inkling2(json_get(root, "messages"), tools, ef, ink_eff_str, VIS != NULL, &cp, err, sizeof err)
                  : !chat_render_vis(json_get(root, "messages"), tools, think, effort, VIS != NULL, &cp, err, sizeof err)) {
     http_error(fd, 400, "invalid_request_error", "%s", err);
     goto bad;

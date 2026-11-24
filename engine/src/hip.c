@@ -84,6 +84,9 @@ static struct {
   hipError_t (*ModuleOccupancy)(int *, hipFunction_t, int, size_t);
 } H;
 static hipStream_t cur_stream; /* the stream of all launches (NULL: the default stream) */
+static void *vis_borrow_base;
+static size_t vis_borrow_size;
+static int vis_borrow_used;
 
 #define HIP(call)                                                                                            \
   do {                                                                                                       \
@@ -3150,6 +3153,11 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
 
   HIP(H.Malloc((void **)&b->arena, g->arena));
   HIP(H.Memset(b->arena, 0, g->arena));
+  if (m->arch == ARCH_INKLING2) {
+    vis_borrow_base = b->arena;
+    vis_borrow_size = g->arena;
+    vis_borrow_used = 0;
+  }
   HIP(H.Malloc((void **)&b->am_part, 16u * ARGMAX_GROUPS * 12u));
   if (H.HostMalloc((void **)&b->am_pin, 256u, 0) != 0) b->am_pin = NULL;
   if ((m->arch == ARCH_FLINT || m->arch == ARCH_INKLING2) && m->n_exp) {
@@ -8880,7 +8888,8 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           tk.p2 = (unsigned long long)(uintptr_t)c_p;
           rb[0] = oj->a; rb[1] = oj->b; wb[0] = oj->c; ok = 1;
         }
-      } else if (oj->kind == OP_RMSNORM && oj->n == 2304u && oj->v != NULL) {
+      } else if (oj->kind == OP_RMSNORM && oj->n == 2304u && oj->v != NULL &&
+                 !(b->base.ext_rows && oj->v == &b->m->tok_norm)) {
         void *x_p = b->arena + g->bufs[oj->a].off + oj->aoff;
         void *w_p = b->d[j].w0;
         void *q_p = oj->qo >= 0 ? (b->arena + g->bufs[oj->qo].off) : NULL;
@@ -9042,8 +9051,11 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
         continue;
       }
     }
-    /* Inkling-2 R2 batched prefill/verify Q8 embedding (T launches -> 1 launch) */
-    if (k == OP_EMBED && T > 1u && !b->base.ext_rows && b->k[K_INK_EMBED_Q8_BATCH_R2] && mk_ok_k(K_INK_EMBED_Q8_BATCH_R2) && !gdump_on()) {
+    /* Inkling-2 R2 batched prefill/verify Q8 embedding (T launches -> 1 launch).
+     * For ARCH_INKLING2 with ext_rows, IMAGE_PAD_ID is a valid vocab row; vision rows bypass
+     * token_embd_norm by overwriting OP_RMSNORM(tok_norm)'s output buffer right after it runs. */
+    if (k == OP_EMBED && T > 1u && (!b->base.ext_rows || b->m->arch == ARCH_INKLING2) &&
+        b->k[K_INK_EMBED_Q8_BATCH_R2] && mk_ok_k(K_INK_EMBED_Q8_BATCH_R2) && !gdump_on()) {
       const op *oe = &g->ops[i];
       const mat *tm = oe->w ? oe->w : &b->m->tok;
       if (tm->kind == MAT_Q8 && (oe->escale <= 0.0f || oe->escale == 1.0f) && tm->nb > 0u) {
@@ -9083,8 +9095,9 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
         continue;
       }
     }
-    /* external vision embeddings injected directly into OP_EMBED output rows */
-    if (k == OP_EMBED && b->base.ext_rows) {
+    /* external vision embeddings injected directly into OP_EMBED output rows (non-Inkling2;
+     * Inkling2 injects after OP_RMSNORM(tok_norm) so vision embeddings bypass token_embd_norm). */
+    if (k == OP_EMBED && b->base.ext_rows && b->m->arch != ARCH_INKLING2) {
       const op *o = &g->ops[i];
       const size_t stride = g->bufs[o->a].stride;
       const size_t rowb = (size_t)b->m->dim * 4u;
@@ -9204,6 +9217,22 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
     if (all) launch_op(b, i, 0, toks[0], pos, T, slot, wfrom);
     else
       for (u32 t = 0; t < T; t++) launch_op(b, i, t, toks[t], pos + t, 1, slot, wfrom);
+    /* Inkling-2 vision injection: bypass token_embd_norm by overwriting vision rows in OP_RMSNORM(tok_norm)'s output. */
+    if (k == OP_RMSNORM && b->m->arch == ARCH_INKLING2 && b->base.ext_rows && g->ops[i].v == &b->m->tok_norm) {
+      const op *o = &g->ops[i];
+      const size_t stride = g->bufs[o->b].stride;
+      const size_t rowb = (size_t)b->m->dim * 4u;
+      for (u32 t = 0; t < T;) {
+        if (!b->base.ext_rows[t]) { t++; continue; }
+        u32 t1 = t + 1u;
+        while (t1 < T && b->base.ext_rows[t1] &&
+               b->base.ext_rows[t1] == b->base.ext_rows[t] + (size_t)(t1 - t) * b->m->dim && stride == rowb)
+          t1++;
+        void *dst = b->arena + g->bufs[o->b].off + o->boff + (size_t)buf_row(&g->bufs[o->b], t) * stride;
+        HIP(H.Memcpy(dst, b->base.ext_rows[t], (size_t)(t1 - t) * rowb, hipMemcpyHostToDevice));
+        t = t1;
+      }
+    }
     if (gdump_on()) dump_gpu_op(b, i, 0);
     if (b->prof && (i < g->n_main || b->prof == 3)) HIP(H.EventRecord(b->pev[i], NULL));
   }
@@ -9369,7 +9398,7 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
   tr_run("decode", pos, 1);
   mk.set = b->flint ? (gq_use(b, pos) ? MKSET_FLINTL : MKSET_FLINT)
                     : m->arch == ARCH_INKLING2 ? MKSET_INKLING : MKSET_DECODE;
-  mk.rec = mk.on && !mk.off[mk.set] && !b->kvq8 && !b->kvq4 && b->kvb == 2u && !b->kvrot;
+  mk.rec = mk.on && !mk.off[mk.set] && !b->kvq8 && !b->kvq4 && b->kvb == 2u && !b->kvrot && !b->base.ext_rows;
   fl_cnt = 0;
   b->in_step = 1;
   run_ops(b, 0, g->n_main, &tok, 1, pos, 0); /* state: slot -> slot */
@@ -10297,7 +10326,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   if (b->m->arch == ARCH_INKLING2) {
     mk.set = T == 1u ? MKSET_INKLING : MKSET_INKLING_VER;
     mk.rec = mk.on && mk_kv_ok && !mk.off[mk.set] && mk.mtp && !sec && !(last_only && T > 1u) && T <= 16u &&
-             (mk.mtp == 1 || mk.mtp == 3);
+             !b->base.ext_rows && (mk.mtp == 1 || mk.mtp == 3);
   } else {
     mk.rec = mk.on && mk_kv_ok && !mk.off[MKSET_MTP] && mk.mtp && !(last_only && T > 1u) && (mk.mtp == 1 || (mk.mtp == 2) == (sec != 0));
     mk.set = MKSET_MTP;
@@ -11826,6 +11855,11 @@ static void gpu_close(backend *bk) {
   }
   snap_async_shutdown(b);
   HIP(H.DeviceSynchronize());
+  if (vis_borrow_base && vis_borrow_base == b->arena) {
+    vis_borrow_base = NULL;
+    vis_borrow_size = 0;
+    vis_borrow_used = 0;
+  }
   if (b->moe_c_on && b->moe_c) {
     const uint64_t tot_ref = b->moe_c_hits + b->moe_c_misses;
     const double hrate = tot_ref ? (100.0 * (double)b->moe_c_hits / (double)tot_ref) : 0.0;
@@ -11975,20 +12009,136 @@ static void gpu_set_rope(backend *bk, uint32_t pos0, uint32_t n, const float *co
   HIP(H.Memcpy(b->rsin + off, sin_tab, bytes, hipMemcpyHostToDevice));
 }
 
+typedef struct { void *va; void **hs; size_t nh, chunk, sz; } vis_vmm_rec;
+static vis_vmm_rec vis_vmm[32];
+
 int gpu_vis_ready(void) { return H.lib != NULL; }
 void *gpu_vis_alloc(size_t bytes) {
+  const size_t req = bytes ? bytes : 16u;
+  /* Zero-VRAM fast path: borrow idle Inkling-2 LLM prefill arena (140-273 MiB) when
+   * vision runs serialized before gen_run() -> 0.00 MiB extra VRAM even at peak! */
+  if (vis_borrow_base && !vis_borrow_used && req <= vis_borrow_size) {
+    HIP(H.DeviceSynchronize());
+    vis_borrow_used = 1;
+    return vis_borrow_base;
+  }
+  /* Standalone / fallback path: map fixed 4 MiB VMM chunks so repeated mixed resolutions
+   * share one single fixed-size pool bucket instead of caching per-resolution slabs. */
+  if (req >= (1u << 20) && H.MemAddressReserve && H.MemCreate && H.MemMap && H.MemSetAccess &&
+      H.MemUnmap && H.MemRelease && H.MemAddressFree && H.MemGetAllocationGranularity &&
+      !(getenv("IE_KV_VMM") && getenv("IE_KV_VMM")[0] == '0')) {
+    int slot = -1;
+    for (int i = 0; i < 32; i++) if (!vis_vmm[i].va) { slot = i; break; }
+    if (slot >= 0) {
+      const hipMemAllocProp prop = {1 /* pinned */, 0, 1 /* device */, 0, NULL, 0, 0, 0};
+      const hipMemAccDesc acc = {1, 0, 3 /* read and write */};
+      size_t gran = 0;
+      if (H.MemGetAllocationGranularity(&gran, &prop, 0) == 0 && gran) {
+        const size_t want_chunk = (size_t)4u << 20;
+        const size_t chunk = (want_chunk + gran - 1u) / gran * gran;
+        const size_t nh = (req + chunk - 1u) / chunk;
+        const size_t sz = nh * chunk;
+        void *va = NULL;
+        void **hs = calloc(nh, sizeof(void *));
+        if (hs && H.MemAddressReserve(&va, sz, 0, NULL, 0) == 0) {
+          size_t k = 0;
+          int ok = 1;
+          for (; k < nh && ok; k++) {
+            if (H.MemCreate(&hs[k], chunk, &prop, 0) != 0 ||
+                H.MemMap((char *)va + k * chunk, chunk, 0, hs[k], 0) != 0) {
+              ok = 0;
+              break;
+            }
+          }
+          if (ok && H.MemSetAccess(va, sz, &acc, 1) == 0) {
+            vis_vmm[slot] = (vis_vmm_rec){va, hs, nh, chunk, sz};
+            vram_trace("visvmm", sz);
+            return va;
+          }
+          for (size_t j = 0; j < nh; j++) {
+            if (hs[j]) {
+              if (j < k) H.MemUnmap((char *)va + j * chunk, chunk);
+              H.MemRelease(hs[j]);
+            }
+          }
+          H.MemAddressFree(va, sz);
+        }
+        free(hs);
+      }
+    }
+  }
   void *p = NULL;
-  HIP(H.Malloc(&p, bytes ? bytes : 16u));
+  HIP(H.Malloc(&p, req));
   return p;
 }
 void gpu_vis_free(void *p) {
-  if (p) H.Free(p);
+  if (!p) return;
+  if (vis_borrow_used && p == vis_borrow_base) {
+    vis_borrow_used = 0;
+    return;
+  }
+  for (int i = 0; i < 32; i++) {
+    if (vis_vmm[i].va == p) {
+      for (size_t k = 0; k < vis_vmm[i].nh; k++) {
+        HIP(H.MemUnmap((char *)vis_vmm[i].va + k * vis_vmm[i].chunk, vis_vmm[i].chunk));
+        HIP(H.MemRelease(vis_vmm[i].hs[k]));
+      }
+      HIP(H.MemAddressFree(vis_vmm[i].va, vis_vmm[i].sz));
+      free(vis_vmm[i].hs);
+      vis_vmm[i] = (vis_vmm_rec){NULL, NULL, 0, 0, 0};
+      vram_trace("visfre", 0);
+      return;
+    }
+  }
+  H.Free(p);
 }
 void gpu_vis_h2d(void *dst, const void *src, size_t bytes) {
   if (bytes) HIP(H.Memcpy(dst, src, bytes, hipMemcpyHostToDevice));
 }
 void gpu_vis_d2h(void *dst, const void *src, size_t bytes) {
   if (bytes) HIP(H.Memcpy(dst, src, bytes, hipMemcpyDeviceToHost));
+}
+void *gpu_vis_host_alloc(size_t bytes) {
+  void *p = NULL;
+  HIP(H.HostMalloc(&p, bytes ? bytes : 16u, 0u));
+  return p;
+}
+void gpu_vis_host_free(void *p) {
+  if (p) H.HostFree(p);
+}
+void *gpu_vis_stream_create(void) {
+  hipStream_t st = NULL;
+  HIP(H.StreamCreateWithFlags ? H.StreamCreateWithFlags(&st, 1u) : H.StreamCreate(&st));
+  return (void *)st;
+}
+void gpu_vis_stream_destroy(void *st) {
+  if (st && H.StreamDestroy) H.StreamDestroy((hipStream_t)st);
+}
+void *gpu_vis_event_create(void) {
+  hipEvent_t ev = NULL;
+  HIP(ie_event_create_notiming(&ev));
+  return (void *)ev;
+}
+void gpu_vis_event_destroy(void *ev) {
+  if (ev && H.EventDestroy) H.EventDestroy((hipEvent_t)ev);
+}
+void gpu_vis_h2d_async(void *dst, const void *src, size_t bytes, void *st) {
+  if (bytes) HIP(H.MemcpyAsync(dst, src, bytes, hipMemcpyHostToDevice, st ? (hipStream_t)st : cur_stream));
+}
+void gpu_vis_d2h_async(void *dst, const void *src, size_t bytes, void *st) {
+  if (bytes) HIP(H.MemcpyAsync(dst, src, bytes, hipMemcpyDeviceToHost, st ? (hipStream_t)st : cur_stream));
+}
+void gpu_vis_event_record(void *ev, void *st) {
+  HIP(H.EventRecord((hipEvent_t)ev, st ? (hipStream_t)st : cur_stream));
+}
+void gpu_vis_event_sync(void *ev) {
+  HIP(H.EventSynchronize((hipEvent_t)ev));
+}
+void gpu_vis_stream_wait(void *st, void *ev) {
+  HIP(H.StreamWaitEvent(st ? (hipStream_t)st : cur_stream, (hipEvent_t)ev, 0u));
+}
+void gpu_vis_stream_sync(void *st) {
+  HIP(H.StreamSynchronize(st ? (hipStream_t)st : cur_stream));
 }
 void *gpu_vis_load_mod(const char *path) {
   if (!H.lib || !path) return NULL;
@@ -12020,4 +12170,13 @@ void gpu_vis_launch(void *fn, unsigned gx, unsigned gy, unsigned gz, unsigned bx
 void gpu_vis_sync(void) {
   if (cur_stream && H.StreamSynchronize) HIP(H.StreamSynchronize(cur_stream));
   else HIP(H.DeviceSynchronize());
+}
+void gpu_vis_mem_info(size_t *free_b, size_t *total_b) {
+  size_t fb = 0, tb = 0;
+  if (H.lib && H.MemGetInfo) HIP(H.MemGetInfo(&fb, &tb));
+  if (free_b) *free_b = fb;
+  if (total_b) *total_b = tb;
+}
+int gpu_vis_dxgi_info(uint64_t *usage_out, uint64_t *budget_out) {
+  return dxgi_local_mem(budget_out, usage_out);
 }

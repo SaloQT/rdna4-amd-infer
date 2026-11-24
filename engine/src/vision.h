@@ -1,8 +1,8 @@
-/* vision.h -- Qwen3.5/3.8 ViT vision projector (--mmproj) for amd-infer.
+/* vision.h -- ViT vision projector (--mmproj) for amd-infer (Qwen3.5/3.8 & Inkling-2).
  * Loads an mmproj GGUF (Q8_0/F16/F32), decodes data:image/...;base64,... URLs
- * via Windows WIC, resizes to Qwen3.5's multiple-of-32 grid, runs the 27-layer
- * ViT + 2x2 spatial merger on the GPU with zero persistent VRAM overhead, and
- * caches recent encoded images in host RAM. */
+ * via Windows WIC, resizes/pads to the architecture grid, runs the ViT + 2x2
+ * spatial merger on the GPU with zero persistent VRAM overhead, and caches
+ * recent encoded images in host RAM. */
 #ifndef IE_VISION_H
 #define IE_VISION_H
 

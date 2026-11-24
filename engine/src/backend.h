@@ -113,11 +113,25 @@ void *gpu_vis_alloc(size_t bytes);
 void gpu_vis_free(void *p);
 void gpu_vis_h2d(void *dst, const void *src, size_t bytes);
 void gpu_vis_d2h(void *dst, const void *src, size_t bytes);
+void *gpu_vis_host_alloc(size_t bytes);
+void gpu_vis_host_free(void *p);
+void *gpu_vis_stream_create(void);
+void gpu_vis_stream_destroy(void *st);
+void *gpu_vis_event_create(void);
+void gpu_vis_event_destroy(void *ev);
+void gpu_vis_h2d_async(void *dst, const void *src, size_t bytes, void *st);
+void gpu_vis_d2h_async(void *dst, const void *src, size_t bytes, void *st);
+void gpu_vis_event_record(void *ev, void *st);
+void gpu_vis_event_sync(void *ev);
+void gpu_vis_stream_wait(void *st, void *ev);
+void gpu_vis_stream_sync(void *st);
 void *gpu_vis_load_mod(const char *path);
 void *gpu_vis_get_fn(void *mod, const char *name);
 void gpu_vis_unload_mod(void *mod);
 void gpu_vis_launch(void *fn, unsigned gx, unsigned gy, unsigned gz, unsigned bx, unsigned by, unsigned bz, void **args);
 void gpu_vis_sync(void);
+void gpu_vis_mem_info(size_t *free_b, size_t *total_b);
+int gpu_vis_dxgi_info(uint64_t *usage_out, uint64_t *budget_out);
 
 /* CPU: the same algorithm and the same work split as the GPU kernels. */
 backend *cpu_open(const model *m, const graph *g);

@@ -654,7 +654,7 @@ static uint32_t cpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
     const float *res = o->res >= 0 ? (const float *)BUF(B, o->res) : NULL;
     switch (o->kind) {
       case OP_EMBED:
-        if (B->base.ext_rows && B->base.ext_rows[0]) {
+        if (B->base.ext_rows && B->base.ext_rows[0] && m->arch != ARCH_INKLING2) {
           memcpy(a, B->base.ext_rows[0], (size_t)m->dim * 4u);
         } else {
           mat_row(o->w ? o->w : &m->tok, tok, a);
@@ -662,7 +662,11 @@ static uint32_t cpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
         }
         break;
       case OP_RMSNORM:
-        rmsnorm(a, o->v->f, bb, o->n, m->eps);
+        if (m->arch == ARCH_INKLING2 && B->base.ext_rows && B->base.ext_rows[0] && o->v == &m->tok_norm) {
+          memcpy(bb, B->base.ext_rows[0], (size_t)m->dim * 4u);
+        } else {
+          rmsnorm(a, o->v->f, bb, o->n, m->eps);
+        }
         if (qo) cpu_quant_q8(bb, qo, o->n / 32);
         break;
       case OP_QUANT: cpu_quant_q8(a, (uint8_t *)bb, o->n / 32); break;

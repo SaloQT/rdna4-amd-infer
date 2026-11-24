@@ -44,6 +44,8 @@ Note: if `--host` is not 127.0.0.1, every device on the network that can reach t
 | `--ctx N` | 8192 | Maximum number of tokens for prompt plus output. The KV cache is allocated at this size (see "Context length" below) |
 | `--draft D` | 0 | Number of MTP drafts (1 to 7, GPU only). 7 is recommended (context drafting and DFlash also use this verify space) |
 | `--dflash FILE` | none | Use together with `--draft`: also loads the DFlash 2 drafter; at each step, DFlash or MTP is chosen by measured speed (see README "DFlash 2 drafter") |
+| `--dspark FILE` | none | Use together with `--draft`: loads the Inkling-2-Mini DSpark speculative drafter (`serve-inkling2.ps1` auto-detects `models\DSpark\Inkling-2-Mini-DSpark-Q4_K.gguf`) |
+| `--mmproj FILE` | none | Multimodal ViT vision projector GGUF (`qwen3vl` for Qwen3.5/Saluki, `inkling2v` RDNA4 WMMA for Inkling-2-Mini; `0.00 MiB` persistent VRAM). `serve-inkling2.ps1` auto-detects `models\mmproj-Inkling-2-Mini-Q8_0.gguf` (`-NoVision` disables) |
 | `--draft-pmin P`, `--mtp FILE` | 0.6, none | Same as `ie-run` |
 | `--chunk N` | 256 | Tokens per prefill chunk (1 to 1024; `serve-inkling2.ps1` defaults to 1024 for `-Ctx <= 131072` and 512 for `-Ctx > 131072`, with `gpu_chunk_clamp()` guarding VRAM) |
 | `--temp T`, `--top-k K`, `--top-p P` | by thinking mode | Used when the request does not give these parameters. Without them: a thinking request uses the model file's `general.sampling.*` (Qwen3.8 27B: 1.0, 20, 0.95), or 0.6, 20, 0.95 if the file has none; a request without thinking uses 0.7, 20, 0.8. `--think-temp T` then sets the thinking temperature alone (`serve-saluki.ps1` passes 0.6, as Saluki's model card recommends). The values in use are in the log line `ie-serve: default sampling` and in each `queued` line |
@@ -65,7 +67,14 @@ Note: if `--host` is not 127.0.0.1, every device on the network that can reach t
 | `GET /v1/models` | Returns one model |
 | `POST /v1/chat/completions` | Chat. Supports `messages`, `stream`, `stream_options.include_usage`, `max_tokens` (or `max_completion_tokens`), `temperature`, `top_p`, `top_k`, `seed`, `reasoning_effort`, `reasoning_budget` (request override, 0 for unlimited), `chat_template_kwargs.enable_thinking`, `tools`, `tool_choice` (only `"none"` is recognized) |
 
-The role in `messages` can be system, user, assistant or tool (developer is treated as system). The content can only be text.
+The role in `messages` can be system, user, assistant or tool (developer is treated as system). Content may be a string or an array of OpenAI content parts (`text`, plus `image_url` when `--mmproj` is loaded).
+
+### Multimodal vision (`--mmproj`)
+
+When started with `--mmproj FILE`, `ie-serve` auto-detects the projector architecture from `clip.vision.projector_type` (`qwen3vl` for Qwen3.5/Saluki, `inkling2v` for Inkling-2-Mini) and accepts OpenAI `image_url` content parts (`data:image/...;base64,...` or `file://` URLs; decoded via Windows WIC on Windows, or via host embeddings in tests):
+
+- **Inkling-2-Mini (`inkling2v` RDNA4 WMMA):** Uses 6 `gfx1201` WMMA kernels (`kernels/ie_vision_wmma_r14.inc`; `28.4 ms` @ `640x640`, `53.4 ms` @ `1040x1040`, `83.8 ms` @ `1280x1280` with `mmproj-Inkling-2-Mini-Q8_0.gguf`, `24.4x` faster than scalar ViT). Double-buffered async H2D streaming borrows the idle LLM prefill arena (`0.00 MiB` persistent VRAM), keeping 64K FP16 and 256K `q4rot` + DSpark + H38 flat within 16 GB VRAM. `serve-inkling2.ps1` auto-detects `models\mmproj-Inkling-2-Mini-Q8_0.gguf` (`-Mmproj PATH` / `-NoVision` overrides).
+- **Prompt & disk caching:** Repeated images hit an 8-slot in-memory vision embedding LRU cache (`vision: cache hit`), and multi-turn follow-ups reuse cached vision KV rows in RAM. Disk checkpoints stop at the first image position so pre-image system prompts remain disk-cached without writing non-reconstructible vision KV rows to disk.
 
 The server builds the prompt from the template in the model file (`--show-template`), without handling tools and images:
 
@@ -299,6 +308,6 @@ Environment variables for testing: `IE_EXTRA_STOP=ID` adds a stop token; `IE_SER
 
 - Only one request runs at a time. Other requests queue.
 - There is one KV cache: a request with another start writes over the positions past its first different token (the checkpoints before that token stay).
-- Images, `stop` strings, `logprobs` and `n > 1` are not supported. `tool_choice` only recognizes `"none"`; forcing a call to a specific tool is not supported.
+- `stop` strings, `logprobs` and `n > 1` are not supported. `tool_choice` only recognizes `"none"`; forcing a call to a specific tool is not supported. Images require `--mmproj` (Windows WIC decodes `data:image/...` / `file://` URLs).
 - Only GPT2 byte-level vocabularies and the ChatML template are supported (Qwen2, Qwen3.5, Qwen3.8).
 - It listens on IPv4 addresses only.
