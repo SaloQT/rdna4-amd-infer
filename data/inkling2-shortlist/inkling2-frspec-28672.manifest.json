@@ -1,0 +1,106 @@
+{
+  "schema": "rdna4.mtp.vocab-shortlist.v1",
+  "vocabulary": 201024,
+  "vocab_unpadded": 200058,
+  "size": 28672,
+  "max_dynamic_slots": 4096,
+  "total_id_map_slots": 32768,
+  "ids_text": "data/inkling2-shortlist/inkling2-frspec-28672.ids.txt",
+  "ids_text_sha256": "dde27d01d9bbdeaa4a57e83154fee2fe51f4b73b3310cbbfa6baff368591c3ac",
+  "ids_bin": "data/inkling2-shortlist/inkling2-frspec-28672.bin",
+  "ids_bin_sha256": "c78c0a1876859530351e1a820c0d3de124229bf962f0b6cc3517972c678db7fc",
+  "required_eog_ids": [
+    199999,
+    200000,
+    200001,
+    200002,
+    200003,
+    200004,
+    200006,
+    200008,
+    200010,
+    200049,
+    200057
+  ],
+  "target_padding_id": 199999,
+  "tokenizer_pre": "inkling2",
+  "tokenizer_fingerprint": "b3b24da69339f384a8f82ac27bc6ec3335662cba6a1ffc667b42ea7c5e256c19",
+  "target_model_file": "models/Inkling-2-Mini-Uncensored-IQ3_XXS-fast.gguf",
+  "source_policy": {
+    "scope": "independent_calibration_corpus_only",
+    "no_benchmark_or_probe_prompts_in_counts": true,
+    "heldout_strictly_evaluation_only": true
+  },
+  "calibration_sources": [
+    {
+      "path": "data/mtp-vocab-pilot/corpus.train.jsonl",
+      "sha256": "bb50ff11c38819bee55e5702517231bca1892a49e3aa3c6d9edf186399436713"
+    }
+  ],
+  "tier_breakdown": {
+    "tier1_mandatory": 316,
+    "tier2_corpus_freq": 28356,
+    "tier3a_space_ascii_bpe": 0,
+    "tier3b_nonspace_ascii_bpe": 0,
+    "tier3c_id_fill": 0
+  },
+  "calibration_stats": {
+    "docs": 805,
+    "token_occurrences": 715440,
+    "observed_unique_support": 30799,
+    "calibration_occurrence_coverage": 0.996725,
+    "high_id_tokens_gt_32768_in_core": 24620,
+    "max_id_in_core": 200057
+  },
+  "heldout_eval": {
+    "n_docs": 165,
+    "total_tokens": 215671,
+    "full_static_coverage": 0.945491,
+    "cont_tokens": 107878,
+    "cont_static_coverage": 0.944224,
+    "cont_microspec_coverage": 0.976928,
+    "avg_dyn_slots_used": 11.7,
+    "max_dyn_slots_used": 326,
+    "per_doc": []
+  },
+  "probe_eval": {
+    "n_docs": 3,
+    "total_tokens": 20713,
+    "full_static_coverage": 0.968619,
+    "cont_tokens": 10357,
+    "cont_static_coverage": 0.969103,
+    "cont_microspec_coverage": 0.996717,
+    "avg_dyn_slots_used": 25.67,
+    "max_dyn_slots_used": 39,
+    "per_doc": [
+      {
+        "label": "real-code-233.txt",
+        "n_tokens": 233,
+        "static_coverage": 0.892704,
+        "continuation_tokens": 117,
+        "cont_static_coverage": 0.897436,
+        "cont_microspec_coverage": 0.923077,
+        "dyn_slots_used": 13
+      },
+      {
+        "label": "real-code-4k.txt",
+        "n_tokens": 4096,
+        "static_coverage": 0.969482,
+        "continuation_tokens": 2048,
+        "cont_static_coverage": 0.97168,
+        "cont_microspec_coverage": 0.987793,
+        "dyn_slots_used": 25
+      },
+      {
+        "label": "real-code-16k.txt",
+        "n_tokens": 16384,
+        "static_coverage": 0.969482,
+        "continuation_tokens": 8192,
+        "cont_static_coverage": 0.969482,
+        "cont_microspec_coverage": 1.0,
+        "dyn_slots_used": 39
+      }
+    ]
+  },
+  "generated_utc": "2026-11-23T19:03:26Z"
+}

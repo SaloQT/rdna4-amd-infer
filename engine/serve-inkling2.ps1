@@ -11,16 +11,16 @@
 # (bench\inkling2_serve_sweep.py); -Draft 0 is plain decode, -DsSplit:$false disables split head.
 # -DiskCache DIR keeps prompt checkpoints on disk (IE_DISK_CACHE), so a restarted server or a reopened chat continues
 # instead of re-reading the prompt (9.8K tokens: 0.9 s against 8.2 s), with or without DSpark.
-#   powershell -File engine\serve-inkling2.ps1 [-Kv f16|q8|q4] [-Ctx 98304] [-Port 8090] [-Draft 5] [-GlobKv f16|q4|q4k|q4rot] [-DsGlobWin 0] [-MoeCacheSlots ''] [-Mmproj PATH] [-NoVision] [-DryRun]
+#   powershell -File engine\serve-inkling2.ps1 [-Kv f16|q8|q4] [-Ctx 98304] [-Port 8090] [-Draft 5] [-GlobKv f16|q4|q4k|q4rot] [-DsGlobWin ''] [-MoeCacheSlots ''] [-Mmproj PATH] [-NoVision] [-DryRun]
 # For -Ctx > 131072 (e.g. -Ctx 262144) with -Kv f16, unoverridden defaults select the verified 256K + DSpark
-# profile (-Chunk 512, IE_INK_GLOB_KV=q4rot, IE_DS_GLOB_WIN=8192, IE_DS_ROPE_OTF=1, IE_MOE_CACHE_SLOTS=auto).
+# profile (-Chunk 1024 with >=640 MiB DXGI clamp guard, -Draft 7 -DraftPmin 0.45, IE_INK_GLOB_KV=q4rot, IE_DS_GLOB_WIN=8192 [or -DsGlobWin auto16k], IE_DS_ROPE_OTF=1, IE_MOE_CACHE_SLOTS=auto).
 param(
   [int]$Port = 8090,
   [int]$Ctx = 98304,
   [ValidateSet('f16', 'q8', 'q4')][string]$Kv = 'f16',
   [switch]$KvRot = $true,
   [ValidateSet('f16', 'q4', 'q4k', 'q4rot')][string]$GlobKv = 'f16',
-  [int]$DsGlobWin = 0,
+  [string]$DsGlobWin = '',
   [string]$MoeCacheSlots = '',
   [AllowEmptyString()][string]$Mmproj = '',
   [switch]$NoVision,
@@ -77,9 +77,12 @@ if ($PSBoundParameters.ContainsKey('DsSplit')) {
   $env:IE_DS_SPLIT = '1'
 }
 if ($useDspark -and $null -eq $env:IE_DS_SHORTLIST) {
-  $shortlistManifest = Join-Path $lab 'data\inkling2-shortlist\inkling2-frspec-61440.manifest.json'
-  if (Test-Path -LiteralPath $shortlistManifest -PathType Leaf) {
-    $env:IE_DS_SHORTLIST = $shortlistManifest
+  $shortlist28k = Join-Path $lab 'data\inkling2-shortlist\inkling2-frspec-28672.manifest.json'
+  $shortlist60k = Join-Path $lab 'data\inkling2-shortlist\inkling2-frspec-61440.manifest.json'
+  if ((Test-Path -LiteralPath $shortlist28k -PathType Leaf) -and (Test-Path -LiteralPath $shortlist60k -PathType Leaf)) {
+    $env:IE_DS_SHORTLIST = '1'
+  } elseif (Test-Path -LiteralPath $shortlist60k -PathType Leaf) {
+    $env:IE_DS_SHORTLIST = $shortlist60k
   }
 }
 
@@ -97,8 +100,9 @@ if ($Kv -eq 'q8') {
 }
 
 $autoLongCtx = ($Ctx -gt 131072) -and ($Kv -eq 'f16')
-if ($autoLongCtx -and -not $PSBoundParameters.ContainsKey('Chunk')) {
-  $Chunk = 512
+if ($autoLongCtx -and $useDspark) {
+  if (-not $PSBoundParameters.ContainsKey('Draft')) { $Draft = 7 }
+  if (-not $PSBoundParameters.ContainsKey('DraftPmin')) { $DraftPmin = 0.45 }
 }
 if ($PSBoundParameters.ContainsKey('GlobKv')) {
   if ($GlobKv -eq 'f16') { Remove-Item Env:IE_INK_GLOB_KV -ErrorAction SilentlyContinue }
@@ -107,7 +111,8 @@ if ($PSBoundParameters.ContainsKey('GlobKv')) {
   $env:IE_INK_GLOB_KV = 'q4rot'
 }
 if ($PSBoundParameters.ContainsKey('DsGlobWin')) {
-  $env:IE_DS_GLOB_WIN = "$DsGlobWin"
+  if ([string]::IsNullOrEmpty($DsGlobWin) -or $DsGlobWin -eq '0') { Remove-Item Env:IE_DS_GLOB_WIN -ErrorAction SilentlyContinue }
+  else { $env:IE_DS_GLOB_WIN = "$DsGlobWin" }
 } elseif ($autoLongCtx -and $useDspark -and [string]::IsNullOrEmpty($env:IE_DS_GLOB_WIN)) {
   $env:IE_DS_GLOB_WIN = '8192'
 }

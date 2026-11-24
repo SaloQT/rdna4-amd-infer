@@ -12,6 +12,8 @@
 #define dc_mkdir(p) _mkdir(p)
 #define dc_touch(p) _utime(p, NULL)
 #else
+#include <fcntl.h>
+#include <unistd.h>
 #include <utime.h>
 #define dc_mkdir(p) mkdir(p, 0755)
 #define dc_touch(p) utime(p, NULL)
@@ -469,39 +471,43 @@ static uint32_t next_chunk_len(uint32_t rem, uint32_t chunk) {
   }
   return chunk;
 }
-uint32_t prefill(backend *b, const graph *g, uint32_t vocab, const uint32_t *toks, uint32_t n, uint32_t chunk,
-                        int mtp, ppl_acc *pa, uint32_t *hrow) {
+uint32_t prefill_at(backend *b, const graph *g, uint32_t vocab, const uint32_t *toks, uint32_t n, uint32_t pos0,
+                    uint32_t chunk, int mtp, ppl_acc *pa, uint32_t *hrow) {
   uint32_t *a = malloc(chunk * 4), last = 0, T = 1;
   float *lg = pa && pa->on ? malloc((size_t)chunk * g->bufs[g->logits].stride) : NULL;
   b->all_logits = lg != NULL;
   mtp = mtp && g->mtp_h >= 0; /* a DFlash drafter alone: no MTP head to keep current */
-  if (b->kv_io && n) b->kv_io(b, 0, n, 0, NULL); /* pre-map exact prompt KV capacity upfront in 1 idle VMM batch */
+  if (b->kv_io && n) b->kv_io(b, 0, pos0 + n, 0, NULL); /* pre-map exact prompt KV capacity upfront in 1 idle VMM batch */
   if (mtp) b->copy_rows(b, g->mtp_h, 0, -1, 0, 1); /* h(-1) = 0 */
   for (uint32_t p0 = 0; p0 < n; p0 += T) {
     T = next_chunk_len(n - p0, chunk);
     const int is_last = p0 + T >= n;
     b->all_logits = lg && p0 + T > pa->first; /* the model head for every row only where positions are scored */
-    b->run(b, 0, toks + p0, T, p0, 1, (is_last || b->all_logits) ? a : NULL, NULL);
+    b->run(b, 0, toks + p0, T, pos0 + p0, 1, (is_last || b->all_logits) ? a : NULL, NULL);
     b->accept(b, T - 1);
     if (is_last) last = a[T - 1];
-    if (g->df_feat >= 0 || g->ds_feat >= 0) b->run(b, 2, toks + p0, T, p0, 0, NULL, NULL); /* DFlash/DSpark context */
-    if (g->df_cap >= 0) df_capture(b, g, toks + p0, T, p0);              /* IE_DF_CAPTURE */
+    if (g->df_feat >= 0 || g->ds_feat >= 0) b->run(b, 2, toks + p0, T, pos0 + p0, 0, NULL, NULL); /* DFlash/DSpark context */
+    if (g->df_cap >= 0) df_capture(b, g, toks + p0, T, pos0 + p0);              /* IE_DF_CAPTURE */
     if (lg && p0 + T > pa->first) {
       b->read_rows(b, g->logits, 0, T, lg);
       const uint32_t stride = g->bufs[g->logits].stride / 4u;
       for (uint32_t t = 0; t < T; t++)
         if (p0 + t >= pa->first && p0 + t + 1 < n) ppl_add(pa, lg + (size_t)t * stride, vocab, toks[p0 + t + 1]);
     }
-    if (mtp) { /* MTP positions p0 .. p0+T-1: h rows [h(p0-1) (row 0, from before), h(p0) .. h(p0+T-2)] */
+    if (mtp) { /* MTP positions pos0+p0 .. pos0+p0+T-1: h rows [h(p0-1) (row 0, from before), h(p0) .. h(p0+T-2)] */
       if (T > 1) b->copy_rows(b, g->mtp_h, 1, g->h_out, 0, T - 1);
-      b->run(b, 4, toks + p0, T, p0, 1, NULL, NULL); /* async KV-only catch-up: skips out_draft + host sync */
-      if (g->mtp_a >= 0 && (ie_mtp_cap_file || getenv("IE_MTP_CAPTURE"))) mtp_capture(b, g, toks + p0, T, p0);
+      b->run(b, 4, toks + p0, T, pos0 + p0, 1, NULL, NULL); /* async KV-only catch-up: skips out_draft + host sync */
+      if (g->mtp_a >= 0 && (ie_mtp_cap_file || getenv("IE_MTP_CAPTURE"))) mtp_capture(b, g, toks + p0, T, pos0 + p0);
       b->copy_rows(b, g->mtp_h, 0, g->h_out, T - 1, 1);
     }
   }
   free(lg), free(a);
   *hrow = T - 1;
   return last;
+}
+uint32_t prefill(backend *b, const graph *g, uint32_t vocab, const uint32_t *toks, uint32_t n, uint32_t chunk,
+                 int mtp, ppl_acc *pa, uint32_t *hrow) {
+  return prefill_at(b, g, vocab, toks, n, 0u, chunk, mtp, pa, hrow);
 }
 
 /* IE_DF_CAPTURE: the drafter's context input (enc_norm(fc(the target
@@ -738,6 +744,170 @@ static uint32_t sam_query(ie_sam *S, const uint32_t *out, uint32_t n, uint32_t c
   *mlen = ml;
   return c;
 }
+
+static void sam_reset(ie_sam *S) {
+  if (!S || !S->st || !S->ht) return;
+  memset(S->ht, 0xFF, (size_t)(S->ht_mask + 1u) * sizeof(sam_hslot));
+  S->n_st = 1u;
+  S->n_ed = 0u;
+  S->st[0].link = -1;
+  S->st[0].len = 0u;
+  S->st[0].first_pos = 0u;
+  S->st[0].last_pos = 0u;
+  S->st[0].head_edge = -1;
+  S->last = 0;
+  S->built = 0u;
+  S->lp_done = 0u;
+}
+
+/* R71 (H29): Persistent 2-Tier 256K Prompt-Suffix SAM (9.00 + 12.75 = 21.75 MiB host RAM <= 32 MiB, 0 B VRAM). */
+#define PSAM_BUCKETS (1u << 20)   /* 1,048,576 buckets x 8 B (2-way) = 8.00 MiB */
+#define PSAM_MAX_POS (1u << 18)   /* 262,144 positions x 4 B chain   = 1.00 MiB */
+#define PSAM_WIN     65536u       /* Tier 2 exact SAM window         = 12.75 MiB */
+
+typedef struct ie_sam_persist {
+  uint32_t head[PSAM_BUCKETS][2]; /* [0]=most recent pos+1, [1]=second recent pos+1 (0=empty) */
+  uint32_t prev[PSAM_MAX_POS];    /* singly linked chain of earlier occurrences at same bucket */
+  uint32_t indexed_n;             /* prompt tokens already indexed in [0 .. indexed_n) */
+  uint64_t prefix_hash;           /* sampled FNV-64 of tokens [0 .. indexed_n) to guard against convo switch */
+  ie_sam recent;                  /* Tier 2 exact SAM over [recent_base .. n) */
+  uint32_t recent_base;
+} ie_sam_persist;
+
+static inline uint32_t psam_fnv4(uint32_t a, uint32_t b, uint32_t c, uint32_t d) {
+  uint64_t h = 14695981039346656037ULL;
+  h = (h ^ (uint64_t)a) * 1099511628211ULL;
+  h = (h ^ (uint64_t)b) * 1099511628211ULL;
+  h = (h ^ (uint64_t)c) * 1099511628211ULL;
+  h = (h ^ (uint64_t)d) * 1099511628211ULL;
+  h ^= h >> 33;
+  return (uint32_t)h;
+}
+
+static uint64_t psam_prefix_fp(const uint32_t *toks, uint32_t n) {
+  uint64_t h = 14695981039346656037ULL ^ (uint64_t)n;
+  const uint32_t h0 = n < 64u ? n : 64u;
+  for (uint32_t i = 0u; i < h0; i++) h = (h ^ (uint64_t)toks[i]) * 1099511628211ULL;
+  if (n > 64u) {
+    const uint32_t s = n - 64u;
+    for (uint32_t i = s; i < n; i++) h = (h ^ (uint64_t)toks[i]) * 1099511628211ULL;
+    for (uint32_t i = 64u; i < s; i += 256u) h = (h ^ (uint64_t)toks[i]) * 1099511628211ULL;
+  }
+  return h;
+}
+
+static ie_sam_persist *psam_create(void) {
+  ie_sam_persist *P = (ie_sam_persist *)calloc(1u, sizeof(ie_sam_persist));
+  if (!P) return NULL;
+  if (!sam_init(&P->recent, PSAM_WIN)) {
+    free(P);
+    return NULL;
+  }
+  return P;
+}
+
+static void psam_free(ie_sam_persist *P) {
+  if (!P) return;
+  sam_free(&P->recent);
+  free(P);
+}
+
+static inline void psam_push(ie_sam_persist *P, uint32_t p, const uint32_t *toks) {
+  const uint32_t b = psam_fnv4(toks[p - 3u], toks[p - 2u], toks[p - 1u], toks[p]) & (PSAM_BUCKETS - 1u);
+  P->prev[p] = P->head[b][1];
+  P->head[b][1] = P->head[b][0];
+  P->head[b][0] = p + 1u;
+}
+
+static void psam_sync_prompt(ie_sam_persist *P, const uint32_t *toks, uint32_t n_prompt, uint32_t common_L) {
+  if (!P || !toks) return;
+  const uint32_t lim = n_prompt < PSAM_MAX_POS ? n_prompt : PSAM_MAX_POS;
+  const int can_inc = (P->indexed_n > 0u && common_L >= P->indexed_n && P->indexed_n <= lim &&
+                       psam_prefix_fp(toks, P->indexed_n) == P->prefix_hash);
+  if (can_inc) {
+    uint32_t start = P->indexed_n >= 3u ? P->indexed_n : 3u;
+    for (uint32_t p = start; p < lim; p++) psam_push(P, p, toks);
+    /* Extend Tier 2 exact SAM incrementally if still within window with >= 4K headroom for generated tokens */
+    if (common_L >= P->recent_base + P->recent.built && n_prompt >= P->recent_base + P->recent.built &&
+        n_prompt - P->recent_base <= PSAM_WIN - 4096u) {
+      for (uint32_t p = P->recent_base + P->recent.built; p < n_prompt; p++) {
+        sam_extend(&P->recent, toks[p], p - P->recent_base);
+        sam_mark_lastpos(&P->recent, P->recent.last, p - P->recent_base);
+        P->recent.lp_done = (p - P->recent_base) + 1u;
+      }
+    } else {
+      P->recent_base = n_prompt > 49152u ? (n_prompt - 49152u) : 0u;
+      sam_reset(&P->recent);
+      for (uint32_t p = P->recent_base; p < n_prompt; p++) {
+        sam_extend(&P->recent, toks[p], p - P->recent_base);
+        sam_mark_lastpos(&P->recent, P->recent.last, p - P->recent_base);
+        P->recent.lp_done = (p - P->recent_base) + 1u;
+      }
+    }
+  } else {
+    memset(P->head, 0, sizeof P->head);
+    for (uint32_t p = 3u; p < lim; p++) psam_push(P, p, toks);
+    P->recent_base = n_prompt > 49152u ? (n_prompt - 49152u) : 0u;
+    sam_reset(&P->recent);
+    for (uint32_t p = P->recent_base; p < n_prompt; p++) {
+      sam_extend(&P->recent, toks[p], p - P->recent_base);
+      sam_mark_lastpos(&P->recent, P->recent.last, p - P->recent_base);
+      P->recent.lp_done = (p - P->recent_base) + 1u;
+    }
+  }
+  P->indexed_n = lim;
+  P->prefix_hash = psam_prefix_fp(toks, lim);
+}
+
+static uint32_t psam_query(ie_sam_persist *P, const uint32_t *out, uint32_t n, uint32_t n_prompt, uint32_t cap,
+                           uint32_t *ld, uint32_t *mlen, int *from_tier1) {
+  *mlen = 0u;
+  if (from_tier1) *from_tier1 = 0;
+  if (!P || n < 2u || cap == 0u) return 0u;
+  uint32_t best_c = 0u, best_ml = 0u;
+  /* Tier 2: exact 64K recent suffix + generated output SAM */
+  if (n > P->recent_base + 1u && n - P->recent_base < PSAM_WIN) {
+    best_c = sam_query(&P->recent, out + P->recent_base, n - P->recent_base, cap, ld, &best_ml);
+  }
+  /* Tier 1: full 256K 4-gram 2-way prompt hash index (exact backwards verification up to 32 tokens) */
+  if (n >= 5u && n_prompt >= 5u) {
+    const uint32_t b = psam_fnv4(out[n - 4u], out[n - 3u], out[n - 2u], out[n - 1u]) & (PSAM_BUCKETS - 1u);
+    uint32_t slots[6];
+    int ns = 0;
+    if (P->head[b][0]) slots[ns++] = P->head[b][0];
+    if (P->head[b][1] && P->head[b][1] != P->head[b][0]) slots[ns++] = P->head[b][1];
+    uint32_t cur = P->head[b][1] ? P->prev[P->head[b][1] - 1u] : 0u;
+    for (int hop = 0; hop < 4 && cur && ns < 6; hop++) {
+      slots[ns++] = cur;
+      cur = P->prev[cur - 1u];
+    }
+    uint32_t t1_ml = 0u, t1_bi = 0u;
+    for (int s = 0; s < ns; s++) {
+      const uint32_t cand = slots[s] - 1u;
+      if (cand < 3u || cand + 1u >= n || cand >= n_prompt) continue;
+      if (out[cand] != out[n - 1u]) continue;
+      uint32_t L = 1u;
+      while (L < 32u && L <= cand && L < n && out[cand - L] == out[n - 1u - L]) L++;
+      if (L >= 4u && L > t1_ml) {
+        t1_ml = L;
+        t1_bi = cand;
+        if (t1_ml == 32u) break;
+      }
+    }
+    if (t1_ml >= 4u && t1_ml > best_ml) {
+      const uint32_t avail = n - 1u - t1_bi;
+      const uint32_t c = avail < cap ? avail : cap;
+      for (uint32_t j = 1u; j <= c; j++) ld[j] = out[t1_bi + j];
+      best_c = c;
+      best_ml = t1_ml;
+      if (from_tier1) *from_tier1 = 1;
+    }
+  }
+  *mlen = best_ml;
+  return best_c;
+}
+
+static ie_sam_persist *g_sam_p_cur = NULL;
 
 static uint32_t lookup_draft(const uint32_t *t, uint32_t n, uint32_t D, uint32_t *d, uint32_t *mlen) {
   uint32_t best = 0, bi = 0;
@@ -1794,41 +1964,72 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
   for (int i = 0; i < 8; i++) fs_num[i] = 4.0f * fs_prior[i], fs_den[i] = 4.0f;
   double fs_step_tok = 0.0, fs_step_ms = 0.0;
   uint32_t ds_prob_nd = 0u;
-  /* R31 O(1) CPU Suffix Automaton pre-check (default 1 on Inkling-2 DSpark; IE_SAM_LOOKUP=0 opts out) */
-  static int sam_env = -1, sam_pre_env = -1;
-  static uint32_t sam_min_ml = 12u, sam_hi_temp_ml = 14u, sam_min_draft = 4u, sam_max_draft = 7u;
+  /* R31/R71 O(1) CPU Suffix Automaton pre-check + persistent 2-tier 256K prompt SAM (promoted default 1; =0 opts out) */
+  static int sam_env = -1, sam_pre_env = -1, sam_persist_env = -1;
+  static uint32_t sam_min_ml = 12u, sam_hi_temp_ml = 14u, sam_prompt_ml = 12u, sam_min_draft = 4u, sam_max_draft = 7u;
   static float sam_max_temp = 0.3f;
   if (sam_env < 0) {
     const char *e = getenv("IE_SAM_LOOKUP");
     sam_env = !(e && e[0] == '0');
     const char *pe = getenv("IE_SAM_PRECHECK");
     sam_pre_env = (pe && pe[0] == '0') ? 0 : 1;
+    const char *pse = getenv("IE_SAM_PERSIST");
+    sam_persist_env = !(pse && pse[0] == '0');
     if (getenv("IE_SAM_MIN_ML")) sam_min_ml = (uint32_t)atoi(getenv("IE_SAM_MIN_ML"));
     if (getenv("IE_SAM_HI_TEMP_ML")) sam_hi_temp_ml = (uint32_t)atoi(getenv("IE_SAM_HI_TEMP_ML"));
+    if (getenv("IE_SAM_PROMPT_ML")) sam_prompt_ml = (uint32_t)atoi(getenv("IE_SAM_PROMPT_ML"));
     if (getenv("IE_SAM_MIN_DRAFT")) sam_min_draft = (uint32_t)atoi(getenv("IE_SAM_MIN_DRAFT"));
     if (getenv("IE_SAM_MAX_DRAFT")) sam_max_draft = (uint32_t)atoi(getenv("IE_SAM_MAX_DRAFT"));
     if (getenv("IE_SAM_MAX_TEMP")) sam_max_temp = (float)atof(getenv("IE_SAM_MAX_TEMP"));
   }
   ie_sam sam;
   memset(&sam, 0, sizeof sam);
-  const int sam_on = dsm && sam_env && sam_init(&sam, total < g->n_ctx ? total : g->n_ctx);
-  if (sam_on && n_prompt > 0u) {
-    /* Pre-extend prompt tokens [0..n_prompt-1] before decode timer t0 (all strictly <= n-2 since out[n_prompt]=tP). */
-    for (uint32_t p = 0u; p < n_prompt; p++) {
-      sam_extend(&sam, out[p], p);
-      sam_mark_lastpos(&sam, sam.last, p);
-      sam.lp_done = p + 1u;
+  ie_sam_persist *sam_p = NULL;
+  int sam_p_owned = 0;
+  int sam_on = 0;
+  if (dsm && sam_env) {
+    if (sam_persist_env) {
+      if (g_sam_p_cur) {
+        sam_p = g_sam_p_cur;
+        sam_on = 1;
+      } else {
+        sam_p = psam_create();
+        if (sam_p) {
+          sam_p_owned = 1;
+          psam_sync_prompt(sam_p, out, n_prompt, 0u);
+          sam_on = 1;
+        }
+      }
+    } else {
+      sam_on = sam_init(&sam, total < g->n_ctx ? total : g->n_ctx);
+      if (sam_on && n_prompt > 0u) {
+        /* Pre-extend prompt tokens [0..n_prompt-1] before decode timer t0 (all strictly <= n-2 since out[n_prompt]=tP). */
+        for (uint32_t p = 0u; p < n_prompt; p++) {
+          sam_extend(&sam, out[p], p);
+          sam_mark_lastpos(&sam, sam.last, p);
+          sam.lp_done = p + 1u;
+        }
+      }
     }
   }
-  uint32_t sam_skip_n = 0u;
-  /* R32 Tiny 8-node DSpark tree verify (IE_DS_TREE=1 adaptive 2-branch, 2 linear-chain parity check) */
+  uint32_t sam_skip_n = 0u, sam_t1_hits = 0u;
+  /* R70 (H28): verify-aware EMA adaptive draft depth D in [3..7] at P >= 32768 (promoted default 1; =0 opts out, =2 all P) */
+  static int adap_d_env = -1;
+  if (adap_d_env < 0) {
+    const char *ae = getenv("IE_DS_ADAP_D");
+    adap_d_env = (ae && *ae) ? atoi(ae) : 1;
+  }
+  double ema_ver_ms = 22.0, ema_dr_ms = 1.6, ema_alpha = 0.65;
+  int adap_steps = 0;
+  /* R32/R68 8-node DSpark tree verify (IE_DS_TREE=1 2-branch, =2 linear parity, =3 8-node OPT-Tree) */
   static int ds_tree_env = -1;
-  static float ds_tree_pmax = 0.78f, ds_tree_p2 = 0.12f;
+  static float ds_tree_pmax = 0.78f, ds_tree_p2 = -1.0f;
   if (ds_tree_env < 0) {
     const char *e = getenv("IE_DS_TREE");
     ds_tree_env = e ? atoi(e) : 0;
     if (getenv("IE_DS_TREE_PMAX")) ds_tree_pmax = (float)atof(getenv("IE_DS_TREE_PMAX"));
     if (getenv("IE_DS_TREE_P2")) ds_tree_p2 = (float)atof(getenv("IE_DS_TREE_P2"));
+    else ds_tree_p2 = (ds_tree_env >= 3) ? 0.08f : 0.12f;
   }
   out[n++] = tP;
   commit_output_token(sp, tP);
@@ -1879,6 +2080,8 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
      * least pmin: nd drafts (0 .. D) this step. */
     float pr[16];
     uint32_t nd = 0;
+    double step_dr_ms = 0.0;
+    int sam_skipped = 0;
     tq = stime ? now_ms() : 0;
     const double t_step = now_ms();
     /* DFlash: the context of the last accepted tokens (every step, so the
@@ -1892,75 +2095,113 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
       if (ds_prob_env < 0) ds_prob_env = !(getenv("IE_DS_PROB") && getenv("IE_DS_PROB")[0] == '0');
       const int use_ds_prob = ds_prob_env && rej_on && sp && sp->temp > 0.0f;
       ds_prob_nd = 0u;
-      /* R31: O(1) SAM Pre-Check - skip ds_draft (0.00 ms GPU!) on strong exact suffix match */
+      /* R31/R71: O(1) SAM / 2-tier 256K Prompt-Suffix SAM Pre-Check - skip ds_draft (0.00 ms GPU!) on strong exact match */
       uint32_t sam_ml = 0u, sam_ld[16];
       uint32_t sam_nl = 0u;
+      int sam_from_t1 = 0;
       if (sam_on) {
         const uint32_t room = g->n_ctx > P + 1u ? g->n_ctx - P - 1u : 0u;
         const uint32_t sam_cap = lk_max < room ? lk_max : room;
-        if (sam_cap > 0u) sam_nl = sam_query(&sam, out, n, sam_cap, sam_ld, &sam_ml);
-        const uint32_t min_ml = (sp && sp->temp > sam_max_temp) ? sam_hi_temp_ml : sam_min_ml;
+        if (sam_cap > 0u) {
+          sam_nl = sam_p ? psam_query(sam_p, out, n, n_prompt, sam_cap, sam_ld, &sam_ml, &sam_from_t1)
+                         : sam_query(&sam, out, n, sam_cap, sam_ld, &sam_ml);
+        }
+        uint32_t min_ml = (sp && sp->temp > sam_max_temp) ? sam_hi_temp_ml : sam_min_ml;
+        if (sam_from_t1 && n_prompt >= 65536u && sam_prompt_ml < min_ml) {
+          min_ml = (sp && sp->temp > sam_max_temp) ? (sam_prompt_ml + 2u) : sam_prompt_ml;
+        }
         if (sam_pre_env && sam_nl >= sam_min_draft && sam_ml >= min_ml) {
           nd = sam_nl < sam_max_draft ? sam_nl : sam_max_draft;
           for (uint32_t j = 1u; j <= nd; j++) d[j] = sam_ld[j];
           tree_n = 0u;
           memset(qnode, 0, sizeof qnode);
-          lk_n++, sam_skip_n++;
+          lk_n++, sam_skip_n++, sam_skipped = 1;
+          if (sam_from_t1) sam_t1_hits++;
           goto verify;
         }
       }
       uint32_t ds_n = D;
+      float ds_pmin_eff = pmin;
+      if (adap_d_env && adap_steps >= 2 && (adap_d_env >= 2 || P >= 32768u)) {
+        uint32_t d_hi = (ema_ver_ms >= 22.0) ? 7u : (D > 3u ? D : 3u);
+        if (d_hi > 7u) d_hi = 7u;
+        double a = ema_alpha;
+        if (a < 0.05) a = 0.05; else if (a > 0.96) a = 0.96;
+        double best_g = -1.0;
+        uint32_t best_d = ds_n;
+        double ap = a * a * a; /* a^3 */
+        for (uint32_t dd = 3u; dd <= d_hi; dd++) {
+          ap *= a; /* a^(dd+1) */
+          const double e_tok = (1.0 - ap) / (1.0 - a);
+          const double cost = ema_ver_ms + ema_dr_ms * (0.45 + 0.55 * (double)dd / 5.0);
+          const double g_val = cost > 1e-3 ? e_tok / cost : 0.0;
+          if (g_val > best_g) { best_g = g_val; best_d = dd; }
+        }
+        ds_n = best_d;
+        if (ds_n >= 7u && ds_pmin_eff > 0.45f) ds_pmin_eff = 0.45f;
+        else if (ds_n == 6u && ds_pmin_eff > 0.50f) ds_pmin_eff = 0.50f;
+      }
       if (ds_n > m->ds->block - 1u) ds_n = m->ds->block - 1u;
       if (b->verify_max && ds_n > b->verify_max - 1u) ds_n = b->verify_max - 1u;
       if (ds_n + 1u > g->T) ds_n = g->T - 1u;
       if (P + ds_n + 1u > g->n_ctx) ds_n = g->n_ctx > P + 1u ? g->n_ctx - P - 1u : 0u;
       memset(qnode, 0, sizeof qnode);
       if (ds_n > 0u) {
+        const double t_dr0 = adap_d_env ? now_ms() : 0.0;
+        const int use_ds_gtree = (ds_tree_env >= 3 && !use_ds_prob && b->tree_ok && b->accept_tree);
         ie_ds_samp dss;
-        if (use_ds_prob) {
+        if (use_ds_prob || use_ds_gtree) {
           memset(&dss, 0, sizeof dss);
-          dss.on = 1;
-          dss.temp = sp->temp;
-          dss.top_p = sp->top_p;
-          const uint32_t sk = sample_k(sp, V);
-          dss.top_k = (sk > 0u && sk < QDIST_MAX) ? sk : QDIST_MAX;
-          dss.rng = drng;
-          if (fs_env) {
-            /* Weighted linear regression of 8-bin calibrated EMA alpha_lut[b] vs H_b = 0.4*b + 0.2 */
-            double sw = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
-            for (int bi = 0; bi < 8; bi++) {
-              const double w = (double)fs_den[bi];
-              const double x = 0.4 * (double)bi + 0.2;
-              const double y = (double)(fs_num[bi] / fs_den[bi]);
-              sw += w; sx += w * x; sy += w * y; sxx += w * x * x; sxy += w * x * y;
+          if (use_ds_gtree) {
+            dss.on = 2;
+            dss.temp = 1.0f;
+            dss.top_p = 1.0f;
+            dss.top_k = 4u;
+          } else {
+            dss.on = 1;
+            dss.temp = sp->temp;
+            dss.top_p = sp->top_p;
+            const uint32_t sk = sample_k(sp, V);
+            dss.top_k = (sk > 0u && sk < QDIST_MAX) ? sk : QDIST_MAX;
+            dss.rng = drng;
+            if (fs_env) {
+              /* Weighted linear regression of 8-bin calibrated EMA alpha_lut[b] vs H_b = 0.4*b + 0.2 */
+              double sw = 0.0, sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+              for (int bi = 0; bi < 8; bi++) {
+                const double w = (double)fs_den[bi];
+                const double x = 0.4 * (double)bi + 0.2;
+                const double y = (double)(fs_num[bi] / fs_den[bi]);
+                sw += w; sx += w * x; sy += w * y; sxx += w * x * x; sxy += w * x * y;
+              }
+              const double den = sw * sxx - sx * sx;
+              double slope = den > 1e-9 ? (sw * sxy - sx * sy) / den : -0.30;
+              double icpt = sw > 1e-9 ? (sy - slope * sx) / sw : 0.92;
+              float sa = (float)icpt;
+              float sb = (float)(-slope);
+              if (sa < 0.55f) sa = 0.55f; else if (sa > 1.00f) sa = 1.00f;
+              if (sb < 0.05f) sb = 0.05f; else if (sb > 0.65f) sb = 0.65f;
+              const float ms_tok = (fs_step_tok > 1.0) ? (float)(fs_step_ms / fs_step_tok) : 5.8f;
+              const float dt_dr = b->ds_set_shortlist ? 0.10f : 0.18f;
+              const float d_vc = 1.05f;
+              float tau = fs_tau_fix > 0.0f ? fs_tau_fix : (fs_gain * (dt_dr + d_vc) / (ms_tok > 1.0f ? ms_tok : 1.0f));
+              if (tau < fs_tau_min) tau = fs_tau_min; else if (tau > fs_tau_max) tau = fs_tau_max;
+              float d0h = (sb > 1e-4f) ? (sa - 0.5f * tau) / sb : 2.5f;
+              if (d0h < 1.2f) d0h = 1.2f; else if (d0h > 2.8f) d0h = 2.8f;
+              dss.fs_on = 1;
+              dss.surv_a = sa;
+              dss.surv_b = sb;
+              dss.surv_pmin = tau;
+              dss.drop0_h = d0h;
             }
-            const double den = sw * sxx - sx * sx;
-            double slope = den > 1e-9 ? (sw * sxy - sx * sy) / den : -0.30;
-            double icpt = sw > 1e-9 ? (sy - slope * sx) / sw : 0.92;
-            float sa = (float)icpt;
-            float sb = (float)(-slope);
-            if (sa < 0.55f) sa = 0.55f; else if (sa > 1.00f) sa = 1.00f;
-            if (sb < 0.05f) sb = 0.05f; else if (sb > 0.65f) sb = 0.65f;
-            const float ms_tok = (fs_step_tok > 1.0) ? (float)(fs_step_ms / fs_step_tok) : 5.8f;
-            const float dt_dr = b->ds_set_shortlist ? 0.10f : 0.18f;
-            const float d_vc = 1.05f;
-            float tau = fs_tau_fix > 0.0f ? fs_tau_fix : (fs_gain * (dt_dr + d_vc) / (ms_tok > 1.0f ? ms_tok : 1.0f));
-            if (tau < fs_tau_min) tau = fs_tau_min; else if (tau > fs_tau_max) tau = fs_tau_max;
-            float d0h = (sb > 1e-4f) ? (sa - 0.5f * tau) / sb : 2.5f;
-            if (d0h < 1.2f) d0h = 1.2f; else if (d0h > 2.8f) d0h = 2.8f;
-            dss.fs_on = 1;
-            dss.surv_a = sa;
-            dss.surv_b = sb;
-            dss.surv_pmin = tau;
-            dss.drop0_h = d0h;
           }
           b->ds_samp = &dss;
         }
-        pr[0] = pmin;
+        pr[0] = ds_pmin_eff;
         b->run(b, 3, &tP, ds_n, P, 0, d + 1, pr);
-        const int prob_used = use_ds_prob && dss.used;
-        if (use_ds_prob) {
-          if (dss.used) drng = dss.rng;
+        if (adap_d_env) step_dr_ms = now_ms() - t_dr0;
+        const int prob_used = (use_ds_prob || use_ds_gtree) && dss.used;
+        if (use_ds_prob || use_ds_gtree) {
+          if (use_ds_prob && dss.used) drng = dss.rng;
           b->ds_samp = NULL;
         }
         for (uint32_t j = 0; j < ds_n; j++) {
@@ -1980,11 +2221,11 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
               }
             }
           } else {
-            if (pr[j] < pmin) break;
+            if (pr[j] < ds_pmin_eff) break;
             nd = j + 1u;
           }
         }
-        if (prob_used) ds_prob_nd = nd;
+        if (use_ds_prob && dss.used) ds_prob_nd = nd;
         if (lk_on && nd >= lk_agree) {
           uint32_t ml = sam_on ? sam_ml : 0u, ld[16];
           const uint32_t nl = sam_on ? (memcpy(ld, sam_ld, sizeof ld), sam_nl)
@@ -1999,13 +2240,65 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
             }
           }
         }
-        /* R32: Tiny 8-node speculative tree verify (IE_DS_TREE=2 linear-chain parity, =1 adaptive 2-branch depth-1 split) */
+        /* R32/R68: 8-node speculative tree verify (IE_DS_TREE=2 linear parity, =1 2-branch, =3 8-node OPT-Tree) */
         if (ds_tree_env && b->tree_ok && b->accept_tree && nd >= 1u) {
           if (ds_tree_env == 2 && nd + 1u <= 8u && b->tree_ok(b, P, nd + 1u)) {
             tree_n = nd + 1u;
             tk[0] = tP; tpar[0] = 0u;
             for (uint32_t j = 1u; j <= nd; j++) tk[j] = d[j], tpar[j] = (uint8_t)(j - 1u);
             goto verify;
+          }
+          if (ds_tree_env == 3 && prob_used) {
+            uint32_t pnd = nd <= 7u ? nd : 7u;
+            double p_prim[8], cum_p[8];
+            cum_p[0] = 1.0;
+            for (uint32_t m = 0u; m < pnd; m++) {
+              double pp = 0.0;
+              for (uint32_t c = 0u; c < qnode[m].n; c++)
+                if (qnode[m].id[c] == d[m + 1u]) { pp = qnode[m].q[c]; break; }
+              p_prim[m] = pp;
+              cum_p[m + 1u] = cum_p[m] * pp;
+            }
+            /* If primary chain already fills all 8 slots (pnd==7), trade tail node for a higher-EV branch if available */
+            if (pnd == 7u && qnode[0].n >= 2u) {
+              double best_alt = 0.0;
+              for (uint32_t dep = 0u; dep < 3u; dep++)
+                for (uint32_t c = 0u; c < qnode[dep].n; c++)
+                  if (qnode[dep].id[c] != d[dep + 1u]) {
+                    const double pb = cum_p[dep] * qnode[dep].q[c];
+                    if (pb > best_alt) best_alt = pb;
+                  }
+              if (best_alt >= (double)ds_tree_p2 && best_alt > cum_p[7]) pnd = 6u;
+            }
+            uint32_t tn = pnd + 1u;
+            tk[0] = tP; tpar[0] = 0u;
+            for (uint32_t j = 1u; j <= pnd; j++) tk[j] = d[j], tpar[j] = (uint8_t)(j - 1u);
+            const uint32_t max_dep = pnd < 3u ? pnd : 3u;
+            while (tn < 8u && b->tree_ok(b, P, tn + 1u)) {
+              double best_pb = (double)ds_tree_p2;
+              uint32_t best_dep = 0u, best_tok = 0u;
+              int found = 0;
+              for (uint32_t dep = 0u; dep < max_dep; dep++) {
+                for (uint32_t c = 0u; c < qnode[dep].n; c++) {
+                  const uint32_t cand = qnode[dep].id[c];
+                  int dup = 0;
+                  for (uint32_t y = 1u; y < tn; y++)
+                    if (tpar[y] == (uint8_t)dep && tk[y] == cand) { dup = 1; break; }
+                  if (dup) continue;
+                  const double pb = cum_p[dep] * qnode[dep].q[c];
+                  if (pb >= best_pb) { best_pb = pb; best_dep = dep; best_tok = cand; found = 1; }
+                }
+              }
+              if (!found) break;
+              tk[tn] = best_tok;
+              tpar[tn] = (uint8_t)best_dep;
+              qnode[tn].n = 0u;
+              tn++;
+            }
+            if (tn > pnd + 1u && b->tree_ok(b, P, tn)) {
+              tree_n = tn;
+              goto verify;
+            }
           }
           if (ds_tree_env == 1 && prob_used && qnode[0].n >= 2u && nd <= 6u && b->tree_ok(b, P, nd + 2u)) {
             double p_prim = 0.0, p_alt = 0.0;
@@ -2214,8 +2507,10 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
     static int host_topk_ver = -1;
     if (host_topk_ver < 0) host_topk_ver = getenv("IE_HOST_TOPK") != NULL;
     b->sample_k = lg && b->topk && sample_k(sp, V) < V && !host_topk_ver ? sample_k(sp, V) : 0;
+    const double t_ver0 = (dsm && adap_d_env) ? now_ms() : 0.0;
     b->run(b, 0, tk, nd + 1, P, 0, a, NULL);
     b->sample_k = 0;
+    const double t_ver_dt = (dsm && adap_d_env) ? (now_ms() - t_ver0) : 0.0;
     if (stime) t_verify += now_ms() - tq;
     const double ts0 = now_ms();
     {
@@ -2293,6 +2588,20 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
     P += k + 1;
     tP = a[k];
     (*n_steps)++, *n_acc += k;
+    if (dsm && adap_d_env && nd > 0u && !tree_n) {
+      const double beta = 0.15;
+      const double obs_a = (double)k / (double)nd;
+      if (adap_steps == 0) {
+        if (t_ver_dt > 0.1) ema_ver_ms = t_ver_dt;
+        if (!sam_skipped && step_dr_ms > 0.05) ema_dr_ms = step_dr_ms;
+        ema_alpha = obs_a;
+      } else {
+        if (t_ver_dt > 0.1) ema_ver_ms = (1.0 - beta) * ema_ver_ms + beta * t_ver_dt;
+        if (!sam_skipped && step_dr_ms > 0.05) ema_dr_ms = (1.0 - beta) * ema_dr_ms + beta * step_dr_ms;
+        ema_alpha = (1.0 - beta) * ema_alpha + beta * obs_a;
+      }
+      adap_steps++;
+    }
     if (stop)
       for (uint32_t j = n_prompt; j < n; j++)
         if ((int64_t)out[j] == eos) { n = j + 1; break; }
@@ -2316,7 +2625,8 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
   }
   if (p_done) *p_done = P, *h_row = hrow ? hrow : k; /* the last verify's row k holds h(P - 1) */
   if (lk_on && !emit && *n_steps) fprintf(stderr, "lookup: %u of %u steps drafted from the text\n", lk_n, *n_steps);
-  if (sam_skip_n && !emit && *n_steps) fprintf(stderr, "sam: %u of %u steps skipped ds_draft\n", sam_skip_n, *n_steps);
+  if ((sam_skip_n || getenv("IE_SAM_DEBUG")) && (!emit || getenv("IE_SAM_DEBUG")) && *n_steps)
+    fprintf(stderr, "sam: %u of %u steps skipped ds_draft (tier1_256k=%u)\n", sam_skip_n, *n_steps, sam_t1_hits);
   if (!dfm && tr_steps && !emit) fprintf(stderr, "%s tree: %u of %u steps\n", dsm ? "dspark" : "mtp", tr_steps, *n_steps);
   if (df_auto && !emit) fprintf(stderr, "dflash: %u steps DFlash, %u steps MTP (rates %.3f / %.3f tokens per ms)\n", df_used[1], df_used[0], df_rate[1], df_rate[0]);
   if (dfm && !emit) fprintf(stderr, "dflash: %u tree steps\n", tr_steps);
@@ -2324,6 +2634,7 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
     fprintf(stderr, "spec time: drafts %.2f ms/step, verify %.2f ms/step (%u steps)\n", t_draft / *n_steps, t_verify / *n_steps, *n_steps);
   *gen_ms = now_ms() - t0;
   if (lg) fprintf(stderr, "sampling: %.1f ms in all (%.3f ms per step)\n", sample_ms, *n_steps ? sample_ms / *n_steps : 0.0);
+  if (sam_p_owned) psam_free(sam_p);
   sam_free(&sam);
   free(lg);
   return n;
@@ -2357,6 +2668,7 @@ void gen_init(gen_ctx *c, backend *b, const model *m, const graph *g) {
 void gen_free(gen_ctx *c) {
   free(c->sp.idx), free(c->sp.pr), free(c->sp.cv), free(c->sp.ci), free(c->logits), free(c->kv_toks), free(c->nl);
   free(c->sp.dry_h), free(c->sp.dry_bits), free(c->sp.dry_head), free(c->sp.dry_prev), free(c->kv_imgs);
+  psam_free(c->sam_p);
   dc_free(c->dc);
   memset(c, 0, sizeof *c);
 }
@@ -2582,29 +2894,31 @@ static uint32_t ck_marks(const gen_ctx *c, uint32_t S, uint32_t L, uint32_t end,
  * Files in the directory, named SIG-T-HASH.iec (SIG and HASH 16 hex digits). Every file is a multiple of 4096 bytes long
  * and its sections start at multiples of 4096 (for reads and writes that bypass the system cache):
  *   a 64-byte header (dc_head: its hits field counts the loads of the checkpoint, its flags field the stored form);
- *   the tokens; for a checkpoint the snapshot; the K/V rows.
+ *   v4 (opt-in IE_DISK_LZ4=1) also stores dc_v4_ext in bytes 64..4095 of the same 4096-byte header page;
+ *   the tokens (always uncompressed at offset 4096); for a checkpoint the snapshot; the K/V rows.
  *   T = k, a block of K/V rows: the d->block tokens of positions i * block .. (i + 1) * block - 1, then their rows
  *     (backend.kv_io). Rows depend on every token before them, so HASH chains the hashes of the blocks before it; the
  *     checkpoints of a conversation share its blocks.
  *   T = e, a checkpoint after the first pos tokens: the pos tokens, the snapshot (backend.snap_io; with flag 1 its state
  *     as int16 with one f32 scale per 128 values), then the rows of the positions after its last whole block (pos % block
  *     of them).
- * A file is written under NAME.tmp, then renamed: a killed server leaves no part of a file under a real name.
- * gen_disk_save copies what is to be written to host buffers (pinned for the GPU; on the engine thread, the GPU's);
- * gen_disk_write writes the files, on another thread when the caller gave a lock (ie-serve), so the next request does not
- * wait for the disk. Files queued and not written yet are in the list as pending: not read, not deleted.
- * The RAM tier keeps the images of the files last written or read, up to IE_DISK_RAM_GB (default 8), so that the next
- * resume of a recent conversation reads memory. Reads go straight into the host buffers with several chunks in flight and
- * do not use the system cache (IE_DISK_DIRECT=0: they do). Over the size limit the files go in this order: another sig's
- * (oldest first), the checkpoints not used since they were written (least recently used first), then the protected ones
- * (loaded before, or placed at a split or a mark). */
+ * Both DCACHE_VERSION 3 (raw) and DCACHE_VERSION 4 (byte-shuffled adaptive LZ4) share the same d->sig so existing v3
+ * directories load seamlessly under either setting. All Wave 15 features (IE_DISK_LZ4, IE_RAM_CACHE_GB, IE_EPHEM_FAST,
+ * IE_KV_H2D_PIPE, IE_DISK_IORING) default to 0 (OFF). */
 #ifdef _WIN32
 #include <malloc.h>
 #endif
-#define DC_QUEUE_MAX 4000000000ull /* the most bytes queued for writing: past it the engine thread writes too */
-#define DCACHE_VERSION 3u
-#define DC_ALIGN 4096u
-#define DC_F_STATE16 1u         /* flags: the snapshot's f32 state is stored as int16 + a scale per 128 values */
+#define DC_QUEUE_MAX      4000000000ull /* the most bytes queued for writing: past it the engine thread writes too */
+#define DCACHE_VERSION    3u
+#define DCACHE_VERSION_V4 4u
+#define DC_ALIGN          4096u
+#define DC_F_STATE16      1u            /* flags: snapshot f32 state stored as int16 + scale per 128 values */
+#define DC_F_LZ4_SHUF     2u            /* flags (v4): byte-shuffled adaptive LZ4 stripes (dc_v4_ext at offset 64) */
+#define DC_F_Q4_SPLIT     4u            /* flags (v4): 72-B Q4_0 per-slice [nib_64 | scl_lo_4 | scl_hi_4] */
+#define DC_F_VALID_MASK   (DC_F_STATE16 | DC_F_LZ4_SHUF | DC_F_Q4_SPLIT)
+#define DC_V4_MAGIC       0x34564344u   /* "DCV4" */
+#define DC_V4_RAW_BIT     0x80000000u
+#define DC_V4_MAX_STRIPES 992u
 typedef struct {
   uint32_t magic, version;
   uint64_t sig, hash;
@@ -2613,6 +2927,63 @@ typedef struct {
   uint32_t hits, flags;
 } dc_head;
 _Static_assert(sizeof(dc_head) == 64, "dc_head is 64 bytes");
+typedef struct {
+  uint32_t ext_magic;      /* DC_V4_MAGIC ("DCV4") */
+  uint32_t stripe_sz;      /* uncompressed bytes per snap stripe */
+  uint32_t rows_stripe_sz; /* uncompressed bytes per rows stripe when rows_fmt == 2 */
+  uint32_t n_snap_stripes; /* stripes in snap section ('e' only) */
+  uint32_t n_rows_stripes; /* stripes in rows section ('k' or 'e' tail) */
+  uint32_t rows_fmt;       /* 0 = f16 per-slice [lo|hi], 1 = Q4_0 per-slice [nib|scl_lo|scl_hi], 2 = raw/plain LZ4 */
+  uint32_t snap_shuf;      /* 0 = plain LZ4 snap, 1 = f16 lo/hi 2-substripe shuffle snap */
+  uint32_t reserved;
+  uint64_t comp_snap_len;  /* exact compressed snap payload bytes */
+  uint64_t comp_rows_len;  /* exact compressed rows payload bytes */
+  uint32_t stripe_clen[DC_V4_MAX_STRIPES]; /* bit 31 = RAW; bits 0..30 = stored byte length */
+} dc_v4_ext;
+_Static_assert(sizeof(dc_head) + sizeof(dc_v4_ext) <= DC_ALIGN, "dc_v4_ext fits in 4 KiB header page");
+
+#ifdef _WIN32
+/* Dynamic Windows 11 IoRing ABI (kernelbase.dll, zero compile-time SDK header dependency). */
+typedef struct {
+  uint32_t Required;
+  uint32_t Advisory;
+} dc_ioring_cflags;
+typedef struct {
+  uint32_t Kind;
+  union {
+    HANDLE Handle;
+    uint32_t Index;
+  } Handle;
+} dc_ioring_href;
+typedef struct {
+  uint32_t Kind;
+  union {
+    void *Address;
+    struct {
+      uint32_t Index;
+      uint32_t Offset;
+    } IndexAndOffset;
+  } Buffer;
+} dc_ioring_bref;
+typedef struct {
+  uintptr_t UserData;
+  int32_t ResultCode;
+  uintptr_t Information;
+} dc_ioring_cqe;
+#ifdef _WIN64
+_Static_assert(sizeof(dc_ioring_cflags) == 8, "dc_ioring_cflags is 8 bytes");
+_Static_assert(sizeof(dc_ioring_href) == 16, "dc_ioring_href is 16 bytes");
+_Static_assert(sizeof(dc_ioring_bref) == 16, "dc_ioring_bref is 16 bytes");
+_Static_assert(sizeof(dc_ioring_cqe) == 24, "dc_ioring_cqe is 24 bytes");
+#endif
+typedef HRESULT(WINAPI *dc_ioring_create_fn)(uint32_t ver, dc_ioring_cflags flags, uint32_t sq, uint32_t cq, void **h);
+typedef HRESULT(WINAPI *dc_ioring_read_fn)(void *h, dc_ioring_href file, dc_ioring_bref buf, uint32_t len, uint64_t off,
+                                           uintptr_t udata, uint32_t sqe_flags);
+typedef HRESULT(WINAPI *dc_ioring_submit_fn)(void *h, uint32_t wait_ops, uint32_t ms, uint32_t *submitted);
+typedef HRESULT(WINAPI *dc_ioring_pop_fn)(void *h, dc_ioring_cqe *cqe);
+typedef HRESULT(WINAPI *dc_ioring_close_fn)(void *h);
+#endif
+
 typedef struct { /* a host buffer: the bytes [0, len) are used */
   char *p;
   size_t cap, len;
@@ -2626,6 +2997,8 @@ typedef struct {
   int64_t rused; /* the same for the RAM tier */
   char *name;    /* 'x' only */
   uint32_t pos, kind, has_h, hits, flags, *tok; /* 'e' only */
+  uint64_t *blk_hash; /* R79 (H44): precomputed block chain hashes for O(1) prefix filter ('e' only) */
+  uint32_t blk_nb;
   dc_mem img;    /* the RAM tier: the whole file, or p NULL */
 } dc_file;
 typedef struct dc_job { /* a file to write: its whole image */
@@ -2635,6 +3008,7 @@ typedef struct dc_job { /* a file to write: its whole image */
   dc_mem img;
   uint32_t pos;
   uint8_t pack; /* the image holds an f32 snapshot: convert it to int16 first */
+  uint8_t lz4;  /* R78 (H43): compress into DCACHE_VERSION 4 byte-shuffled LZ4 */
 } dc_job;
 typedef struct { /* where the sections of a file are */
   size_t tok_off, snap_off, rows_off, total, tok_len, snap_len, rows_len;
@@ -2645,12 +3019,23 @@ typedef struct dcache {
   size_t rowb, snapb, f32b, snap16b;
   dc_file *f;
   uint32_t n, cap;
+  int32_t *k_ht;      /* R79 (H44): O(1) open-addressed (type, hash) -> file index table */
+  uint32_t k_ht_cap;
+  int k_ht_dirty;
   backend *b;
   dc_mem *pool; /* free pinned buffers */
   uint32_t pool_n, pool_cap;
   uint64_t pinned, pinned_limit;                 /* pinned bytes held (free or not) and the most */
   uint64_t queue_limit;                         /* backpressure on staged disk writes */
   uint64_t ram_bytes, ram_pinned, ram_limit;     /* the RAM tier */
+  uint64_t ram_reserve;                          /* R79 (H44): OS available RAM headroom guard */
+  uint8_t ram_l2_on;                             /* R79 (H44): 1 when IE_RAM_CACHE_GB > 0 */
+  uint8_t lz4_on;                                /* R78 (H43): 1 when IE_DISK_LZ4=1 */
+  uint8_t ioring_req;                            /* R81 (H46): 1 when IE_DISK_IORING=1 */
+  /* R78 slice geometry matching gpu_kv_io() for per-slice shuffle/unshuffle. */
+  uint32_t n_glob_slices, n_ds_slices;
+  size_t glob_slice_rowb, ds_slice_rowb;
+  uint8_t slices_valid, is_q4_glob;
   uint32_t seq, max_nb; /* max_nb: the most blocks before a checkpoint, + 1 */
   uint32_t block, min; /* positions per block (IE_DISK_BLOCK, default 1024); checkpoints at fewer tokens are not
                        * written (IE_DISK_MIN, default 1024: that prefill is under a second) */
@@ -2663,7 +3048,59 @@ typedef struct dcache {
   uint32_t w_n;       /* checkpoints written since the queue was last empty (the log line) */
   uint64_t w_bytes;
   double w_t0;
+#ifdef _WIN32
+  HANDLE ev_pool[64];
+  uint32_t ev_pool_n;
+  HMODULE io_dll;
+  int io_dll_owned;
+  void *ioring;
+  uint32_t ioring_inflight;
+  dc_ioring_create_fn io_create;
+  dc_ioring_read_fn io_read;
+  dc_ioring_submit_fn io_submit;
+  dc_ioring_pop_fn io_pop;
+  dc_ioring_close_fn io_close;
+#endif
 } dcache;
+
+static int dc_lz4_on(void) {
+  const char *e = getenv("IE_DISK_LZ4");
+  return e && e[0] == '1';
+}
+static int dc_h2d_pipe_on(void) {
+  const char *e = getenv("IE_KV_H2D_PIPE");
+  return !(e && e[0] == '0'); /* R80 promoted default ON (=0 opts out) */
+}
+static int dc_ioring_on(void) {
+  const char *e = getenv("IE_DISK_IORING");
+  return !(e && e[0] == '0'); /* R81 promoted default ON (=0 opts out) */
+}
+static double dc_ram_cache_gb(void) {
+  const char *e = getenv("IE_RAM_CACHE_GB");
+  return e && *e ? atof(e) : 0.0;
+}
+static uint64_t dc_os_avail_ram_bytes(void) {
+#ifdef _WIN32
+  MEMORYSTATUSEX ms;
+  ms.dwLength = sizeof ms;
+  if (GlobalMemoryStatusEx(&ms)) return (uint64_t)ms.ullAvailPhys;
+  return 0ull;
+#else
+  FILE *fp = fopen("/proc/meminfo", "r");
+  if (!fp) return 0ull;
+  char line[256];
+  uint64_t avail_kb = 0ull;
+  while (fgets(line, sizeof line, fp)) {
+    unsigned long long v = 0ull;
+    if (sscanf(line, "MemAvailable: %llu kB", &v) == 1) {
+      avail_kb = (uint64_t)v;
+      break;
+    }
+  }
+  fclose(fp);
+  return avail_kb * 1024ull;
+#endif
+}
 
 static void dc_lk(const dcache *d, int on) {
   if (d->lock) d->lock(on);
@@ -2690,10 +3127,17 @@ static void dc_mem_free(const dcache *d, dc_mem *m) {
 }
 static void dc_free(dcache *d) {
   if (!d) return;
-  for (uint32_t i = 0; i < d->n; i++) free(d->f[i].tok), free(d->f[i].name), dc_mem_free(d, &d->f[i].img);
+  for (uint32_t i = 0; i < d->n; i++)
+    free(d->f[i].tok), free(d->f[i].blk_hash), free(d->f[i].name), dc_mem_free(d, &d->f[i].img);
   for (dc_job *j = d->qh, *nx; j; j = nx) nx = j->next, dc_mem_free(d, &j->img), free(j);
   for (uint32_t i = 0; i < d->pool_n; i++) dc_mem_free(d, &d->pool[i]);
-  free(d->pool), free(d->f), free(d);
+#ifdef _WIN32
+  for (uint32_t i = 0; i < d->ev_pool_n; i++)
+    if (d->ev_pool[i]) CloseHandle(d->ev_pool[i]);
+  if (d->ioring && d->io_close) d->io_close(d->ioring);
+  if (d->io_dll_owned && d->io_dll) FreeLibrary(d->io_dll);
+#endif
+  free(d->k_ht), free(d->pool), free(d->f), free(d);
 }
 static uint64_t fnv64(uint64_t h, const void *p, size_t n) {
   const unsigned char *s = p;
@@ -2712,7 +3156,58 @@ static void dc_path(const dcache *d, char *out, size_t cap, char type, uint64_t 
   if (type == 'x') snprintf(out, cap, "%s/%s", d->dir, name);
   else snprintf(out, cap, "%s/%016" PRIx64 "-%c-%016" PRIx64 ".iec", d->dir, d->sig, type, hash);
 }
+static inline uint64_t dc_ht_mix(char type, uint64_t hash) {
+  uint64_t k = hash ^ ((uint64_t)(unsigned char)type * 0x9e3779b97f4a7c15ull);
+  k ^= k >> 33;
+  k *= 0xff51afd7ed558ccdull;
+  return k ^ (k >> 33);
+}
+static void dc_ht_rebuild(dcache *d) {
+  uint32_t cap = 512u;
+  while (cap < d->n * 2u + 16u) cap <<= 1u;
+  if (cap != d->k_ht_cap || !d->k_ht) {
+    int32_t *nt = (int32_t *)malloc((size_t)cap * sizeof(int32_t));
+    if (!nt) {
+      d->k_ht_dirty = 1;
+      return;
+    }
+    free(d->k_ht);
+    d->k_ht = nt;
+    d->k_ht_cap = cap;
+  }
+  memset(d->k_ht, 0xFF, (size_t)d->k_ht_cap * sizeof(int32_t));
+  const uint32_t mask = d->k_ht_cap - 1u;
+  for (uint32_t i = 0; i < d->n; i++) {
+    if (d->f[i].type != 'e' && d->f[i].type != 'k') continue;
+    uint32_t s = (uint32_t)(dc_ht_mix(d->f[i].type, d->f[i].hash) & mask);
+    while (d->k_ht[s] >= 0) s = (s + 1u) & mask;
+    d->k_ht[s] = (int32_t)i;
+  }
+  d->k_ht_dirty = 0;
+}
+static void dc_ht_insert(dcache *d, uint32_t idx) {
+  if (idx >= d->n) return;
+  if (d->f[idx].type != 'e' && d->f[idx].type != 'k') return;
+  if (d->k_ht_dirty || !d->k_ht || (d->n + 1u) * 2u > d->k_ht_cap) {
+    dc_ht_rebuild(d);
+    return;
+  }
+  const uint32_t mask = d->k_ht_cap - 1u;
+  uint32_t s = (uint32_t)(dc_ht_mix(d->f[idx].type, d->f[idx].hash) & mask);
+  while (d->k_ht[s] >= 0) s = (s + 1u) & mask;
+  d->k_ht[s] = (int32_t)idx;
+}
 static int dc_find(const dcache *d, char type, uint64_t hash) {
+  if ((type == 'e' || type == 'k') && d->k_ht && d->k_ht_cap && !d->k_ht_dirty) {
+    const uint32_t mask = d->k_ht_cap - 1u;
+    uint32_t s = (uint32_t)(dc_ht_mix(type, hash) & mask);
+    for (;;) {
+      const int32_t idx = d->k_ht[s];
+      if (idx < 0) return -1;
+      if ((uint32_t)idx < d->n && d->f[idx].type == type && d->f[idx].hash == hash) return (int)idx;
+      s = (s + 1u) & mask;
+    }
+  }
   for (uint32_t i = 0; i < d->n; i++)
     if (d->f[i].type == type && d->f[i].hash == hash) return (int)i;
   return -1;
@@ -2731,6 +3226,201 @@ static void *dc_alloc(size_t n) {
   void *p = malloc(n ? n : 1);
   if (!p) ie_die("disk cache: out of memory (%zu bytes)", n);
   return p;
+}
+
+/* ---- Wave 15 R78 (H43): Zero-dependency C11 LZ4 block codec + byte-shuffle/unshuffle ---- */
+static inline uint32_t dc_rd32(const uint8_t *p) {
+  uint32_t v;
+  memcpy(&v, p, 4u);
+  return v;
+}
+static inline uint16_t dc_rd16(const uint8_t *p) {
+  uint16_t v;
+  memcpy(&v, p, 2u);
+  return v;
+}
+static inline void dc_wr16(uint8_t *p, uint16_t v) { memcpy(p, &v, 2u); }
+/* Standard LZ4 block compressor. Returns compressed size > 0 if <= dst_cap, else 0 (store RAW). */
+static size_t dc_lz4_compress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_cap) {
+  if (!src || !dst || src_len == 0u || dst_cap == 0u) return 0u;
+  uint32_t ht[4096];
+  memset(ht, 0, sizeof ht);
+  const uint8_t *ip = src;
+  const uint8_t *anchor = src;
+  const uint8_t *const iend = src + src_len;
+  const uint8_t *const mflimit = src_len >= 12u ? (iend - 12u) : src;
+  const uint8_t *const matchlimit = src_len >= 5u ? (iend - 5u) : src;
+  uint8_t *op = dst;
+  uint8_t *const oend = dst + dst_cap;
+
+  if (src_len >= 13u) {
+    ht[((dc_rd32(ip) * 2654435761u) >> 20) & 4095u] = 1u;
+    ip++;
+    while (ip < mflimit) {
+      const uint32_t v = dc_rd32(ip);
+      const uint32_t h = ((v * 2654435761u) >> 20) & 4095u;
+      const uint32_t ref_p1 = ht[h];
+      ht[h] = (uint32_t)(ip - src) + 1u;
+      if (ref_p1 == 0u) {
+        ip++;
+        continue;
+      }
+      const uint8_t *ref = src + (ref_p1 - 1u);
+      const size_t dist = (size_t)(ip - ref);
+      if (dist == 0u || dist > 65535u || dc_rd32(ref) != v) {
+        ip++;
+        continue;
+      }
+      /* Extend match up to matchlimit. */
+      size_t ml = 4u;
+      while (ip + ml < matchlimit && ref[ml] == ip[ml]) ml++;
+      const size_t ll = (size_t)(ip - anchor);
+      const size_t ml_ext = ml - 4u;
+      const size_t ll_extra = ll >= 15u ? ((ll - 15u) / 255u + 1u) : 0u;
+      const size_t ml_extra = ml_ext >= 15u ? ((ml_ext - 15u) / 255u + 1u) : 0u;
+      const size_t need = 1u + ll_extra + ll + 2u + ml_extra;
+      if (need > (size_t)(oend - op)) return 0u;
+      uint8_t *const tok = op++;
+      uint8_t tk = (uint8_t)((ll >= 15u ? 15u : ll) << 4);
+      tk |= (uint8_t)(ml_ext >= 15u ? 15u : ml_ext);
+      *tok = tk;
+      if (ll >= 15u) {
+        size_t rem = ll - 15u;
+        while (rem >= 255u) { *op++ = 255u; rem -= 255u; }
+        *op++ = (uint8_t)rem;
+      }
+      if (ll) { memcpy(op, anchor, ll); op += ll; }
+      dc_wr16(op, (uint16_t)dist);
+      op += 2u;
+      if (ml_ext >= 15u) {
+        size_t rem = ml_ext - 15u;
+        while (rem >= 255u) { *op++ = 255u; rem -= 255u; }
+        *op++ = (uint8_t)rem;
+      }
+      ip += ml;
+      anchor = ip;
+      if (ip < mflimit) ht[((dc_rd32(ip - 2u) * 2654435761u) >> 20) & 4095u] = (uint32_t)((ip - 2u) - src) + 1u;
+    }
+  }
+  /* Emit final literal run (no offset/match). */
+  const size_t last_ll = (size_t)(iend - anchor);
+  const size_t last_extra = last_ll >= 15u ? ((last_ll - 15u) / 255u + 1u) : 0u;
+  if (1u + last_extra + last_ll > (size_t)(oend - op)) return 0u;
+  *op++ = (uint8_t)((last_ll >= 15u ? 15u : last_ll) << 4);
+  if (last_ll >= 15u) {
+    size_t rem = last_ll - 15u;
+    while (rem >= 255u) { *op++ = 255u; rem -= 255u; }
+    *op++ = (uint8_t)rem;
+  }
+  if (last_ll) { memcpy(op, anchor, last_ll); op += last_ll; }
+  return (size_t)(op - dst);
+}
+/* Bounds-checked LZ4 block decompressor. Returns 0 on exact match of dst_len, -1 on corrupt input. */
+static int dc_lz4_decompress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len) {
+  if (dst_len == 0u) return src_len == 0u ? 0 : -1;
+  if (!src || !dst || src_len == 0u) return -1;
+  const uint8_t *ip = src;
+  const uint8_t *const iend = src + src_len;
+  uint8_t *op = dst;
+  uint8_t *const oend = dst + dst_len;
+  for (;;) {
+    if (ip >= iend) return -1;
+    const uint8_t tok = *ip++;
+    size_t ll = (size_t)(tok >> 4);
+    if (ll == 15u) {
+      uint8_t b = 255u;
+      while (b == 255u) {
+        if (ip >= iend) return -1;
+        b = *ip++;
+        if (ll > (size_t)(oend - op)) return -1;
+        ll += b;
+      }
+    }
+    if (ll > (size_t)(iend - ip) || ll > (size_t)(oend - op)) return -1;
+    if (ll) { memcpy(op, ip, ll); ip += ll; op += ll; }
+    if (ip == iend) break;
+    if ((size_t)(iend - ip) < 2u) return -1;
+    const size_t off = (size_t)dc_rd16(ip);
+    ip += 2u;
+    if (off == 0u || off > (size_t)(op - dst)) return -1;
+    size_t ml = (size_t)(tok & 15u) + 4u;
+    if ((tok & 15u) == 15u) {
+      uint8_t b = 255u;
+      while (b == 255u) {
+        if (ip >= iend) return -1;
+        b = *ip++;
+        if (ml > (size_t)(oend - op)) return -1;
+        ml += b;
+      }
+    }
+    if (ml > (size_t)(oend - op)) return -1;
+    const uint8_t *match = op - off;
+    if (off >= ml) {
+      memcpy(op, match, ml);
+      op += ml;
+    } else {
+      for (size_t k = 0; k < ml; k++) op[k] = match[k];
+      op += ml;
+    }
+  }
+  return (op == oend && ip == iend) ? 0 : -1;
+}
+static void dc_shuf_f16(const uint8_t *src, uint8_t *lo, uint8_t *hi, size_t n_elems) {
+  for (size_t i = 0; i < n_elems; i++) {
+    lo[i] = src[2u * i];
+    hi[i] = src[2u * i + 1u];
+  }
+}
+static void dc_unshuf_f16(const uint8_t *lo, const uint8_t *hi, uint8_t *dst, size_t n_elems) {
+  for (size_t i = 0; i < n_elems; i++) {
+    dst[2u * i] = lo[i];
+    dst[2u * i + 1u] = hi[i];
+  }
+}
+static void dc_shuf_q4(const uint8_t *src, uint8_t *nib, uint8_t *scl_lo, uint8_t *scl_hi, size_t n_rec) {
+  for (size_t r = 0; r < n_rec; r++) {
+    const uint8_t *rec = src + r * 72u;
+    memcpy(nib + r * 64u, rec, 64u);
+    uint8_t *sl = scl_lo + r * 4u, *sh = scl_hi + r * 4u;
+    for (size_t k = 0; k < 4u; k++) {
+      sl[k] = rec[64u + 2u * k];
+      sh[k] = rec[64u + 2u * k + 1u];
+    }
+  }
+}
+static void dc_unshuf_q4(const uint8_t *nib, const uint8_t *scl_lo, const uint8_t *scl_hi, uint8_t *dst, size_t n_rec) {
+  for (size_t r = 0; r < n_rec; r++) {
+    uint8_t *rec = dst + r * 72u;
+    memcpy(rec, nib + r * 64u, 64u);
+    const uint8_t *sl = scl_lo + r * 4u, *sh = scl_hi + r * 4u;
+    for (size_t k = 0; k < 4u; k++) {
+      rec[64u + 2u * k] = sl[k];
+      rec[64u + 2u * k + 1u] = sh[k];
+    }
+  }
+}
+static void dc_v4_emit_stripe(const uint8_t *in, size_t in_len, uint8_t *out, size_t *cursor, dc_v4_ext *ext, uint32_t *st_idx) {
+  const size_t cap = (in_len * 94u) / 100u; /* adaptive 94% raw skip */
+  const size_t cl = cap > 0u ? dc_lz4_compress(in, in_len, out + *cursor, cap) : 0u;
+  if (cl > 0u && cl <= cap) {
+    ext->stripe_clen[(*st_idx)++] = (uint32_t)cl;
+    *cursor += cl;
+  } else {
+    memcpy(out + *cursor, in, in_len);
+    ext->stripe_clen[(*st_idx)++] = DC_V4_RAW_BIT | (uint32_t)in_len;
+    *cursor += in_len;
+  }
+}
+static int dc_v4_read_stripe(const uint8_t *src, uint32_t clen_word, uint8_t *dst, size_t ulen, size_t *src_off) {
+  const uint32_t slen = clen_word & ~DC_V4_RAW_BIT;
+  if (clen_word & DC_V4_RAW_BIT) {
+    if ((size_t)slen != ulen) return -1;
+    memcpy(dst, src + *src_off, ulen);
+  } else {
+    if (dc_lz4_decompress(src + *src_off, (size_t)slen, dst, ulen) != 0) return -1;
+  }
+  *src_off += (size_t)slen;
+  return 0;
 }
 
 /* ---- host buffers: a pool of pinned ones (allocating them is slow), plain aligned memory past the pinned limit ---- */
@@ -2832,6 +3522,23 @@ static void dc_unpin(dcache *d, dc_mem *m) {
 static int dc_ram_adopt_l(dcache *d, dc_file *f, dc_mem *m) {
   if (!m->p || f->img.p || m->cap > d->ram_limit) return 0;
   if (m->pinned && d->ram_pinned + m->cap > d->pinned_limit / 2u) return 0; /* the rest of the pinned buffers are for copies */
+  if (d->ram_l2_on && d->ram_reserve > 0ull) {
+    const uint64_t avail = dc_os_avail_ram_bytes();
+    if (avail > 0ull && avail < d->ram_reserve + m->cap) {
+      /* OS RAM is near reserve: evict LRU L2 entries before keeping new memory, or decline if none. */
+      uint64_t freed = 0ull;
+      while (avail + freed < d->ram_reserve + m->cap) {
+        dc_file *v = NULL;
+        for (uint32_t i = 0; i < d->n; i++)
+          if (d->f[i].img.p && !d->f[i].busy && !d->f[i].pending && &d->f[i] != f && (!v || d->f[i].rused < v->rused)) v = &d->f[i];
+        if (!v) return 0;
+        freed += v->img.cap;
+        d->ram_bytes -= v->img.cap, d->ram_pinned -= v->img.pinned ? v->img.cap : 0;
+        dc_put_l(d, v->img);
+        memset(&v->img, 0, sizeof v->img);
+      }
+    }
+  }
   while (d->ram_bytes + m->cap > d->ram_limit) {
     dc_file *v = NULL;
     for (uint32_t i = 0; i < d->n; i++)
@@ -2847,19 +3554,22 @@ static int dc_ram_adopt_l(dcache *d, dc_file *f, dc_mem *m) {
   return 1;
 }
 static void dc_remove(dcache *d, uint32_t i) {
-  char path[1200];
-  dc_path(d, path, sizeof path, d->f[i].type, d->f[i].hash, d->f[i].name);
-  remove(path);
+  if (d->dir[0]) {
+    char path[1200];
+    dc_path(d, path, sizeof path, d->f[i].type, d->f[i].hash, d->f[i].name);
+    remove(path);
+  }
   d->bytes -= d->f[i].bytes;
   if (d->f[i].img.p) {
     d->ram_bytes -= d->f[i].img.cap, d->ram_pinned -= d->f[i].img.pinned ? d->f[i].img.cap : 0;
     dc_put_l(d, d->f[i].img);
   }
-  free(d->f[i].tok), free(d->f[i].name);
+  free(d->f[i].tok), free(d->f[i].blk_hash), free(d->f[i].name);
   d->f[i] = d->f[--d->n];
+  d->k_ht_dirty = 1;
 }
 
-/* ---- the layout of a file, the int16 form of a snapshot ---- */
+/* ---- the layout of a file, the int16 form of a snapshot, and v4 LZ4-shuf ---- */
 static void dc_layout(const dcache *d, char type, uint32_t pos, uint32_t flags, dc_lay *L) {
   memset(L, 0, sizeof *L);
   L->tok_off = DC_ALIGN;
@@ -2871,6 +3581,261 @@ static void dc_layout(const dcache *d, char type, uint32_t pos, uint32_t flags, 
   L->rows_off = L->snap_off + dc_up(L->snap_len);
   L->total = L->rows_off + dc_up(L->rows_len);
 }
+/* Validate a DCACHE_VERSION 4 header + dc_v4_ext against exact file byte length. */
+static int dc_v4_validate(const dcache *d, char type, uint32_t pos, const dc_head *h, const dc_v4_ext *ext,
+                          size_t file_bytes, size_t *rows_off_out) {
+  if (h->version != DCACHE_VERSION_V4 || !(h->flags & DC_F_LZ4_SHUF) || (h->flags & ~DC_F_VALID_MASK)) return 0;
+  if (ext->ext_magic != DC_V4_MAGIC || ext->rows_fmt > 2u || ext->snap_shuf > 1u) return 0;
+  if (ext->n_snap_stripes > DC_V4_MAX_STRIPES || ext->n_rows_stripes > DC_V4_MAX_STRIPES ||
+      ext->n_snap_stripes + ext->n_rows_stripes > DC_V4_MAX_STRIPES)
+    return 0;
+  dc_lay Lu;
+  dc_layout(d, type, pos, h->flags & DC_F_STATE16, &Lu);
+  if (Lu.snap_len == 0u) {
+    if (ext->n_snap_stripes != 0u || ext->comp_snap_len != 0ull) return 0;
+  } else {
+    if (ext->stripe_sz < 2u || (ext->snap_shuf && ((ext->stripe_sz & 1u) || (Lu.snap_len & 1u)))) return 0;
+    const size_t nc = (Lu.snap_len + ext->stripe_sz - 1u) / ext->stripe_sz;
+    const size_t exp_s = ext->snap_shuf ? (2u * nc) : nc;
+    if (exp_s != (size_t)ext->n_snap_stripes) return 0;
+  }
+  uint64_t sum_s = 0ull;
+  for (uint32_t i = 0; i < ext->n_snap_stripes; i++) sum_s += (uint64_t)(ext->stripe_clen[i] & ~DC_V4_RAW_BIT);
+  if (sum_s != ext->comp_snap_len) return 0;
+  const size_t rows_off = Lu.snap_off + dc_up((size_t)ext->comp_snap_len);
+  if (Lu.rows_len == 0u) {
+    if (ext->n_rows_stripes != 0u || ext->comp_rows_len != 0ull) return 0;
+  } else if (ext->rows_fmt == 0u || ext->rows_fmt == 1u) {
+    if (!d->slices_valid) return 0;
+    if (ext->rows_fmt == 1u && !d->is_q4_glob) return 0;
+    if ((size_t)ext->n_rows_stripes != (size_t)(d->n_glob_slices + d->n_ds_slices) * 2u) return 0;
+  } else {
+    if (ext->rows_stripe_sz == 0u) return 0;
+    const size_t exp_r = (Lu.rows_len + ext->rows_stripe_sz - 1u) / ext->rows_stripe_sz;
+    if (exp_r != (size_t)ext->n_rows_stripes) return 0;
+  }
+  uint64_t sum_r = 0ull;
+  for (uint32_t i = 0; i < ext->n_rows_stripes; i++)
+    sum_r += (uint64_t)(ext->stripe_clen[ext->n_snap_stripes + i] & ~DC_V4_RAW_BIT);
+  if (sum_r != ext->comp_rows_len) return 0;
+  const size_t total_v4 = rows_off + dc_up((size_t)ext->comp_rows_len);
+  if (total_v4 != file_bytes) return 0;
+  if (rows_off_out) *rows_off_out = rows_off;
+  return 1;
+}
+/* Pack a staged job's uncompressed v3 image into DCACHE_VERSION 4 byte-shuffled adaptive LZ4 (background thread). */
+static void dc_v4_pack_job(const dcache *d, dc_job *j) {
+  dc_head h;
+  memcpy(&h, j->img.p, sizeof h);
+  dc_lay Lu;
+  dc_layout(d, j->type, j->pos, h.flags & DC_F_STATE16, &Lu);
+  if (j->img.len < Lu.total) return;
+  uint8_t *out = (uint8_t *)dc_alloc(Lu.total);
+  memcpy(out + Lu.tok_off, j->img.p + Lu.tok_off, Lu.tok_len);
+  memset(out + Lu.tok_off + Lu.tok_len, 0, Lu.snap_off - Lu.tok_off - Lu.tok_len);
+  dc_v4_ext ext;
+  memset(&ext, 0, sizeof ext);
+  ext.ext_magic = DC_V4_MAGIC;
+  uint32_t st_idx = 0u;
+  size_t cursor = Lu.snap_off;
+  size_t shuf_cap = 0u;
+  uint8_t *shuf = NULL;
+
+  /* 1. Snapshot section ('e' only). */
+  if (Lu.snap_len > 0u) {
+    uint32_t ssz = 2u << 20;
+    while (((Lu.snap_len + ssz - 1u) / ssz) * 2u > 600u && ssz < (1u << 28)) ssz <<= 1u;
+    ext.stripe_sz = ssz;
+    ext.snap_shuf = ((Lu.snap_len & 1u) == 0u && !(h.flags & DC_F_STATE16)) ? 1u : 0u;
+    if (ext.snap_shuf && ssz > shuf_cap) { free(shuf); shuf = (uint8_t *)dc_alloc(ssz); shuf_cap = ssz; }
+    const uint8_t *ssrc = (const uint8_t *)(j->img.p + Lu.snap_off);
+    const size_t snap_start = cursor;
+    for (size_t off = 0; off < Lu.snap_len; off += ssz) {
+      const size_t clen = Lu.snap_len - off < ssz ? (Lu.snap_len - off) : ssz;
+      if (ext.snap_shuf) {
+        const size_t half = clen / 2u;
+        dc_shuf_f16(ssrc + off, shuf, shuf + half, half);
+        dc_v4_emit_stripe(shuf, half, out, &cursor, &ext, &st_idx);
+        dc_v4_emit_stripe(shuf + half, half, out, &cursor, &ext, &st_idx);
+      } else {
+        dc_v4_emit_stripe(ssrc + off, clen, out, &cursor, &ext, &st_idx);
+      }
+    }
+    ext.n_snap_stripes = st_idx;
+    ext.comp_snap_len = (uint64_t)(cursor - snap_start);
+  }
+  const size_t rows_off_v4 = Lu.snap_off + dc_up((size_t)ext.comp_snap_len);
+  if (rows_off_v4 > cursor) memset(out + cursor, 0, rows_off_v4 - cursor);
+  cursor = rows_off_v4;
+
+  /* 2. Rows section ('k' or 'e' tail). */
+  if (Lu.rows_len > 0u) {
+    const uint32_t n_rows = j->type == 'k' ? d->block : (j->pos % d->block);
+    const uint32_t tot_sl = d->n_glob_slices + d->n_ds_slices;
+    if (d->slices_valid && n_rows > 0u && st_idx + tot_sl * 2u <= DC_V4_MAX_STRIPES) {
+      if (d->is_q4_glob) {
+        ext.rows_fmt = 1u;
+        h.flags |= DC_F_Q4_SPLIT;
+      } else if ((d->glob_slice_rowb & 1u) == 0u && (d->ds_slice_rowb & 1u) == 0u) {
+        ext.rows_fmt = 0u;
+      } else {
+        ext.rows_fmt = 2u;
+      }
+    } else {
+      ext.rows_fmt = 2u;
+    }
+    const uint8_t *rsrc = (const uint8_t *)(j->img.p + Lu.rows_off);
+    const size_t rows_start = cursor;
+    if (ext.rows_fmt == 0u || ext.rows_fmt == 1u) {
+      const size_t glen = (size_t)n_rows * d->glob_slice_rowb;
+      const size_t dlen = (size_t)n_rows * d->ds_slice_rowb;
+      const size_t need = glen > dlen ? glen : dlen;
+      if (need > shuf_cap) { free(shuf); shuf = (uint8_t *)dc_alloc(need); shuf_cap = need; }
+      for (uint32_t s = 0; s < d->n_glob_slices; s++, rsrc += glen) {
+        if (ext.rows_fmt == 1u) {
+          const size_t n_rec = glen / 72u;
+          dc_shuf_q4(rsrc, shuf, shuf + n_rec * 64u, shuf + n_rec * 68u, n_rec);
+          dc_v4_emit_stripe(shuf, n_rec * 64u, out, &cursor, &ext, &st_idx);
+          dc_v4_emit_stripe(shuf + n_rec * 64u, n_rec * 8u, out, &cursor, &ext, &st_idx);
+        } else {
+          const size_t half = glen / 2u;
+          dc_shuf_f16(rsrc, shuf, shuf + half, half);
+          dc_v4_emit_stripe(shuf, half, out, &cursor, &ext, &st_idx);
+          dc_v4_emit_stripe(shuf + half, half, out, &cursor, &ext, &st_idx);
+        }
+      }
+      for (uint32_t s = 0; s < d->n_ds_slices; s++, rsrc += dlen) {
+        const size_t half = dlen / 2u;
+        dc_shuf_f16(rsrc, shuf, shuf + half, half);
+        dc_v4_emit_stripe(shuf, half, out, &cursor, &ext, &st_idx);
+        dc_v4_emit_stripe(shuf + half, half, out, &cursor, &ext, &st_idx);
+      }
+    } else {
+      uint32_t rsz = 1u << 20;
+      while (st_idx + (Lu.rows_len + rsz - 1u) / rsz > DC_V4_MAX_STRIPES && rsz < (1u << 28)) rsz <<= 1u;
+      ext.rows_stripe_sz = rsz;
+      for (size_t off = 0; off < Lu.rows_len; off += rsz) {
+        const size_t clen = Lu.rows_len - off < rsz ? (Lu.rows_len - off) : rsz;
+        dc_v4_emit_stripe(rsrc + off, clen, out, &cursor, &ext, &st_idx);
+      }
+    }
+    ext.n_rows_stripes = st_idx - ext.n_snap_stripes;
+    ext.comp_rows_len = (uint64_t)(cursor - rows_start);
+  }
+  const size_t total_v4 = rows_off_v4 + dc_up((size_t)ext.comp_rows_len);
+  if (total_v4 > cursor) memset(out + cursor, 0, total_v4 - cursor);
+  h.version = DCACHE_VERSION_V4;
+  h.flags |= DC_F_LZ4_SHUF;
+  memset(out, 0, DC_ALIGN);
+  memcpy(out, &h, sizeof h);
+  memcpy(out + sizeof h, &ext, sizeof ext);
+  memcpy(j->img.p, out, total_v4);
+  j->img.len = total_v4;
+  free(shuf), free(out);
+}
+/* Decompress v4 snap section into dst (Lu.snap_len bytes), unshuffling f16 bytes when snap_shuf == 1. */
+static int dc_v4_unpack_snap(const dc_v4_ext *ext, const char *src, size_t snap_len, char *dst) {
+  if (snap_len == 0u) return 0;
+  const uint8_t *sp = (const uint8_t *)src;
+  uint8_t *dp = (uint8_t *)dst;
+  uint8_t *tmp = ext->snap_shuf ? (uint8_t *)dc_alloc(ext->stripe_sz) : NULL;
+  size_t soff = 0u;
+  uint32_t si = 0u;
+  int err = 0;
+  for (size_t off = 0; off < snap_len && !err; off += ext->stripe_sz) {
+    const size_t clen = snap_len - off < ext->stripe_sz ? (snap_len - off) : ext->stripe_sz;
+    if (ext->snap_shuf) {
+      const size_t half = clen / 2u;
+      if (si + 2u > ext->n_snap_stripes ||
+          dc_v4_read_stripe(sp, ext->stripe_clen[si], tmp, half, &soff) != 0 ||
+          dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], tmp + half, half, &soff) != 0) {
+        err = -1;
+        break;
+      }
+      dc_unshuf_f16(tmp, tmp + half, dp + off, half);
+      si += 2u;
+    } else {
+      if (si >= ext->n_snap_stripes || dc_v4_read_stripe(sp, ext->stripe_clen[si], dp + off, clen, &soff) != 0) {
+        err = -1;
+        break;
+      }
+      si++;
+    }
+  }
+  free(tmp);
+  return (!err && soff == (size_t)ext->comp_snap_len) ? 0 : -1;
+}
+/* Decompress v4 rows section into dst_shuf (n_rows * d->rowb bytes, per-slice shuffled if rows_fmt <= 1). */
+static int dc_v4_unpack_rows(const dcache *d, const dc_v4_ext *ext, const char *src, uint32_t n_rows, char *dst_shuf,
+                             int *is_shuffled) {
+  const size_t rows_len = (size_t)n_rows * d->rowb;
+  if (rows_len == 0u) {
+    *is_shuffled = 0;
+    return 0;
+  }
+  const uint8_t *sp = (const uint8_t *)src;
+  uint8_t *dp = (uint8_t *)dst_shuf;
+  size_t soff = 0u;
+  uint32_t si = ext->n_snap_stripes;
+  const uint32_t send = ext->n_snap_stripes + ext->n_rows_stripes;
+  if (ext->rows_fmt == 0u || ext->rows_fmt == 1u) {
+    const size_t glen = (size_t)n_rows * d->glob_slice_rowb;
+    const size_t dlen = (size_t)n_rows * d->ds_slice_rowb;
+    for (uint32_t s = 0; s < d->n_glob_slices; s++, dp += glen) {
+      if (si + 2u > send) return -1;
+      if (ext->rows_fmt == 1u) {
+        const size_t n_rec = glen / 72u;
+        if (dc_v4_read_stripe(sp, ext->stripe_clen[si], dp, n_rec * 64u, &soff) != 0 ||
+            dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], dp + n_rec * 64u, n_rec * 8u, &soff) != 0)
+          return -1;
+      } else {
+        const size_t half = glen / 2u;
+        if (dc_v4_read_stripe(sp, ext->stripe_clen[si], dp, half, &soff) != 0 ||
+            dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], dp + half, half, &soff) != 0)
+          return -1;
+      }
+      si += 2u;
+    }
+    for (uint32_t s = 0; s < d->n_ds_slices; s++, dp += dlen) {
+      if (si + 2u > send) return -1;
+      const size_t half = dlen / 2u;
+      if (dc_v4_read_stripe(sp, ext->stripe_clen[si], dp, half, &soff) != 0 ||
+          dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], dp + half, half, &soff) != 0)
+        return -1;
+      si += 2u;
+    }
+    *is_shuffled = 1;
+  } else {
+    for (size_t off = 0; off < rows_len; off += ext->rows_stripe_sz) {
+      const size_t clen = rows_len - off < ext->rows_stripe_sz ? (rows_len - off) : ext->rows_stripe_sz;
+      if (si >= send || dc_v4_read_stripe(sp, ext->stripe_clen[si], dp + off, clen, &soff) != 0) return -1;
+      si++;
+    }
+    *is_shuffled = 0;
+  }
+  return (si == send && soff == (size_t)ext->comp_rows_len) ? 0 : -1;
+}
+/* CPU fallback unshuffle for v4 rows (exact inverse of dc_v4_pack_job; used when b->kv_io_unshuf is NULL or returns 0). */
+static void dc_v4_cpu_unshuf_rows(const dcache *d, uint32_t rows_fmt, const char *src_shuf, char *dst_raw, uint32_t n_rows) {
+  const uint8_t *sp = (const uint8_t *)src_shuf;
+  uint8_t *dp = (uint8_t *)dst_raw;
+  const size_t glen = (size_t)n_rows * d->glob_slice_rowb;
+  const size_t dlen = (size_t)n_rows * d->ds_slice_rowb;
+  for (uint32_t s = 0; s < d->n_glob_slices; s++, sp += glen, dp += glen) {
+    if (rows_fmt == 1u) {
+      const size_t n_rec = glen / 72u;
+      dc_unshuf_q4(sp, sp + n_rec * 64u, sp + n_rec * 68u, dp, n_rec);
+    } else {
+      const size_t half = glen / 2u;
+      dc_unshuf_f16(sp, sp + half, dp, half);
+    }
+  }
+  for (uint32_t s = 0; s < d->n_ds_slices; s++, sp += dlen, dp += dlen) {
+    const size_t half = dlen / 2u;
+    dc_unshuf_f16(sp, sp + half, dp, half);
+  }
+}
+
 /* the f32 state of the snapshot in img (laid out for f32) as int16 with a scale (absmax / 32767) per 128 values, in place;
  * the rest of the snapshot and the rows move down, img.len shrinks to the layout with flag 1 */
 static void dc_pack16(const dcache *d, dc_job *j) {
@@ -2919,12 +3884,60 @@ typedef struct { /* reads of one file into a buffer, several chunks in flight */
 #ifdef _WIN32
   HANDLE h;
   OVERLAPPED *ov;
-  size_t len, chunk;
-  uint32_t nch, issued;
+  size_t len, chunk, io_bytes;
+  uint32_t nch, issued, io_rem;
+  uint8_t used_ioring, io_err, pooled_ev;
 #endif
 } dc_rd;
 #ifdef _WIN32
-static void dc_rd_start(const dcache *d, dc_rd *r, const char *path, char *dst, size_t len) {
+static void dc_ioring_init(dcache *d) {
+  HMODULE dll = GetModuleHandleA("kernelbase.dll");
+  int owned = 0;
+  if (!dll) {
+    dll = LoadLibraryA("kernelbase.dll");
+    owned = dll != NULL;
+  }
+  if (!dll) return;
+  FARPROC p_cr = GetProcAddress(dll, "CreateIoRing");
+  FARPROC p_rd = GetProcAddress(dll, "BuildIoRingReadFile");
+  FARPROC p_sb = GetProcAddress(dll, "SubmitIoRing");
+  FARPROC p_pp = GetProcAddress(dll, "PopIoRingCompletion");
+  FARPROC p_cl = GetProcAddress(dll, "CloseIoRing");
+  if (!p_cr || !p_rd || !p_sb || !p_pp || !p_cl) {
+    if (owned) FreeLibrary(dll);
+    return;
+  }
+  memcpy(&d->io_create, &p_cr, sizeof p_cr);
+  memcpy(&d->io_read, &p_rd, sizeof p_rd);
+  memcpy(&d->io_submit, &p_sb, sizeof p_sb);
+  memcpy(&d->io_pop, &p_pp, sizeof p_pp);
+  memcpy(&d->io_close, &p_cl, sizeof p_cl);
+  dc_ioring_cflags fl = {0u, 0u};
+  void *ring = NULL;
+  HRESULT hr = d->io_create(300u, fl, 256u, 512u, &ring); /* IORING_VERSION_3 */
+  if (hr < 0 || !ring) hr = d->io_create(1u, fl, 256u, 512u, &ring); /* IORING_VERSION_1 fallback */
+  if (hr < 0 || !ring) {
+    if (owned) FreeLibrary(dll);
+    return;
+  }
+  d->io_dll = dll;
+  d->io_dll_owned = owned;
+  d->ioring = ring;
+}
+static HANDLE dc_ev_get(dcache *d) {
+  if (d->ev_pool_n > 0u) {
+    HANDLE h = d->ev_pool[--d->ev_pool_n];
+    ResetEvent(h);
+    return h;
+  }
+  return CreateEventA(NULL, TRUE, FALSE, NULL);
+}
+static void dc_ev_put(dcache *d, HANDLE h) {
+  if (!h) return;
+  if (d->ev_pool_n < 64u) d->ev_pool[d->ev_pool_n++] = h;
+  else CloseHandle(h);
+}
+static void dc_rd_start(dcache *d, dc_rd *r, const char *path, char *dst, size_t len) {
   memset(r, 0, sizeof *r);
   const DWORD sh = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
   r->h = CreateFileA(path, GENERIC_READ, sh, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | (d->direct ? FILE_FLAG_NO_BUFFERING : 0), NULL);
@@ -2935,12 +3948,44 @@ static void dc_rd_start(const dcache *d, dc_rd *r, const char *path, char *dst, 
     return;
   }
   r->len = len, r->chunk = d->chunk, r->nch = (uint32_t)((len + d->chunk - 1) / d->chunk), r->ok = 1;
+  if (d->ioring && r->nch > 0u && d->ioring_inflight + r->nch <= 240u) {
+    dc_ioring_href href;
+    memset(&href, 0, sizeof href);
+    href.Kind = 0u; /* IORING_REF_RAW */
+    href.Handle.Handle = r->h;
+    uint32_t qd = 0u;
+    for (; qd < r->nch; qd++) {
+      const size_t off = (size_t)qd * r->chunk;
+      const size_t c = len - off < r->chunk ? (len - off) : r->chunk;
+      dc_ioring_bref bref;
+      memset(&bref, 0, sizeof bref);
+      bref.Kind = 0u; /* IORING_REF_RAW */
+      bref.Buffer.Address = dst + off;
+      if (d->io_read(d->ioring, href, bref, (uint32_t)c, (uint64_t)off, (uintptr_t)r, 0u) < 0) break;
+    }
+    if (qd > 0u) {
+      uint32_t sub = 0u;
+      const HRESULT shr = d->io_submit(d->ioring, 0u, 0u, &sub);
+      r->used_ioring = 1u;
+      r->issued = qd;
+      if (shr < 0) {
+        r->io_err = 1u;
+        r->io_rem = sub <= qd ? sub : 0u;
+      } else {
+        r->io_rem = qd;
+        if (qd < r->nch) r->io_err = 1u;
+      }
+      d->ioring_inflight += r->io_rem;
+      return;
+    }
+  }
+  r->pooled_ev = d->ioring_req;
   r->ov = calloc(r->nch ? r->nch : 1, sizeof *r->ov);
   if (!r->ov) ie_die("disk cache: out of memory");
   for (; r->issued < r->nch; r->issued++) {
     OVERLAPPED *o = &r->ov[r->issued];
     const size_t off = (size_t)r->issued * r->chunk, c = len - off < r->chunk ? len - off : r->chunk;
-    o->hEvent = CreateEventA(NULL, TRUE, FALSE, NULL);
+    o->hEvent = r->pooled_ev ? dc_ev_get(d) : CreateEventA(NULL, TRUE, FALSE, NULL);
     o->Offset = (DWORD)(off & 0xffffffffu), o->OffsetHigh = (DWORD)((uint64_t)off >> 32);
     if (!o->hEvent || (!ReadFile(r->h, dst + off, (DWORD)c, NULL, o) && GetLastError() != ERROR_IO_PENDING)) {
       r->ok = 0;
@@ -2949,15 +3994,42 @@ static void dc_rd_start(const dcache *d, dc_rd *r, const char *path, char *dst, 
   }
 }
 /* wait for all the chunks, close the file: 1 if every byte arrived */
-static int dc_rd_wait(dc_rd *r) {
+static int dc_rd_wait(dcache *d, dc_rd *r) {
   if (!r->h) return 0;
+  if (r->used_ioring) {
+    while (r->io_rem > 0u) {
+      dc_ioring_cqe cqe;
+      if (d->io_pop(d->ioring, &cqe) == S_OK) {
+        if (d->ioring_inflight > 0u) d->ioring_inflight--;
+        dc_rd *o = (dc_rd *)cqe.UserData;
+        if (o) {
+          if (cqe.ResultCode < 0) o->io_err = 1u;
+          else o->io_bytes += (size_t)cqe.Information;
+          if (o->io_rem > 0u) o->io_rem--;
+        }
+      } else {
+        if (d->io_submit(d->ioring, 1u, INFINITE, NULL) < 0) {
+          d->ioring_inflight = d->ioring_inflight > r->io_rem ? (d->ioring_inflight - r->io_rem) : 0u;
+          r->io_err = 1u;
+          break;
+        }
+      }
+    }
+    r->ok = !r->io_err && r->issued == r->nch && r->io_bytes == r->len;
+    CloseHandle(r->h);
+    r->h = NULL;
+    return r->ok;
+  }
   for (uint32_t i = 0; i < r->nch; i++) {
     if (i < r->issued) {
       DWORD got = 0;
       const size_t off = (size_t)i * r->chunk, c = r->len - off < r->chunk ? r->len - off : r->chunk;
       if (!GetOverlappedResult(r->h, &r->ov[i], &got, TRUE) || got != c) r->ok = 0;
     }
-    if (r->ov[i].hEvent) CloseHandle(r->ov[i].hEvent);
+    if (r->ov[i].hEvent) {
+      if (r->pooled_ev) dc_ev_put(d, r->ov[i].hEvent);
+      else CloseHandle(r->ov[i].hEvent);
+    }
   }
   r->ok = r->ok && r->issued == r->nch;
   free(r->ov), CloseHandle(r->h);
@@ -2965,13 +4037,27 @@ static int dc_rd_wait(dc_rd *r) {
   return r->ok;
 }
 #else
-static void dc_rd_start(const dcache *d, dc_rd *r, const char *path, char *dst, size_t len) {
-  (void)d;
+static void dc_rd_start(dcache *d, dc_rd *r, const char *path, char *dst, size_t len) {
+  if (d->ioring_req) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { r->ok = 0; return; }
+    size_t got = 0u;
+    int ok = 1;
+    while (got < len) {
+      const size_t want = len - got < d->chunk ? (len - got) : d->chunk;
+      const ssize_t n = pread(fd, dst + got, want, (off_t)got);
+      if (n <= 0) { ok = 0; break; }
+      got += (size_t)n;
+    }
+    close(fd);
+    r->ok = ok && got == len;
+    return;
+  }
   FILE *fp = fopen(path, "rb");
   r->ok = fp && fread(dst, 1, len, fp) == len;
   if (fp) fclose(fp);
 }
-static int dc_rd_wait(dc_rd *r) { return r->ok; }
+static int dc_rd_wait(dcache *d, dc_rd *r) { (void)d; return r->ok; }
 #endif
 /* write len bytes (a multiple of 4096) of src to path */
 static int dc_write(const dcache *d, const char *path, const char *src, size_t len) {
@@ -3011,22 +4097,30 @@ static void dc_hit_write(const char *path, uint32_t hits) {
  * and its blocks if no other needs them. Pending and busy files stay. (Locked.) */
 static void dc_trim(dcache *d) {
   while (d->bytes > d->limit) {
+    if (d->k_ht_dirty) dc_ht_rebuild(d);
     uint8_t *need = calloc(d->n ? d->n : 1, 1);
     uint64_t *ch = dc_alloc((size_t)d->max_nb * 8);
     if (!need) ie_die("disk cache: out of memory");
     for (uint32_t i = 0; i < d->n; i++) {
       if (d->f[i].type != 'e') continue;
       const uint32_t nb = d->f[i].pos / d->block;
-      dc_chain(d, d->f[i].tok, nb, ch);
-      for (uint32_t k = 0; k < nb; k++) {
-        const int j = dc_find(d, 'k', ch[k]);
-        if (j >= 0) need[j] = 1;
+      if (nb > 0u && d->f[i].blk_hash && d->f[i].blk_nb == nb) {
+        for (uint32_t k = 0; k < nb; k++) {
+          const int j = dc_find(d, 'k', d->f[i].blk_hash[k]);
+          if (j >= 0) need[j] = 1;
+        }
+      } else {
+        dc_chain(d, d->f[i].tok, nb, ch);
+        for (uint32_t k = 0; k < nb; k++) {
+          const int j = dc_find(d, 'k', ch[k]);
+          if (j >= 0) need[j] = 1;
+        }
       }
     }
     for (uint32_t i = d->n; i-- > 0;) /* from the end: dc_remove moves the last file (one already seen) to i */
       if (d->f[i].type == 'k' && !need[i] && !d->f[i].pending && !d->f[i].busy) dc_remove(d, i);
     free(need), free(ch);
-    if (d->bytes <= d->limit) return;
+    if (d->bytes <= d->limit) break;
     int v = -1, vr = 3;
     for (uint32_t i = 0; i < d->n; i++) {
       const dc_file *f = &d->f[i];
@@ -3034,9 +4128,10 @@ static void dc_trim(dcache *d) {
       const int rank = f->type == 'x' ? 0 : f->kind == GEN_CK_PREFIX ? 3 : f->hits || ck_rank(f->kind) == 2 ? 2 : 1;
       if (v < 0 || rank < vr || (rank == vr && f->used < d->f[v].used)) v = (int)i, vr = rank;
     }
-    if (v < 0) return;
+    if (v < 0) break;
     dc_remove(d, (uint32_t)v);
   }
+  if (d->k_ht_dirty) dc_ht_rebuild(d);
 }
 
 static double dc_env(const char *name, double def) {
@@ -3047,29 +4142,79 @@ int gen_disk_open(gen_ctx *c, const char *dir, const char *sig, double limit_gb,
   backend *b = c->b;
   if (!b->snap || !b->snap_io || !b->kv_io || !b->kv_rowb || c->g->df_feat >= 0 || c->g->n_ctx > (1u << 27))
     return 0;
+  const double ram_l2_gb = dc_ram_cache_gb();
+  const int ram_only = (!dir || !dir[0]);
+  if (ram_only && ram_l2_gb <= 0.0) return 0;
   const size_t snapb = b->snap_io(b, 0, 1, NULL, 0);
   if (snapb == SIZE_MAX) return 0;
   dcache *d = calloc(1, sizeof *d);
   if (!d) ie_die("disk cache: out of memory");
   const char *eb = getenv("IE_DISK_BLOCK"), *em = getenv("IE_DISK_MIN");
   d->block = eb && atoi(eb) >= 16 ? (uint32_t)atoi(eb) : 1024u, d->min = em && atoi(em) > 0 ? (uint32_t)atoi(em) : 1024u;
-  snprintf(d->dir, sizeof d->dir, "%s", dir);
-  dc_mkdir(dir);
-  DIR *dd = opendir(dir);
-  if (!dd) {
-    fprintf(stderr, "disk cache: cannot open the directory %s: off\n", dir);
-    free(d);
-    return 0;
+  DIR *dd = NULL;
+  if (!ram_only) {
+    snprintf(d->dir, sizeof d->dir, "%s", dir);
+    dc_mkdir(dir);
+    dd = opendir(dir);
+    if (!dd) {
+      fprintf(stderr, "disk cache: cannot open the directory %s: off\n", dir);
+      free(d);
+      return 0;
+    }
   }
   d->b = b, d->rowb = b->kv_rowb, d->snapb = snapb, d->max_nb = c->g->n_ctx / d->block + 1u, d->lock = lock;
   d->f32b = b->snap_f32b <= snapb && b->snap_f32b % 512u == 0 ? b->snap_f32b : 0;
   if (d->f32b) d->snap16b = snapb - d->f32b + d->f32b / 2u + d->f32b / 128u;
   d->state16 = d->f32b && dc_env("IE_DISK_STATE16", 0) == 1.0;
-  d->ram_limit = (uint64_t)(dc_env("IE_DISK_RAM_GB", 8.0) * 1e9), d->pinned_limit = (uint64_t)(dc_env("IE_DISK_PINNED_GB", 4.0) * 1e9);
+  d->lz4_on = (uint8_t)dc_lz4_on();
+  d->ioring_req = (uint8_t)dc_ioring_on();
+  /* Compute exact KV slice layout matching gpu_kv_io() for v4 per-slice shuffle/unshuffle. */
+  {
+    uint32_t ng = 0u;
+    for (uint32_t i = 0; i < c->m->n_kvl; i++)
+      if (c->g->kv_len[i] >= c->g->n_ctx) ng++;
+    d->n_glob_slices = 2u * ng;
+    d->is_q4_glob = (uint8_t)(b->kv_fmt_tag != 0u && c->m->arch == ARCH_INKLING2 && c->m->hd == 128u);
+    d->glob_slice_rowb = d->is_q4_glob ? ((size_t)c->m->n_kv * 72u) : ((size_t)c->m->n_kv * c->m->hd * 2u);
+    const size_t main_b = (size_t)d->n_glob_slices * d->glob_slice_rowb;
+    if (d->n_glob_slices > 0u && main_b == d->rowb) {
+      d->n_ds_slices = 0u;
+      d->ds_slice_rowb = 0u;
+      d->slices_valid = 1u;
+    } else if (d->n_glob_slices > 0u && main_b < d->rowb && c->m->ds && c->m->ds->n_layer > 0u &&
+               c->m->ds->n_kv > 0u && c->m->ds->hd > 0u) {
+      const size_t drb = (size_t)c->m->ds->n_kv * c->m->ds->hd * 2u;
+      const size_t rem = d->rowb - main_b;
+      if (drb > 0u && (rem % (2u * drb)) == 0u && rem <= (size_t)c->m->ds->n_layer * 2u * drb) {
+        d->ds_slice_rowb = drb;
+        d->n_ds_slices = (uint32_t)(rem / drb);
+        d->slices_valid = 1u;
+      }
+    }
+  }
+  if (ram_l2_gb > 0.0) {
+    uint64_t req = (uint64_t)(ram_l2_gb * 1e9);
+    const uint64_t reserve = 8ull << 30;
+    const uint64_t avail = dc_os_avail_ram_bytes();
+    if (avail > 0ull) {
+      const uint64_t safe = avail > reserve ? ((avail - reserve) / 2ull) : 0ull;
+      if (req > safe) req = safe;
+    }
+    d->ram_l2_on = 1u;
+    d->ram_reserve = reserve;
+    d->ram_limit = req;
+  } else {
+    d->ram_limit = (uint64_t)(dc_env("IE_DISK_RAM_GB", 8.0) * 1e9);
+  }
+  d->pinned_limit = (uint64_t)(dc_env("IE_DISK_PINNED_GB", 4.0) * 1e9);
   d->queue_limit = (uint64_t)(fmax(0.125, fmin(4.0, dc_env("IE_DISK_QUEUE_GB", 4.0))) * DC_QUEUE_MAX / 4.0);
   d->direct = dc_env("IE_DISK_DIRECT", 1.0) != 0.0;
-  d->chunk = (size_t)(dc_env("IE_DISK_CHUNK_MB", 8.0) >= 1.0 ? dc_env("IE_DISK_CHUNK_MB", 8.0) : 8.0) << 20;
-  d->ahead = (uint32_t)(dc_env("IE_DISK_AHEAD", 4.0) >= 1.0 ? dc_env("IE_DISK_AHEAD", 4.0) : 4.0);
+  const double def_chunk_mb = d->ioring_req ? 16.0 : 8.0;
+  const double def_ahead = d->ioring_req ? 8.0 : 4.0;
+  const double cmb = dc_env("IE_DISK_CHUNK_MB", def_chunk_mb);
+  const double ah = dc_env("IE_DISK_AHEAD", def_ahead);
+  d->chunk = (size_t)(cmb >= 1.0 ? cmb : def_chunk_mb) << 20;
+  d->ahead = (uint32_t)(ah >= 1.0 ? ah : def_ahead);
   d->limit = limit_gb > 0 ? (uint64_t)(limit_gb * 1e9) : UINT64_MAX; /* 0: no limit */
   const uint64_t shape[5] = {DCACHE_VERSION, d->block, d->rowb, d->snapb, c->m->n_kvl};
   d->sig = fnv64(fnv64(0xcbf29ce484222325ull, sig, strlen(sig)), shape, sizeof shape);
@@ -3077,83 +4222,119 @@ int gen_disk_open(gen_ctx *c, const char *dir, const char *sig, double limit_gb,
     const uint64_t tag = (uint64_t)b->kv_fmt_tag;
     d->sig = fnv64(d->sig, &tag, sizeof tag);
   }
+#ifdef _WIN32
+  if (d->ioring_req) dc_ioring_init(d);
+#endif
   uint64_t other = 0;
   dc_lay Lk;
   dc_layout(d, 'k', 0, 0, &Lk);
-  struct dirent *de;
-  while ((de = readdir(dd))) {
-    const char *nm = de->d_name;
-    const size_t ln = strlen(nm);
-    char path[1200];
-    snprintf(path, sizeof path, "%s/%s", dir, nm);
-    if (ln > 8 && !strcmp(nm + ln - 8, ".iec.tmp")) { /* a write the server did not finish */
-      remove(path);
-      continue;
-    }
-    if (ln < 4 || strcmp(nm + ln - 4, ".iec")) continue;
-    struct stat sb;
-    if (stat(path, &sb)) continue;
-    uint64_t fs, fh;
-    char ft = 0;
-    dc_file *f = dc_add(d);
-    f->bytes = (uint64_t)sb.st_size, f->used = (int64_t)sb.st_mtime * 1000000;
-    d->bytes += f->bytes;
-    if (ln == 39 && sscanf(nm, "%16" SCNx64 "-%c-%16" SCNx64 ".iec", &fs, &ft, &fh) == 3 && fs == d->sig &&
-        (ft == 'e' || ft == 'k')) {
-      f->type = ft, f->hash = fh;
-      if (ft == 'k') {
-        if (f->bytes != Lk.total) dc_remove(d, d->n - 1); /* damaged */
+  if (dd) {
+    struct dirent *de;
+    while ((de = readdir(dd))) {
+      const char *nm = de->d_name;
+      const size_t ln = strlen(nm);
+      char path[1200];
+      snprintf(path, sizeof path, "%s/%s", dir, nm);
+      if (ln > 8 && !strcmp(nm + ln - 8, ".iec.tmp")) { /* a write the server did not finish */
+        remove(path);
         continue;
       }
-      /* a checkpoint: its header and tokens (matched against each prompt) */
-      FILE *fp = fopen(path, "rb");
-      dc_head h;
-      int ok = fp && fread(&h, sizeof h, 1, fp) == 1 && h.magic == 0x45435049u && h.version == DCACHE_VERSION && h.sig == d->sig &&
-               h.hash == fh && h.rowb == d->rowb && h.snapb == d->snapb && h.block == d->block && h.pos && h.pos <= c->g->n_ctx &&
-               !(h.flags & ~DC_F_STATE16) && (!(h.flags & DC_F_STATE16) || d->snap16b);
-      if (ok) {
-        dc_lay L;
-        dc_layout(d, 'e', h.pos, h.flags, &L);
-        f->tok = malloc((size_t)h.pos * 4);
-        ok = L.total == f->bytes && f->tok && fseek(fp, (long)L.tok_off, SEEK_SET) == 0 && fread(f->tok, 4, h.pos, fp) == h.pos &&
-             dc_ehash(d, f->tok, h.pos) == fh;
-        f->pos = h.pos, f->kind = h.kind, f->has_h = h.has_h, f->hits = h.hits, f->flags = h.flags;
+      if (ln < 4 || strcmp(nm + ln - 4, ".iec")) continue;
+      struct stat sb;
+      if (stat(path, &sb)) continue;
+      uint64_t fs, fh;
+      char ft = 0;
+      dc_file *f = dc_add(d);
+      f->bytes = (uint64_t)sb.st_size, f->used = (int64_t)sb.st_mtime * 1000000;
+      d->bytes += f->bytes;
+      if (ln == 39 && sscanf(nm, "%16" SCNx64 "-%c-%16" SCNx64 ".iec", &fs, &ft, &fh) == 3 && fs == d->sig &&
+          (ft == 'e' || ft == 'k')) {
+        f->type = ft, f->hash = fh;
+        if (ft == 'k') {
+          if (f->bytes == Lk.total) continue; /* valid v3 raw block (0 fopen overhead) */
+          FILE *fp = fopen(path, "rb");
+          dc_head h;
+          dc_v4_ext ext;
+          int ok = fp && fread(&h, sizeof h, 1, fp) == 1 && fread(&ext, sizeof ext, 1, fp) == 1 &&
+                   h.magic == 0x4B435049u && h.version == DCACHE_VERSION_V4 && h.sig == d->sig && h.hash == fh &&
+                   h.rowb == d->rowb && h.snapb == d->snapb && h.block == d->block &&
+                   dc_v4_validate(d, 'k', h.pos, &h, &ext, (size_t)f->bytes, NULL);
+          if (fp) fclose(fp);
+          if (!ok) dc_remove(d, d->n - 1); /* damaged */
+          continue;
+        }
+        /* a checkpoint: its header and tokens (matched against each prompt); accepts both v3 and v4 */
+        FILE *fp = fopen(path, "rb");
+        dc_head h;
+        int ok = fp && fread(&h, sizeof h, 1, fp) == 1 && h.magic == 0x45435049u &&
+                 (h.version == DCACHE_VERSION || h.version == DCACHE_VERSION_V4) && h.sig == d->sig &&
+                 h.hash == fh && h.rowb == d->rowb && h.snapb == d->snapb && h.block == d->block && h.pos && h.pos <= c->g->n_ctx &&
+                 (!(h.flags & DC_F_STATE16) || d->snap16b);
+        if (ok) {
+          dc_lay L;
+          dc_layout(d, 'e', h.pos, h.flags & DC_F_STATE16, &L);
+          if (h.version == DCACHE_VERSION) {
+            ok = !(h.flags & ~DC_F_STATE16) && L.total == f->bytes;
+          } else {
+            dc_v4_ext ext;
+            ok = fread(&ext, sizeof ext, 1, fp) == 1 && dc_v4_validate(d, 'e', h.pos, &h, &ext, (size_t)f->bytes, NULL);
+          }
+          if (ok) {
+            f->tok = malloc((size_t)h.pos * 4);
+            ok = f->tok && fseek(fp, (long)L.tok_off, SEEK_SET) == 0 && fread(f->tok, 4, h.pos, fp) == h.pos &&
+                 dc_ehash(d, f->tok, h.pos) == fh;
+            f->pos = h.pos, f->kind = h.kind, f->has_h = h.has_h, f->hits = h.hits, f->flags = h.flags;
+            if (ok) {
+              const uint32_t fnb = h.pos / d->block;
+              if (fnb > 0u) {
+                f->blk_hash = dc_alloc((size_t)fnb * 8u);
+                dc_chain(d, f->tok, fnb, f->blk_hash);
+                f->blk_nb = fnb;
+              }
+            }
+          }
+        }
+        if (fp) fclose(fp);
+        if (!ok) dc_remove(d, d->n - 1); /* damaged */
+        continue;
       }
-      if (fp) fclose(fp);
-      if (!ok) dc_remove(d, d->n - 1); /* damaged */
-      continue;
+      f->type = 'x', f->name = dc_alloc(ln + 1), other += f->bytes;
+      memcpy(f->name, nm, ln + 1);
     }
-    f->type = 'x', f->name = dc_alloc(ln + 1), other += f->bytes;
-    memcpy(f->name, nm, ln + 1);
+    closedir(dd);
   }
-  closedir(dd);
+  dc_ht_rebuild(d);
   uint32_t ne = 0, nk = 0;
   for (uint32_t i = 0; i < d->n; i++) ne += d->f[i].type == 'e', nk += d->f[i].type == 'k';
-  fprintf(stderr, "disk cache: %s: %u checkpoints and %u blocks of %u positions (%.1f GB; %.1f GB of other models), limit %.0f GB; RAM tier %.1f GB, pinned %.1f GB, %s reads%s\n",
-          dir, ne, nk, d->block, (d->bytes - other) / 1e9, other / 1e9, d->limit / 1e9, d->ram_limit / 1e9, d->pinned_limit / 1e9,
-          d->direct ? "unbuffered" : "buffered", d->state16 ? ", state as int16" : "");
+  fprintf(stderr, "disk cache: %s: %u checkpoints and %u blocks of %u positions (%.1f GB; %.1f GB of other models), limit %.0f GB; RAM tier %.1f GB%s, pinned %.1f GB, %s reads%s%s\n",
+          ram_only ? "(ram-only)" : dir, ne, nk, d->block, (d->bytes - other) / 1e9, other / 1e9, d->limit / 1e9,
+          d->ram_limit / 1e9, d->ram_l2_on ? " (L2-guarded)" : "", d->pinned_limit / 1e9,
+          d->direct ? "unbuffered" : "buffered", d->state16 ? ", state as int16" : "",
+          d->lz4_on ? ", v4-lz4" : "");
   c->dc = d;
   dc_trim(d);
-  if (dc_stream_on() && b->host_alloc && Lk.total > 0) {
-    uint32_t pre = d->ahead + 1u;
-    if (pre > 4u) pre = 4u;
+  if ((d->ioring_req || dc_stream_on()) && b->host_alloc && Lk.total > 0) {
     const size_t kcap = dc_cap(Lk.total);
-    for (uint32_t p = 0; p < pre && d->pinned + kcap <= d->pinned_limit; p++) {
+    const size_t pool_budget = d->ioring_req ? ((size_t)64u << 20) : ((size_t)4u * kcap);
+    size_t pre_bytes = 0u;
+    uint32_t pre_max = d->ioring_req ? 16u : (d->ahead + 1u > 4u ? 4u : d->ahead + 1u);
+    for (uint32_t p = 0; p < pre_max && pre_bytes + kcap <= pool_budget && d->pinned + kcap <= d->pinned_limit; p++) {
       dc_mem pm = {0};
       pm.p = b->host_alloc(b, kcap);
       if (!pm.p) break;
       pm.cap = kcap, pm.pinned = 1;
       d->pinned += kcap;
+      pre_bytes += kcap;
       dc_put_l(d, pm);
     }
   }
   return 1;
 }
 
-static void dc_queue(dc_job **head, dc_job **tail, char type, uint64_t hash, dc_mem m, uint32_t pos, int pack) {
+static void dc_queue(dc_job **head, dc_job **tail, char type, uint64_t hash, dc_mem m, uint32_t pos, int pack, int lz4) {
   dc_job *j = calloc(1, sizeof *j);
   if (!j) ie_die("disk cache: out of memory");
-  j->type = type, j->hash = hash, j->img = m, j->pos = pos, j->pack = (uint8_t)pack, j->qb = m.len;
+  j->type = type, j->hash = hash, j->img = m, j->pos = pos, j->pack = (uint8_t)pack, j->lz4 = (uint8_t)lz4, j->qb = m.len;
   if (*tail) (*tail)->next = j;
   else *head = j;
   *tail = j;
@@ -3180,11 +4361,14 @@ static uint64_t dc_stage(gen_ctx *c, uint32_t i) {
   if (!miss) ie_die("disk cache: out of memory");
   dc_chain(d, t, nb, ch);
   dc_lk(d, 1);
+  if (d->k_ht_dirty) dc_ht_rebuild(d);
   const int have = dc_find(d, 'e', eh);
   if (have >= 0) { /* the same tokens are there: it counts as used */
-    char path[1200];
-    dc_path(d, path, sizeof path, 'e', eh, NULL);
-    if (!d->f[have].pending) dc_touch(path);
+    if (d->dir[0] && !d->f[have].pending) {
+      char path[1200];
+      dc_path(d, path, sizeof path, 'e', eh, NULL);
+      dc_touch(path);
+    }
     d->f[have].used = d->f[have].rused = dc_now(d);
     dc_lk(d, 0);
     free(ch), free(miss);
@@ -3194,12 +4378,19 @@ static uint64_t dc_stage(gen_ctx *c, uint32_t i) {
     if (dc_find(d, 'k', ch[k]) < 0) {
       dc_file *f = dc_add(d);
       f->type = 'k', f->hash = ch[k], f->pending = 1, f->used = dc_now(d), miss[k] = 1;
+      dc_ht_insert(d, d->n - 1u);
     }
   const uint32_t flags = d->state16 ? DC_F_STATE16 : 0;
   dc_file *f = dc_add(d);
   f->type = 'e', f->hash = eh, f->pending = 1, f->used = dc_now(d);
   f->pos = pos, f->kind = (uint32_t)c->ck[i].kind, f->has_h = c->ck[i].h, f->flags = flags, f->tok = dc_alloc((size_t)pos * 4);
   memcpy(f->tok, t, (size_t)pos * 4);
+  if (nb > 0u) {
+    f->blk_hash = dc_alloc((size_t)nb * 8u);
+    memcpy(f->blk_hash, ch, (size_t)nb * 8u);
+    f->blk_nb = nb;
+  }
+  dc_ht_insert(d, d->n - 1u);
   dc_lk(d, 0);
   /* the copies (the GPU's rows, the snapshot), outside the lock */
   dc_job *qh = NULL, *qt = NULL;
@@ -3212,7 +4403,7 @@ static uint64_t dc_stage(gen_ctx *c, uint32_t i) {
     const dc_head h = {0x4B435049u, DCACHE_VERSION, d->sig, ch[k], (k + 1) * d->block, 0, 0, d->block, d->rowb, d->snapb, 0, 0};
     dc_fill(m.p, &h, t + (size_t)k * d->block, &Lk);
     b->kv_io(b, 1, k * d->block, d->block, m.p + Lk.rows_off);
-    dc_queue(&qh, &qt, 'k', ch[k], m, h.pos, 0);
+    dc_queue(&qh, &qt, 'k', ch[k], m, h.pos, 0, d->lz4_on);
     staged += m.len;
   }
   dc_mem m = dc_get(d, Le.total);
@@ -3220,7 +4411,7 @@ static uint64_t dc_stage(gen_ctx *c, uint32_t i) {
   dc_fill(m.p, &h, t, &Le);
   b->snap_io(b, c->ck[i].slot, 1, m.p + Le.snap_off, pos);
   b->kv_io(b, 1, nb * d->block, tail, m.p + Le.rows_off);
-  dc_queue(&qh, &qt, 'e', eh, m, pos, flags != 0);
+  dc_queue(&qh, &qt, 'e', eh, m, pos, flags != 0, d->lz4_on);
   staged += m.len;
   free(ch), free(miss);
   dc_lk(d, 1);
@@ -3244,11 +4435,18 @@ static int dc_write_one(dcache *d) {
     dc_lk(d, 0);
     if (!j) return 0;
     if (j->pack) dc_pack16(d, j);
+    if (j->lz4) dc_v4_pack_job(d, j);
+    dc_head jh;
+    memcpy(&jh, j->img.p, sizeof jh);
+    int ok = 1;
     char path[1200], tmp[1210];
-    dc_path(d, path, sizeof path, j->type, j->hash, NULL);
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    int ok = dc_write(d, tmp, j->img.p, j->img.len);
-    if (!ok || rename(tmp, path)) remove(tmp), ok = 0;
+    path[0] = '\0';
+    if (d->dir[0]) {
+      dc_path(d, path, sizeof path, j->type, j->hash, NULL);
+      snprintf(tmp, sizeof tmp, "%s.tmp", path);
+      ok = dc_write(d, tmp, j->img.p, j->img.len);
+      if (!ok || rename(tmp, path)) remove(tmp), ok = 0;
+    }
     const uint64_t sz = j->img.len;
     if (ok && j->img.pinned && d->ram_limit) { /* the tier keeps plain memory once it holds its share of the pinned buffers */
       dc_lk(d, 1);
@@ -3260,10 +4458,13 @@ static int dc_write_one(dcache *d) {
     const int i = dc_find(d, j->type, j->hash);
     if (i >= 0 && ok) {
       dc_file *f = &d->f[i];
-      f->pending = 0, f->bytes = sz, d->bytes += sz, f->used = dc_now(d);
-      if (j->type == 'e') f->hits = 0, f->flags = j->pack ? DC_F_STATE16 : 0;
-      dc_ram_adopt_l(d, f, &j->img);
-    } else if (i >= 0) dc_remove(d, (uint32_t)i);
+      f->pending = 0, f->bytes = sz, d->bytes += d->dir[0] ? sz : 0ull, f->used = dc_now(d);
+      if (j->type == 'e') f->hits = 0, f->flags = jh.flags;
+      const int adopted = dc_ram_adopt_l(d, f, &j->img);
+      if (!d->dir[0] && !adopted) dc_remove(d, (uint32_t)i); /* RAM-only mode: drop metadata if not adopted */
+    } else if (i >= 0) {
+      dc_remove(d, (uint32_t)i);
+    }
     d->qbytes -= j->qb, d->w_n += ok && j->type == 'e', d->w_bytes += ok ? sz : 0, d->inflight--;
     if (!ok) fprintf(stderr, "disk cache: cannot write %s\n", path);
     if (!d->qh && !d->inflight) {
@@ -3274,6 +4475,7 @@ static int dc_write_one(dcache *d) {
       d->w_n = 0, d->w_bytes = 0;
     }
     dc_put_l(d, j->img);
+    if (d->k_ht_dirty) dc_ht_rebuild(d);
     dc_lk(d, 0);
     free(j);
   }
@@ -3283,6 +4485,78 @@ void gen_disk_write(gen_ctx *c) {
   if (c->dc)
     while (dc_write_one(c->dc)) {}
 }
+/* Wave 15 R83 (H50): warm unwarmed .iec blocks from disk into Host-RAM Radix L2 up to max_bytes. */
+int dc_prewarm_step(gen_ctx *c, size_t max_bytes) {
+  if (!c || !c->dc) return 0;
+  dcache *d = c->dc;
+  if (d->ram_limit == 0ull || !d->dir[0]) return 0;
+  if (max_bytes == 0u) max_bytes = 16u << 20;
+  {
+    const uint64_t reserve = d->ram_reserve ? d->ram_reserve : (8ull << 30);
+    const uint64_t avail = dc_os_avail_ram_bytes();
+    if (avail > 0ull && avail <= reserve) return 0;
+  }
+  size_t warmed_bytes = 0u;
+  int did_work = 0;
+  while (warmed_bytes < max_bytes) {
+    char t_type = 0;
+    uint64_t t_hash = 0ull, t_bytes = 0ull;
+    dc_lk(d, 1);
+    if (d->k_ht_dirty) dc_ht_rebuild(d);
+    if (d->ram_bytes < d->ram_limit) {
+      const uint64_t room = d->ram_limit - d->ram_bytes;
+      /* Pick the most-recently-used 'e' checkpoint that still has unwarmed 'k' or 'e' files. */
+      int pick = -1;
+      int64_t best_used = INT64_MIN;
+      for (uint32_t i = 0; i < d->n; i++) {
+        const dc_file *ef = &d->f[i];
+        if (ef->type != 'e' || ef->pending || ef->busy || (pick >= 0 && ef->used <= best_used)) continue;
+        int cand = -1;
+        if (ef->blk_hash && ef->blk_nb > 0u) {
+          for (uint32_t k = 0; k < ef->blk_nb; k++) {
+            const int kj = dc_find(d, 'k', ef->blk_hash[k]);
+            if (kj >= 0 && !d->f[kj].img.p && !d->f[kj].pending && !d->f[kj].busy && d->f[kj].bytes <= room) {
+              cand = kj;
+              break;
+            }
+          }
+        }
+        if (cand < 0 && !ef->img.p && ef->bytes <= room) cand = (int)i;
+        if (cand >= 0) {
+          pick = cand;
+          best_used = ef->used;
+        }
+      }
+      if (pick >= 0) {
+        d->f[pick].busy = 1;
+        t_type = d->f[pick].type;
+        t_hash = d->f[pick].hash;
+        t_bytes = d->f[pick].bytes;
+      }
+    }
+    dc_lk(d, 0);
+    if (!t_type || t_bytes == 0ull) break;
+    char path[1200];
+    dc_path(d, path, sizeof path, t_type, t_hash, NULL);
+    dc_mem m = dc_get_plain((size_t)t_bytes);
+    FILE *fp = fopen(path, "rb");
+    const int ok = fp && fread(m.p, 1, (size_t)t_bytes, fp) == (size_t)t_bytes;
+    if (fp) fclose(fp);
+    int adopted = 0;
+    dc_lk(d, 1);
+    const int j = dc_find(d, t_type, t_hash);
+    if (j >= 0) {
+      d->f[j].busy = 0;
+      if (ok && !d->f[j].img.p) adopted = dc_ram_adopt_l(d, &d->f[j], &m);
+    }
+    dc_put_l(d, m);
+    dc_lk(d, 0);
+    if (!ok || !adopted) break;
+    warmed_bytes += (size_t)t_bytes;
+    did_work = 1;
+  }
+  return did_work;
+}
 static void dc_nap(void) {
 #ifdef _WIN32
   Sleep(1);
@@ -3291,7 +4565,6 @@ static void dc_nap(void) {
   nanosleep(&ts, NULL);
 #endif
 }
-
 
 /* the checkpoint on disk to continue a prompt from: the furthest one past S, at most at lim, whose tokens the prompt
  * starts with and whose blocks are all there (with need_h, one that holds the MTP h input): 1 and its hash, position,
@@ -3314,12 +4587,18 @@ static int dc_state_l(const dcache *d, uint32_t i, const uint32_t *prompt, uint6
 static int dc_scan_l(const dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, int need_h, uint64_t *ch, int *later) {
   int best = -1;
   *later = -1;
+  const uint32_t pnb = lim / d->block;
+  if (pnb > 0u) dc_chain(d, prompt, pnb, ch);
   for (uint32_t i = 0; i < d->n; i++) {
     const dc_file *f = &d->f[i];
     const uint32_t bp = best >= 0 ? d->f[best].pos : 0, lp = *later >= 0 ? d->f[*later].pos : 0;
     if (f->type != 'e' || f->pos <= S || f->pos > lim || (need_h && !f->has_h) || f->pos <= (bp > lp ? bp : lp)) continue;
+    /* R79 (H44): O(1) 8-byte block-chain radix prefilter before full token memcmp. */
+    const uint32_t fnb = f->pos / d->block;
+    if (fnb > 0u && fnb <= pnb && f->blk_hash && f->blk_nb == fnb && f->blk_hash[fnb - 1u] != ch[fnb - 1u]) continue;
     if (memcmp(f->tok, prompt, (size_t)f->pos * 4)) continue;
     const int s = dc_state_l(d, i, prompt, ch);
+    if (pnb > 0u && fnb < pnb) dc_chain(d, prompt, pnb, ch);
     if (s > 0) best = (int)i;
     else if (!s) *later = (int)i;
   }
@@ -3362,6 +4641,7 @@ static int dc_best(dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, 
   uint32_t lpos = 0;
   for (int round = 0; round < 2; round++) {
     dc_lk(d, 1);
+    if (d->k_ht_dirty) dc_ht_rebuild(d);
     best = dc_scan_l(d, prompt, lim, S, need_h, ch, &later);
     if (!round && sys_end) {
       uint32_t matched = best >= 0 ? d->f[best].pos : S;
@@ -3389,6 +4669,7 @@ static void dc_drop(dcache *d, uint64_t eh) {
   dc_lk(d, 1);
   const int i = dc_find(d, 'e', eh);
   if (i >= 0 && !d->f[i].pending) dc_remove(d, (uint32_t)i);
+  if (d->k_ht_dirty) dc_ht_rebuild(d);
   dc_lk(d, 0);
 }
 
@@ -3405,21 +4686,22 @@ static void dc_issue(dcache *d, dc_item *it) {
   if (it->issued) return;
   it->issued = 1;
   if (it->ram) return;
+  if (!d->dir[0]) { it->rd.ok = 0; return; }
   char path[1200];
   dc_path(d, path, sizeof path, it->type, it->hash, NULL);
   const int plain_e = (it->type == 'e') && d->b->snap_in_ram && dc_stream_on();
   it->m = plain_e ? dc_get_plain(it->bytes) : dc_get(d, it->bytes);
   dc_rd_start(d, &it->rd, path, it->m.p, it->bytes);
 }
-static int dc_item_wait(dc_item *it) {
+static int dc_item_wait(dcache *d, dc_item *it) {
   if (it->ram) return 1;
-  if (!it->waited) it->waited = 1, it->ok = dc_rd_wait(&it->rd);
+  if (!it->waited) it->waited = 1, it->ok = dc_rd_wait(d, &it->rd);
   return it->ok;
 }
 /* done with the image: the RAM tier takes it (adopt) or it goes back to the pool (a failed read first waits) */
 static void dc_item_release(dcache *d, dc_item *it, int adopt) {
   if (it->ram || !it->issued || !it->m.p) return;
-  dc_item_wait(it);
+  dc_item_wait(d, it);
   if (adopt && it->ok) {
     dc_lk(d, 1);
     const int j = dc_find(d, it->type, it->hash);
@@ -3429,13 +4711,73 @@ static void dc_item_release(dcache *d, dc_item *it, int adopt) {
   dc_put(d, it->m);
   memset(&it->m, 0, sizeof it->m);
 }
-/* the header of a file image is that of the file wanted */
+/* the header of a file image is that of the file wanted (accepts both v3 raw and v4 LZ4-shuf) */
 static int dc_head_ok(const dcache *d, const dc_mem *m, char type, uint64_t hash) {
   if (m->len < DC_ALIGN) return 0;
   const dc_head *h = (const dc_head *)m->p;
-  return h->magic == (type == 'e' ? 0x45435049u : 0x4B435049u) && h->version == DCACHE_VERSION && h->sig == d->sig &&
-         h->hash == hash && h->rowb == d->rowb && h->snapb == d->snapb && h->block == d->block && !(h->flags & ~DC_F_STATE16) &&
-         (!(h->flags & DC_F_STATE16) || d->snap16b);
+  if (h->magic != (type == 'e' ? 0x45435049u : 0x4B435049u) || h->sig != d->sig || h->hash != hash ||
+      h->rowb != d->rowb || h->snapb != d->snapb || h->block != d->block)
+    return 0;
+  if ((h->flags & DC_F_STATE16) && !d->snap16b) return 0;
+  if (h->version == DCACHE_VERSION) return !(h->flags & ~DC_F_STATE16);
+  if (h->version == DCACHE_VERSION_V4) return (h->flags & DC_F_LZ4_SHUF) && !(h->flags & ~DC_F_VALID_MASK);
+  return 0;
+}
+/* Push n_rows of a validated v3 or v4 image into GPU KV cache at p0.
+ * When use_async != 0, returns any staging buffer in *out_tmp (kept alive by caller until kv_io_sync)
+ * and sets *out_holds_item = 1 if src image t->m itself is being read asynchronously by GPU DMA. */
+static int dc_push_rows(dcache *d, backend *b, const dc_mem *img, char type, uint32_t pos_hdr, uint32_t p0, uint32_t n_rows,
+                        size_t raw_rows_off, int use_async, int layer_pipe, dc_mem *out_tmp, int *out_holds_item,
+                        int *any_async) {
+  memset(out_tmp, 0, sizeof *out_tmp);
+  *out_holds_item = 0;
+  if (n_rows == 0u) return 1;
+  dc_head h;
+  memcpy(&h, img->p, sizeof h);
+  if (h.version == DCACHE_VERSION_V4) {
+    dc_v4_ext ext;
+    memcpy(&ext, img->p + sizeof h, sizeof ext);
+    size_t rows_off_v4 = 0u;
+    if (!dc_v4_validate(d, type, pos_hdr, &h, &ext, img->len, &rows_off_v4)) return 0;
+    const size_t rows_len = (size_t)n_rows * d->rowb;
+    dc_mem shuf = dc_get(d, rows_len);
+    int is_shuf = 0;
+    if (dc_v4_unpack_rows(d, &ext, img->p + rows_off_v4, n_rows, shuf.p, &is_shuf) != 0) {
+      dc_put(d, shuf);
+      return 0;
+    }
+    if (is_shuf && b->kv_io_unshuf && ext.rows_fmt <= 1u &&
+        b->kv_io_unshuf(b, p0, n_rows, shuf.p, ext.rows_fmt, use_async ? 1 : 0)) {
+      if (use_async) { *out_tmp = shuf; *any_async = 1; }
+      else dc_put(d, shuf);
+      return 1;
+    }
+    dc_mem send_m = shuf;
+    if (is_shuf) {
+      dc_mem raw = dc_get(d, rows_len);
+      dc_v4_cpu_unshuf_rows(d, ext.rows_fmt, shuf.p, raw.p, n_rows);
+      dc_put(d, shuf);
+      send_m = raw;
+    }
+    if (use_async && b->kv_io_async) {
+      b->kv_io_async(b, 0, p0, n_rows, send_m.p, layer_pipe);
+      *out_tmp = send_m;
+      *any_async = 1;
+    } else {
+      b->kv_io(b, 0, p0, n_rows, send_m.p);
+      dc_put(d, send_m);
+    }
+    return 1;
+  }
+  /* Legacy DCACHE_VERSION 3 raw path. */
+  if (use_async && b->kv_io_async) {
+    b->kv_io_async(b, 0, p0, n_rows, img->p + raw_rows_off, layer_pipe);
+    *out_holds_item = 1;
+    *any_async = 1;
+  } else {
+    b->kv_io(b, 0, p0, n_rows, img->p + raw_rows_off);
+  }
+  return 1;
 }
 /* read checkpoint eh (at pos) into snapshot slot and the KV rows before it: 0, or -1 (nothing changed) or -2 (the KV
  * rows were partly overwritten) if a file is missing or damaged */
@@ -3452,6 +4794,7 @@ static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt
   uint32_t nbusy = 0, from_ram = 0;
   uint64_t read_bytes = 0;
   dc_lk(d, 1); /* in use now: the last to be deleted, and not deleted while they are read */
+  if (d->k_ht_dirty) dc_ht_rebuild(d);
   const int64_t now = dc_now(d);
   for (uint32_t x = 0; x <= nb && !r; x++) {
     dc_item *t = &it[x];
@@ -3471,9 +4814,28 @@ static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt
   dc_layout(d, 'k', 0, 0, &Lk);
   dc_head hd = {0};
   uint32_t hits = 0;
+  const int use_async = dc_h2d_pipe_on() && b->kv_io_async != NULL && b->kv_io_sync != NULL;
+#define DC_HOLD_MAX 6u
+  dc_item *hold_it[DC_HOLD_MAX];
+  int hold_adopt[DC_HOLD_MAX];
+  dc_mem hold_tmp[DC_HOLD_MAX];
+  uint32_t hold_n = 0u;
+  int any_async = 0;
+#define DC_HOLD_DRAIN()                                                             \
+  do {                                                                              \
+    if (any_async && b->kv_io_sync) {                                               \
+      b->kv_io_sync(b);                                                             \
+      any_async = 0;                                                                \
+    }                                                                               \
+    for (uint32_t hi_ = 0u; hi_ < hold_n; hi_++) {                                  \
+      if (hold_tmp[hi_].p) dc_put(d, hold_tmp[hi_]);                                \
+      if (hold_it[hi_]) dc_item_release(d, hold_it[hi_], hold_adopt[hi_]);          \
+    }                                                                               \
+    hold_n = 0u;                                                                    \
+  } while (0)
   if (!r) {
     const int stream = dc_stream_on();
-    if (stream && pos) b->kv_io(b, 0, pos, 0, NULL); /* pre-map VMM once before overlapped reads/H2D */
+    if ((stream || use_async) && pos) b->kv_io(b, 0, pos, 0, NULL); /* pre-map VMM once before overlapped reads/H2D */
     if (stream) {
       /* Issue k[0..ahead-1] and e in parallel; stream k blocks to GPU WHILE large e finishes reading from NVMe! */
       for (uint32_t x = 1; x <= nb && x <= d->ahead; x++) dc_issue(d, &it[x]);
@@ -3481,39 +4843,101 @@ static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt
       for (uint32_t k = 0; k < nb && !r; k++) {
         dc_item *t = &it[1 + k];
         dc_issue(d, t);
-        const int ok = dc_item_wait(t) && dc_head_ok(d, &t->m, 'k', ch[k]) && t->m.len == Lk.total &&
-                       !memcmp(t->m.p + Lk.tok_off, prompt + (size_t)k * d->block, (size_t)d->block * 4);
+        int ok = dc_item_wait(d, t) && dc_head_ok(d, &t->m, 'k', ch[k]) &&
+                 t->m.len >= Lk.tok_off + Lk.tok_len &&
+                 !memcmp(t->m.p + Lk.tok_off, prompt + (size_t)k * d->block, (size_t)d->block * 4);
+        if (ok) {
+          dc_head hk;
+          memcpy(&hk, t->m.p, sizeof hk);
+          if (hk.version == DCACHE_VERSION && t->m.len != Lk.total) ok = 0;
+          if (ok) {
+            if (hold_n == DC_HOLD_MAX) DC_HOLD_DRAIN();
+            dc_mem tmp_m = {0};
+            int holds_it = 0;
+            ok = dc_push_rows(d, b, &t->m, 'k', hk.pos, k * d->block, d->block, Lk.rows_off, use_async, 0, &tmp_m,
+                              &holds_it, &any_async);
+            if (ok && (tmp_m.p || (holds_it && !t->ram))) {
+              hold_tmp[hold_n] = tmp_m;
+              hold_it[hold_n] = (holds_it && !t->ram) ? t : NULL;
+              hold_adopt[hold_n] = ok;
+              hold_n++;
+              if (!holds_it) dc_item_release(d, t, ok);
+            } else {
+              if (tmp_m.p) dc_put(d, tmp_m);
+              dc_item_release(d, t, ok);
+            }
+          } else {
+            dc_item_release(d, t, 0);
+          }
+        } else {
+          dc_item_release(d, t, 0);
+        }
         if (!ok) r = k ? -2 : -1;
-        else b->kv_io(b, 0, k * d->block, d->block, t->m.p + Lk.rows_off);
-        dc_item_release(d, t, ok);
         if (k + 1 + d->ahead <= nb) dc_issue(d, &it[k + 1 + d->ahead]);
       }
       if (!r) {
         dc_item *e = &it[0];
-        if (!dc_item_wait(e) || !dc_head_ok(d, &e->m, 'e', eh)) r = nb ? -2 : -1;
+        if (!dc_item_wait(d, e) || !dc_head_ok(d, &e->m, 'e', eh)) r = nb ? -2 : -1;
         else {
           memcpy(&hd, e->m.p, sizeof hd);
-          dc_layout(d, 'e', pos, hd.flags, &Le);
-          if (hd.pos != pos || e->m.len != Le.total) r = nb ? -2 : -1;
+          dc_layout(d, 'e', pos, hd.flags & DC_F_STATE16, &Le);
+          if (hd.pos != pos) r = nb ? -2 : -1;
+          else if (hd.version == DCACHE_VERSION && e->m.len != Le.total) r = nb ? -2 : -1;
+          else if (hd.version == DCACHE_VERSION_V4) {
+            dc_v4_ext ee;
+            memcpy(&ee, e->m.p + sizeof hd, sizeof ee);
+            if (!dc_v4_validate(d, 'e', pos, &hd, &ee, e->m.len, NULL)) r = nb ? -2 : -1;
+          }
         }
       }
     } else {
       for (uint32_t x = 0; x <= nb && x <= d->ahead; x++) dc_issue(d, &it[x]); /* the checkpoint, then the first blocks */
       dc_item *e = &it[0];
-      if (!dc_item_wait(e) || !dc_head_ok(d, &e->m, 'e', eh)) r = -1;
+      if (!dc_item_wait(d, e) || !dc_head_ok(d, &e->m, 'e', eh)) r = -1;
       else {
         memcpy(&hd, e->m.p, sizeof hd);
-        dc_layout(d, 'e', pos, hd.flags, &Le);
-        if (hd.pos != pos || e->m.len != Le.total) r = -1;
+        dc_layout(d, 'e', pos, hd.flags & DC_F_STATE16, &Le);
+        if (hd.pos != pos) r = -1;
+        else if (hd.version == DCACHE_VERSION && e->m.len != Le.total) r = -1;
+        else if (hd.version == DCACHE_VERSION_V4) {
+          dc_v4_ext ee;
+          memcpy(&ee, e->m.p + sizeof hd, sizeof ee);
+          if (!dc_v4_validate(d, 'e', pos, &hd, &ee, e->m.len, NULL)) r = -1;
+        }
       }
       for (uint32_t k = 0; k < nb && !r; k++) {
         dc_item *t = &it[1 + k];
         dc_issue(d, t);
-        const int ok = dc_item_wait(t) && dc_head_ok(d, &t->m, 'k', ch[k]) && t->m.len == Lk.total &&
-                       !memcmp(t->m.p + Lk.tok_off, prompt + (size_t)k * d->block, (size_t)d->block * 4);
+        int ok = dc_item_wait(d, t) && dc_head_ok(d, &t->m, 'k', ch[k]) &&
+                 t->m.len >= Lk.tok_off + Lk.tok_len &&
+                 !memcmp(t->m.p + Lk.tok_off, prompt + (size_t)k * d->block, (size_t)d->block * 4);
+        if (ok) {
+          dc_head hk;
+          memcpy(&hk, t->m.p, sizeof hk);
+          if (hk.version == DCACHE_VERSION && t->m.len != Lk.total) ok = 0;
+          if (ok) {
+            if (hold_n == DC_HOLD_MAX) DC_HOLD_DRAIN();
+            dc_mem tmp_m = {0};
+            int holds_it = 0;
+            ok = dc_push_rows(d, b, &t->m, 'k', hk.pos, k * d->block, d->block, Lk.rows_off, use_async, 0, &tmp_m,
+                              &holds_it, &any_async);
+            if (ok && (tmp_m.p || (holds_it && !t->ram))) {
+              hold_tmp[hold_n] = tmp_m;
+              hold_it[hold_n] = (holds_it && !t->ram) ? t : NULL;
+              hold_adopt[hold_n] = ok;
+              hold_n++;
+              if (!holds_it) dc_item_release(d, t, ok);
+            } else {
+              if (tmp_m.p) dc_put(d, tmp_m);
+              dc_item_release(d, t, ok);
+            }
+          } else {
+            dc_item_release(d, t, 0);
+          }
+        } else {
+          dc_item_release(d, t, 0);
+        }
         if (!ok) r = k ? -2 : -1;
-        else b->kv_io(b, 0, k * d->block, d->block, t->m.p + Lk.rows_off);
-        dc_item_release(d, t, ok);
         if (k + 1 + d->ahead <= nb) dc_issue(d, &it[k + 1 + d->ahead]);
       }
     }
@@ -3521,22 +4945,74 @@ static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt
   if (!r) {
     const dc_item *e = &it[0];
     if (tail > 0) {
-      if (!e->m.pinned && dc_stream_on() && d->b->host_alloc && Le.rows_len <= Lk.total) {
+      if (hd.version == DCACHE_VERSION_V4) {
+        if (hold_n == DC_HOLD_MAX) DC_HOLD_DRAIN();
+        dc_mem tmp_m = {0};
+        int holds_it = 0;
+        if (!dc_push_rows(d, b, &e->m, 'e', pos, nb * d->block, tail, Le.rows_off, use_async, 1, &tmp_m, &holds_it,
+                          &any_async)) {
+          r = nb ? -2 : -1;
+        } else if (tmp_m.p) {
+          hold_tmp[hold_n] = tmp_m;
+          hold_it[hold_n] = NULL;
+          hold_adopt[hold_n] = 1;
+          hold_n++;
+        }
+      } else if (!e->m.pinned && dc_stream_on() && d->b->host_alloc && Le.rows_len <= Lk.total) {
         dc_mem tm = dc_get(d, Lk.total); /* hits pre-warmed k-block pinned pool (0 hipHostMalloc!) */
         memcpy(tm.p, e->m.p + Le.rows_off, Le.rows_len);
-        b->kv_io(b, 0, nb * d->block, tail, tm.p);
-        dc_put(d, tm);
+        if (use_async) {
+          if (hold_n == DC_HOLD_MAX) DC_HOLD_DRAIN();
+          b->kv_io_async(b, 0, nb * d->block, tail, tm.p, 1);
+          any_async = 1;
+          hold_tmp[hold_n] = tm;
+          hold_it[hold_n] = NULL;
+          hold_adopt[hold_n] = 1;
+          hold_n++;
+        } else {
+          b->kv_io(b, 0, nb * d->block, tail, tm.p);
+          dc_put(d, tm);
+        }
+      } else if (use_async) {
+        b->kv_io_async(b, 0, nb * d->block, tail, e->m.p + Le.rows_off, 1);
+        any_async = 1;
       } else {
         b->kv_io(b, 0, nb * d->block, tail, e->m.p + Le.rows_off);
       }
     }
-    if (hd.flags & DC_F_STATE16) {
-      dc_mem tmp = d->b->snap_in_ram && dc_stream_on() ? dc_get_plain(d->snapb) : dc_get(d, d->snapb);
-      dc_unpack16(d, e->m.p + Le.snap_off, tmp.p);
-      b->snap_io(b, slot, 0, tmp.p, pos);
-      dc_put(d, tmp);
-    } else b->snap_io(b, slot, 0, e->m.p + Le.snap_off, pos);
+    if (!r && hd.version == DCACHE_VERSION_V4) {
+      dc_v4_ext ee;
+      memcpy(&ee, e->m.p + sizeof hd, sizeof ee);
+      if (Le.snap_len > 0u) {
+        dc_mem snp = d->b->snap_in_ram ? dc_get_plain(Le.snap_len) : dc_get(d, Le.snap_len);
+        if (dc_v4_unpack_snap(&ee, e->m.p + Le.snap_off, Le.snap_len, snp.p) != 0) {
+          r = nb ? -2 : -1;
+        } else if (hd.flags & DC_F_STATE16) {
+          dc_mem tmp = d->b->snap_in_ram ? dc_get_plain(d->snapb) : dc_get(d, d->snapb);
+          dc_unpack16(d, snp.p, tmp.p);
+          b->snap_io(b, slot, 0, tmp.p, pos);
+          dc_put(d, tmp);
+        } else {
+          b->snap_io(b, slot, 0, snp.p, pos);
+        }
+        dc_put(d, snp);
+      } else {
+        b->snap_io(b, slot, 0, e->m.p + Le.snap_off, pos);
+      }
+    } else if (!r) {
+      if (hd.flags & DC_F_STATE16) {
+        dc_mem tmp = d->b->snap_in_ram && dc_stream_on() ? dc_get_plain(d->snapb) : dc_get(d, d->snapb);
+        dc_unpack16(d, e->m.p + Le.snap_off, tmp.p);
+        b->snap_io(b, slot, 0, tmp.p, pos);
+        dc_put(d, tmp);
+      } else {
+        b->snap_io(b, slot, 0, e->m.p + Le.snap_off, pos);
+      }
+    }
   }
+  DC_HOLD_DRAIN(); /* ensure every async DMA completes before releasing any host buffer */
+#undef DC_HOLD_DRAIN
+#undef DC_HOLD_MAX
   for (uint32_t x = 0; x <= nb; x++) dc_item_release(d, &it[x], !r); /* reads still in flight are waited for */
   dc_lk(d, 1);
   for (uint32_t x = 0; x < nbusy; x++) {
@@ -3549,10 +5025,12 @@ static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt
   }
   dc_lk(d, 0);
   if (!r) {
-    char path[1200];
-    dc_path(d, path, sizeof path, 'e', eh, NULL);
-    dc_hit_write(path, hits);
-    dc_touch(path);
+    if (d->dir[0]) {
+      char path[1200];
+      dc_path(d, path, sizeof path, 'e', eh, NULL);
+      dc_hit_write(path, hits);
+      dc_touch(path);
+    }
     fprintf(stderr, "disk cache: %u of %u files from RAM, %.0f MB from the disk, %.0f ms\n", from_ram, nb + 1, read_bytes / 1e6, now_ms() - t0);
   }
   free(ch), free(it);
@@ -3676,7 +5154,7 @@ static int dp_continues(const gen_ctx *c, uint32_t L) {
  * the last 16 in policy-splits.txt in the disk cache directory, so a fresh system prompt gets checkpoints there. */
 #define DP_FILE "policy-splits.txt"
 static void dp_learn_load(gen_ctx *c) {
-  if (c->pol_loaded || !c->dc) return;
+  if (c->pol_loaded || !c->dc || !c->dc->dir[0]) return;
   c->pol_loaded = 1;
   char path[1100];
   snprintf(path, sizeof path, "%s/" DP_FILE, c->dc->dir);
@@ -3697,6 +5175,7 @@ static void dp_learn_add(gen_ctx *c, uint32_t dist) {
     if (!near_pos(c->pol_dist[i], dist, 32u)) c->pol_dist[w++] = c->pol_dist[i];
   if (w == 16) memmove(c->pol_dist, c->pol_dist + 1, 15 * sizeof c->pol_dist[0]), w--;
   c->pol_dist[w++] = dist, c->pol_n = w;
+  if (!c->dc->dir[0]) return;
   char path[1100];
   snprintf(path, sizeof path, "%s/" DP_FILE, c->dc->dir);
   FILE *fp = fopen(path, "w");
@@ -3836,6 +5315,12 @@ static int defer_ck_emit(void *vctx, const uint32_t *toks, uint32_t n) {
   return stop;
 }
 
+/* Wave 15 R79 (H44b): GPU-local ephemeral KV stash/restore (promoted default ON; =0 opts out to host RAM + kv_io). */
+static int ie_ephem_fast_on(void) {
+  const char *e = getenv("IE_EPHEM_FAST");
+  return !(e && e[0] == '0');
+}
+
 void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_params *p, gen_stats *st) {
   backend *b = c->b;
   const graph *g = c->g;
@@ -3874,7 +5359,7 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
   /* Ephemeral side-request cache immunity (Inkling-2, IE_EPHEMERAL_CACHE=0 off): when a short divergent request
    * arrives while a long conversation (>= 2048 tokens) is cached, stash ONLY the overwritten global KV prefix
    * [0 .. stash_n) in host RAM (36 KiB/pos, 0 extra VRAM) and restore it afterward so the long prefix survives. */
-  int ephem = 0;
+  int ephem = 0, ephem_gpu = 0;
   uint32_t stash_n = 0;
   void *stash_buf = NULL;
   double stash_ms = 0.0;
@@ -3895,13 +5380,24 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
       stash_n = req_max < (uint64_t)ephem_cap ? (uint32_t)req_max : ephem_cap;
       if (stash_n > c->kv_n) stash_n = c->kv_n;
       if (stash_n > 0u) {
-        stash_buf = malloc((size_t)stash_n * b->kv_rowb);
-        if (stash_buf) {
+        if (ie_ephem_fast_on() && b->kv_ephem_copy) {
           const double ts = now_ms();
-          b->kv_io(b, 1, 0, stash_n, stash_buf);
-          stash_ms = now_ms() - ts;
-          ephem = 1;
-          st->common = L;
+          if (b->kv_ephem_copy(b, 1, stash_n)) {
+            stash_ms = now_ms() - ts;
+            ephem = 1;
+            ephem_gpu = 1;
+            st->common = L;
+          }
+        }
+        if (!ephem) {
+          stash_buf = malloc((size_t)stash_n * b->kv_rowb);
+          if (stash_buf) {
+            const double ts = now_ms();
+            b->kv_io(b, 1, 0, stash_n, stash_buf);
+            stash_ms = now_ms() - ts;
+            ephem = 1;
+            st->common = L;
+          }
         }
       }
     }
@@ -4067,11 +5563,29 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
     uint32_t *out = malloc((size_t)total * 4);
     if (!out) ie_die("gen_run: out of memory");
     memcpy(out, prompt, (size_t)n_prompt * 4);
+    /* R71 (H29): Persistent 2-tier 256K prompt-suffix SAM (promoted default 1; <= 21.75 MiB RAM, 0 B VRAM) */
+    static int g_psam_env = -1;
+    if (g_psam_env < 0) {
+      const char *pse = getenv("IE_SAM_PERSIST");
+      g_psam_env = !(pse && pse[0] == '0');
+    }
+    if (g_psam_env && c->m->arch == ARCH_INKLING2 && !ephem) {
+      if (!c->sam_p) c->sam_p = psam_create();
+      if (c->sam_p) {
+        const double ts_sam = now_ms();
+        psam_sync_prompt(c->sam_p, prompt, n_prompt, L);
+        if (getenv("IE_SAM_DEBUG"))
+          fprintf(stderr, "sam_persist: synced %u prompt tokens (common=%u) in %.3f ms\n",
+                  n_prompt, L, now_ms() - ts_sam);
+        g_sam_p_cur = c->sam_p;
+      }
+    }
     uint32_t done = 0, hr = 0;
     const uint32_t n = spec_generate(b, c->m, g, out, n_prompt, total, p->draft, -1, 0, first, hrow, sp, V, &st->gen_ms,
                                      &st->steps, &st->acc, p->pmin, &st->drafted,
                                      dck.pending ? defer_ck_emit : p->emit, dck.pending ? (void *)&dck : p->ctx,
                                      p->stops, p->n_stops, &done, &hr);
+    g_sam_p_cur = NULL;
     if (dck.pending) {
       dck.pending = 0;
       ck_save(c, dck.ck_pos, GEN_CK_PROMPT, dck.ck_hbuf);
@@ -4083,9 +5597,11 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
       uint32_t max_w = (done > n_prompt ? done : n_prompt) + spec_room(p->draft) + 2u;
       if (max_w <= stash_n) {
         const double tr = now_ms();
-        b->kv_io(b, 0, 0, stash_n, stash_buf);
-        fprintf(stderr, "cache: ephemeral side request (%u+%u tok) preserved %u-token prefix (%u ckpts, %u rows in %.1f ms)\n",
-                n_prompt, st->n_out, c->kv_n, c->n_ck, stash_n, stash_ms + (now_ms() - tr));
+        if (ephem_gpu && b->kv_ephem_copy) b->kv_ephem_copy(b, 0, stash_n);
+        else b->kv_io(b, 0, 0, stash_n, stash_buf);
+        fprintf(stderr, "cache: ephemeral side request (%u+%u tok) preserved %u-token prefix (%u ckpts, %u rows in %.1f ms%s)\n",
+                n_prompt, st->n_out, c->kv_n, c->n_ck, stash_n, stash_ms + (now_ms() - tr),
+                ephem_gpu ? ", gpu-stash" : "");
       } else {
         c->n_ck = 0, c->kv_n = 0;
         if (done > n_prompt) {
@@ -4149,9 +5665,11 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
     uint32_t max_w = n_prompt + st->n_out + 2u;
     if (max_w <= stash_n) {
       const double tr = now_ms();
-      b->kv_io(b, 0, 0, stash_n, stash_buf);
-      fprintf(stderr, "cache: ephemeral side request (%u+%u tok) preserved %u-token prefix (%u ckpts, %u rows in %.1f ms)\n",
-              n_prompt, st->n_out, c->kv_n, c->n_ck, stash_n, stash_ms + (now_ms() - tr));
+      if (ephem_gpu && b->kv_ephem_copy) b->kv_ephem_copy(b, 0, stash_n);
+      else b->kv_io(b, 0, 0, stash_n, stash_buf);
+      fprintf(stderr, "cache: ephemeral side request (%u+%u tok) preserved %u-token prefix (%u ckpts, %u rows in %.1f ms%s)\n",
+              n_prompt, st->n_out, c->kv_n, c->n_ck, stash_n, stash_ms + (now_ms() - tr),
+              ephem_gpu ? ", gpu-stash" : "");
     } else {
       c->n_ck = 0, c->kv_n = 0;
     }

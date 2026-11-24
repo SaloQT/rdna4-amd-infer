@@ -145,9 +145,18 @@ int main(int argc, char **argv) {
       model_make_ds_head(&m, &g);
     }
   }
-  uint32_t need = n_prompt + (uint32_t)n_gen + spec_room(draft);
+  uint32_t synth_pos = 0u;
+  {
+    const char *spe = getenv("IE_KV_SYNTH_POS");
+    if (spe && *spe && atol(spe) > 0) {
+      if (m.arch != ARCH_INKLING2 || strcmp(be, "gpu") != 0)
+        ie_die("IE_KV_SYNTH_POS is only supported for inkling2 on GPU");
+      synth_pos = (uint32_t)strtoul(spe, NULL, 10);
+    }
+  }
+  uint32_t need = synth_pos + n_prompt + (uint32_t)n_gen + spec_room(draft);
   if (n_ctx == 0) n_ctx = need;
-  if (n_ctx < need) ie_die("--ctx %u is smaller than prompt + n = %u", n_ctx, need);
+  if (n_ctx < need) ie_die("--ctx %u is smaller than synth_pos + prompt + n = %u", n_ctx, need);
   fprintf(stderr, "model: %s, %u layers, dim %u, ffn %u, heads %u/%u (hd %u), vocab %u, rope %s, weights %.2f MB\n",
           m.arch == ARCH_INKLING2 ? "inkling2" : m.arch == ARCH_FLINT ? "flint" : m.arch == ARCH_QWEN35 ? "qwen35" : m.arch == ARCH_QWEN2 ? "qwen2" : "llama", m.n_layer, m.dim,
           m.ffn, m.n_head, m.n_kv, m.hd, m.vocab, m.rope == ROPE_NEOX ? "neox" : "norm", m.weight_bytes / 1e6);
@@ -175,13 +184,16 @@ int main(int argc, char **argv) {
   if (!strcmp(be, "cpu")) b = cpu_open(&m, &gr);
   else if (!strcmp(be, "gpu")) b = gpu_open(&m, &gr, hsaco);
   else usage();
+  if (synth_pos && b->synth_kv_seed) b->synth_kv_seed(b, synth_pos);
 
   FILE *df = dump ? fopen(dump, "w") : NULL;
   if (dump && !df) ie_die("cannot write %s", dump);
   float *logits = malloc(m.vocab * 4);
   int64_t eos_v = -1;
   if (!gguf_get_int(&g, "tokenizer.ggml.eos_token_id", &eos_v)) eos_v = -1;
-  uint32_t total = n_prompt + (uint32_t)n_gen, tok = prompt[0], *out = malloc(total * 4);
+  const uint32_t n_prompt_eff = synth_pos + n_prompt;
+  uint32_t total = n_prompt_eff + (uint32_t)n_gen, tok = prompt[0], *out = malloc((size_t)total * 4);
+  for (uint32_t i = 0; i < synth_pos; i++) out[i] = 0xFFFFFFFFu;
   double ms_sum = 0, ms_gen = 0, nll = 0;
   uint32_t n_nll = 0;
   uint32_t n_timed = 0;
@@ -208,7 +220,7 @@ int main(int argc, char **argv) {
       if (memcmp(h, khd, sizeof h)) ie_die("--kld: %s is of another prompt, vocab or --ppl-first", kld_base);
     }
     const double t0 = now_ms();
-    uint32_t first = prefill(b, &gr, m.vocab, prompt, n_prompt, chunk, draft > 0, &pa, &hrow);
+    uint32_t first = prefill_at(b, &gr, m.vocab, prompt, n_prompt, synth_pos, chunk, draft > 0, &pa, &hrow);
     if (pa.ksave) fclose(pa.ksave);
     if (pa.kbase) {
       fclose(pa.kbase);
@@ -245,16 +257,16 @@ int main(int argc, char **argv) {
     fprintf(stderr, "prefill: %u tokens in %.1f ms, %.1f tokens/s (chunks of up to %u)\n", n_prompt, pms,
             1e3 * n_prompt / pms, chunk);
     nll = pa.nll, n_nll = pa.n;
-    memcpy(out, prompt, n_prompt * 4);
-    start = n_prompt, tok = first;
-    if (stop && n_prompt < total && (int64_t)first == eos_v) out[n_prompt] = first, total = n_prompt + 1, start = total;
+    memcpy(out + synth_pos, prompt, n_prompt * 4);
+    start = n_prompt_eff, tok = first;
+    if (stop && n_prompt_eff < total && (int64_t)first == eos_v) out[n_prompt_eff] = first, total = n_prompt_eff + 1, start = total;
   }
   if (draft && start < total) {
     double gms = 0;
     uint32_t steps = 0, acc = 0, drafted = 0;
-    total = spec_generate(b, &m, &gr, out, n_prompt, total, draft, eos_v, stop, tok, hrow, &sp, m.vocab, &gms, &steps, &acc,
+    total = spec_generate(b, &m, &gr, out, n_prompt_eff, total, draft, eos_v, stop, tok, hrow, &sp, m.vocab, &gms, &steps, &acc,
                           pmin, &drafted, NULL, NULL, stop ? &eos_v : NULL, stop ? 1u : 0u, NULL, NULL);
-    const uint32_t gen = total - n_prompt - 1; /* the tokens after the first */
+    const uint32_t gen = total - n_prompt_eff - 1; /* the tokens after the first */
     fprintf(stderr, "mtp: %u steps, %u drafts accepted of %u (%.1f%%), %.2f tokens per step\n", steps, acc, drafted,
             drafted ? 100.0 * acc / drafted : 0.0, steps ? (double)gen / steps : 0.0);
     if (gen) fprintf(stderr, "gpu: %u tokens in %.1f ms, %.3f ms/token, %.1f tokens/s (speculative, %u drafts)\n", gen, gms,
@@ -268,18 +280,18 @@ int main(int argc, char **argv) {
     if (pos + 1 == total) break; /* the last token needs no step */
     const int gk = temp > 0.0f && !df && !ppl && b->topk && sample_k(&sp, m.vocab) <= 64u && !getenv("IE_HOST_TOPK");
     uint32_t next = b->step(b, tok, pos, (df || ppl || (temp > 0.0f && !gk)) ? logits : NULL, &ms);
-    if (temp > 0.0f && pos + 1 >= n_prompt) {
+    if (temp > 0.0f && pos + 1 >= n_prompt_eff) {
       if (gk && gpu_cands(&sp, b, &gr, 0, 1, m.vocab, sp.cv, sp.ci)) next = sample_cands(&sp, sp.cv, sp.ci, sample_k(&sp, m.vocab));
       else {
         if (gk) b->read_rows(b, gr.logits, 0, 1, logits);
         next = sample(&sp, logits, m.vocab);
       }
     }
-    if (ppl && pos >= ppl_first && pos + 1 < n_prompt) { /* -log p(prompt[pos + 1]) */
+    if (ppl && pos >= ppl_first && pos + 1 < n_prompt_eff) { /* -log p(prompt[pos + 1]) */
       double mx = logits[0], z = 0;
       for (uint32_t i = 1; i < m.vocab; i++) mx = logits[i] > mx ? logits[i] : mx;
       for (uint32_t i = 0; i < m.vocab; i++) z += exp((double)logits[i] - mx);
-      nll += mx + log(z) - logits[prompt[pos + 1]];
+      nll += mx + log(z) - logits[prompt[pos + 1 - synth_pos]];
       n_nll++;
     }
     ms_sum += ms;
@@ -289,8 +301,8 @@ int main(int argc, char **argv) {
       for (uint32_t i = 0; i < m.vocab; i++) fprintf(df, " %.9g", logits[i]);
       fprintf(df, "\n");
     }
-    tok = pos + 1 < n_prompt ? prompt[pos + 1] : next;
-    if (stop && pos + 1 >= n_prompt && (int64_t)tok == eos_v) { /* keep the eos token, then end */
+    tok = pos + 1 < n_prompt_eff ? prompt[pos + 1 - synth_pos] : next;
+    if (stop && pos + 1 >= n_prompt_eff && (int64_t)tok == eos_v) { /* keep the eos token, then end */
       out[pos + 1] = tok;
       total = pos + 2;
       break;
@@ -301,9 +313,9 @@ int main(int argc, char **argv) {
     fprintf(stderr, "wall: %.3f ms/token%s\n", (now_ms() - tw0) / (total - pw0 - 1), temp > 0.0f ? " with sampling" : "");
 
   printf("ids:");
-  for (uint32_t i = 0; i < total; i++) printf(" %u", out[i]);
+  for (uint32_t i = synth_pos; i < total; i++) printf(" %u", out[i]);
   printf("\ntext: ");
-  for (uint32_t i = 0; i < total; i++) {
+  for (uint32_t i = synth_pos; i < total; i++) {
     uint32_t len;
     char *s = model_detok(&m, out[i], &len);
     fwrite(s, 1, len, stdout);

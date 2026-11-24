@@ -13,6 +13,11 @@
 #include <string.h>
 
 #include "common.h"
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <pthread.h>
+#endif
 #include "tok.h"
 #include "tok_unicode.h"
 
@@ -413,36 +418,70 @@ static uint32_t match_gpt4o(const cps *c, uint32_t i) {
 /* flint: [\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff] (CJK ideographs, hiragana, katakana) */
 static int cjk_kana(uint32_t cp) { return (cp >= 0x4E00 && cp <= 0x9FA5) || (cp >= 0x3040 && cp <= 0x30FF); }
 
-static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out);
+static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out, int fast_bpe);
 /* flint: the pieces of code points [a, b) of the third split (regex
  * matches; the unmatched characters between them form one piece each run) */
-static void flint_split3(const tokenizer *t, const char *s, const cps *c, uint32_t a, uint32_t b, tok_ids *out) {
+static void flint_split3(const tokenizer *t, const char *s, const cps *c, uint32_t a, uint32_t b, tok_ids *out, int fast_bpe) {
   uint32_t gap = a;
   for (uint32_t i = a; i < b;) {
     const uint32_t j = match_flint(c, i, b);
     if (j == i) { i++; continue; }
-    if (gap < i) bpe(t, s + c->off[gap], c->off[i] - c->off[gap], out);
-    bpe(t, s + c->off[i], c->off[j] - c->off[i], out);
+    if (gap < i) bpe(t, s + c->off[gap], c->off[i] - c->off[gap], out, fast_bpe);
+    bpe(t, s + c->off[i], c->off[j] - c->off[i], out, fast_bpe);
     i = gap = j;
   }
-  if (gap < b) bpe(t, s + c->off[gap], c->off[b] - c->off[gap], out);
+  if (gap < b) bpe(t, s + c->off[gap], c->off[b] - c->off[gap], out, fast_bpe);
 }
 /* flint: the second split (CJK and kana runs apart), then the third */
-static void flint_split2(const tokenizer *t, const char *s, const cps *c, uint32_t a, uint32_t b, tok_ids *out) {
+static void flint_split2(const tokenizer *t, const char *s, const cps *c, uint32_t a, uint32_t b, tok_ids *out, int fast_bpe) {
   for (uint32_t i = a; i < b;) {
     uint32_t j = i;
     const int k = cjk_kana(c->cp[i]);
     while (j < b && cjk_kana(c->cp[j]) == k) j++;
-    if (k) bpe(t, s + c->off[i], c->off[j] - c->off[i], out);
-    else flint_split3(t, s, c, i, j, out);
+    if (k) bpe(t, s + c->off[i], c->off[j] - c->off[i], out, fast_bpe);
+    else flint_split3(t, s, c, i, j, out, fast_bpe);
     i = j;
   }
 }
 
-/* BPE on one piece (bytes s[0 .. len)). */
-static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out) {
+static void tok_ids_append(tok_ids *a, const uint32_t *src, uint32_t n) {
+  if (!n) return;
+  if (a->n + n > a->cap) {
+    uint32_t cap = a->cap ? a->cap : 64u;
+    while (cap < a->n + n) {
+      if (cap > UINT32_MAX / 2u) { cap = a->n + n; break; }
+      cap *= 2u;
+    }
+    a->v = realloc(a->v, (size_t)cap * 4u);
+    if (!a->v) ie_die("tok: out of memory");
+    a->cap = cap;
+  }
+  memcpy(a->v + a->n, src, (size_t)n * 4u);
+  a->n += n;
+}
+
+static int tok_fast_bpe_env(void) {
+  const char *e = getenv("IE_TOK_FAST_BPE");
+  return !(e && e[0] == '0'); /* R82 promoted default ON (=0 opts out) */
+}
+
+static int tok_threads_env(void) {
+  const char *e = getenv("IE_TOK_THREADS");
+  if (!e || !e[0]) return 4; /* R82 promoted default 4T (=1 opts out) */
+  int n = atoi(e);
+  if (n < 1) n = 1;
+  if (n > 8) n = 8;
+  return n;
+}
+
+/* BPE on one piece (bytes s[0 .. len)).
+ * R82 (H47b, IE_TOK_FAST_BPE=1 opt-in): use stack arrays for len <= 256 to eliminate per-piece heap malloc/free. */
+static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out, int fast_bpe) {
   /* the GPT2 characters of the bytes */
-  char *buf = malloc((size_t)len * 2 + 1);
+  char s_buf[513], s_key[516];
+  uint32_t s_off[257], s_ln[257], s_rk[257];
+  const int use_stack = fast_bpe && len <= 256u;
+  char *buf = use_stack ? s_buf : malloc((size_t)len * 2u + 1u);
   if (!buf) ie_die("tok: out of memory");
   uint32_t bn = 0;
   for (uint32_t i = 0; i < len; i++) {
@@ -454,11 +493,13 @@ static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out) {
     const int64_t id = hmap_get(&t->vocab, buf, bn);
     if (id >= 0 && (!t->ctrl || !t->ctrl[id])) {
       tok_ids_push(out, (uint32_t)id);
-      free(buf);
+      if (!use_stack) free(buf);
       return;
     }
   }
-  uint32_t *off = malloc((size_t)(len + 1) * 4), *ln = malloc((size_t)(len + 1) * 4), *rk = malloc((size_t)(len + 1) * 4);
+  uint32_t *off = use_stack ? s_off : malloc((size_t)(len + 1u) * 4u);
+  uint32_t *ln = use_stack ? s_ln : malloc((size_t)(len + 1u) * 4u);
+  uint32_t *rk = use_stack ? s_rk : malloc((size_t)(len + 1u) * 4u);
   if (!off || !ln || !rk) ie_die("tok: out of memory");
   uint32_t ns = 0;
   for (uint32_t i = 0, bo = 0; i < len; i++) {
@@ -466,7 +507,7 @@ static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out) {
     off[ns] = bo, ln[ns] = t->blen[b], ns++;
     bo += t->blen[b];
   }
-  char *key = malloc((size_t)bn + 2);
+  char *key = use_stack ? s_key : malloc((size_t)bn + 2u);
   if (!key) ie_die("tok: out of memory");
 #define RANK(k)                                                                       \
   ((k) + 1 < ns ? (memcpy(key, buf + off[k], ln[k]), key[ln[k]] = ' ',               \
@@ -503,11 +544,11 @@ static void bpe(const tokenizer *t, const char *s, uint32_t len, tok_ids *out) {
       p += cl;
     }
   }
-  free(buf), free(off), free(ln), free(rk), free(key);
+  if (!use_stack) free(buf), free(off), free(ln), free(rk), free(key);
 }
 
-/* A part without special tokens. */
-static void encode_plain(const tokenizer *t, const char *s, size_t len, tok_ids *out) {
+/* Single-threaded encode of a part without special tokens. */
+static void encode_plain_st(const tokenizer *t, const char *s, size_t len, tok_ids *out, int fast_bpe) {
   if (!len) return;
   cps c;
   decode(s, len, &c);
@@ -516,10 +557,10 @@ static void encode_plain(const tokenizer *t, const char *s, size_t len, tok_ids 
       uint32_t j = i;
       if (c.cl[i] & UC_N) {
         while (j < c.n && j < i + 3 && (c.cl[j] & UC_N)) j++;
-        bpe(t, s + c.off[i], c.off[j] - c.off[i], out);
+        bpe(t, s + c.off[i], c.off[j] - c.off[i], out, fast_bpe);
       } else {
         while (j < c.n && !(c.cl[j] & UC_N)) j++;
-        flint_split2(t, s, &c, i, j, out);
+        flint_split2(t, s, &c, i, j, out, fast_bpe);
       }
       i = j;
     }
@@ -528,13 +569,200 @@ static void encode_plain(const tokenizer *t, const char *s, size_t len, tok_ids 
   }
   for (uint32_t i = 0; i < c.n;) {
     const uint32_t j = (t->pre == PRE_INKLING2 || t->pre == PRE_GPT4O) ? match_gpt4o(&c, i) : match(&c, i, t->pre);
-    bpe(t, s + c.off[i], c.off[j] - c.off[i], out);
+    bpe(t, s + c.off[i], c.off[j] - c.off[i], out, fast_bpe);
     i = j;
   }
   free(c.cp), free(c.off), free(c.cl);
 }
 
+/* R82 (H47b, IE_TOK_THREADS=N opt-in): lossless multi-threaded chunked BPE.
+ * Safe split invariant: a byte offset p with s[p - 1] == '\n' and s[p] in [A-Za-z0-9]
+ * is an exact UTF-8 and pre-tokenizer regex boundary across PRE_INKLING2, PRE_GPT4O,
+ * PRE_QWEN2, PRE_QWEN35, PRE_DBRX, and PRE_FLINT:
+ *   - match_case_word excludes CR/LF from FPRE, FU, FW;
+ *   - punctuation/symbol + [\r\n/]* stops before [A-Za-z0-9];
+ *   - match_ws (\s*[\r\n]+) terminates right after '\n' at p in both full text and chunk;
+ *   - BPE merges never cross regex piece boundaries.
+ * If fewer than 2 safe newline cuts exist (e.g. single-line minified JSON), fall back
+ * to exact piece-boundary fan-out over pre-tokenized pieces (non-PRE_FLINT). */
+static inline int tok_is_ascii_alnum(unsigned char c) {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+}
+
+static size_t find_safe_split(const char *s, size_t lo, size_t hi, size_t target) {
+  if (lo < 1u) lo = 1u;
+  if (lo >= hi) return 0u;
+  if (target < lo) target = lo;
+  if (target >= hi) target = hi - 1u;
+  const size_t max_d = (target - lo > hi - 1u - target) ? (target - lo) : (hi - 1u - target);
+  for (size_t d = 0u; d <= max_d; d++) {
+    if (target + d < hi) {
+      const size_t p = target + d;
+      if (s[p - 1u] == '\n' && tok_is_ascii_alnum((unsigned char)s[p])) return p;
+    }
+    if (d > 0u && target >= lo + d) {
+      const size_t p = target - d;
+      if (s[p - 1u] == '\n' && tok_is_ascii_alnum((unsigned char)s[p])) return p;
+    }
+  }
+  return 0u;
+}
+
+typedef struct {
+  const tokenizer *t;
+  const char *s;
+  size_t len;
+  const uint32_t *poff; /* non-NULL in piece-range mode */
+  uint32_t p0, p1;
+  int fast_bpe;
+  tok_ids out;
+} tok_job;
+
+static void tok_job_run(tok_job *j) {
+  if (j->poff) {
+    for (uint32_t k = j->p0; k < j->p1; k++)
+      bpe(j->t, j->s + j->poff[k], j->poff[k + 1u] - j->poff[k], &j->out, j->fast_bpe);
+  } else {
+    encode_plain_st(j->t, j->s, j->len, &j->out, j->fast_bpe);
+  }
+}
+
+#ifdef _WIN32
+static unsigned __stdcall tok_worker_entry(void *arg) {
+  tok_job_run((tok_job *)arg);
+  return 0u;
+}
+#else
+static void *tok_worker_entry(void *arg) {
+  tok_job_run((tok_job *)arg);
+  return NULL;
+}
+#endif
+
+static void tok_run_jobs(tok_job *jobs, uint32_t nc, tok_ids *out) {
+#ifdef _WIN32
+  HANDLE hs[8];
+  DWORD nh = 0u;
+  for (uint32_t k = 1u; k < nc; k++) {
+    uintptr_t h = _beginthreadex(NULL, 0u, tok_worker_entry, &jobs[k], 0u, NULL);
+    if (h) hs[nh++] = (HANDLE)h;
+    else tok_job_run(&jobs[k]); /* thread spawn failure: execute inline safely */
+  }
+  tok_job_run(&jobs[0]);
+  if (nh > 0u) {
+    WaitForMultipleObjects(nh, hs, TRUE, INFINITE);
+    for (DWORD i = 0u; i < nh; i++) CloseHandle(hs[i]);
+  }
+#else
+  pthread_t th[8];
+  uint32_t spawned[8];
+  for (uint32_t k = 1u; k < nc; k++) {
+    if (pthread_create(&th[k], NULL, tok_worker_entry, &jobs[k]) == 0) spawned[k] = 1u;
+    else { spawned[k] = 0u; tok_job_run(&jobs[k]); }
+  }
+  tok_job_run(&jobs[0]);
+  for (uint32_t k = 1u; k < nc; k++)
+    if (spawned[k]) pthread_join(th[k], NULL);
+#endif
+  uint32_t tot_add = 0u;
+  for (uint32_t k = 0u; k < nc; k++) tot_add += jobs[k].out.n;
+  if (tot_add > 0u && out->n + tot_add > out->cap) {
+    uint32_t cap = out->cap ? out->cap : 64u;
+    while (cap < out->n + tot_add) {
+      if (cap > UINT32_MAX / 2u) { cap = out->n + tot_add; break; }
+      cap *= 2u;
+    }
+    out->v = realloc(out->v, (size_t)cap * 4u);
+    if (!out->v) ie_die("tok: out of memory");
+    out->cap = cap;
+  }
+  for (uint32_t k = 0u; k < nc; k++) {
+    tok_ids_append(out, jobs[k].out.v, jobs[k].out.n);
+    tok_ids_free(&jobs[k].out);
+  }
+}
+
+/* A part without special tokens. */
+static void encode_plain(const tokenizer *t, const char *s, size_t len, tok_ids *out, int fast_bpe, int n_threads) {
+  if (!len) return;
+  if (n_threads <= 1 || len < 32768u) {
+    encode_plain_st(t, s, len, out, fast_bpe);
+    return;
+  }
+  /* Fast Path A: split at lossless '\n' + [A-Za-z0-9] boundaries (parallelizes decode + regex + BPE). */
+  size_t cuts[9];
+  uint32_t ncuts = 0u;
+  cuts[ncuts++] = 0u;
+  size_t prev = 0u;
+  for (int k = 1; k < n_threads; k++) {
+    const size_t target = (len * (size_t)k) / (size_t)n_threads;
+    const size_t lo = prev + 4096u;
+    const size_t hi = (len > 4096u) ? (len - 4096u) : 0u;
+    if (lo >= hi) break;
+    const size_t win = len / (size_t)(2 * n_threads);
+    const size_t wlo = (target > win && target - win > lo) ? (target - win) : lo;
+    const size_t whi = (target + win < hi) ? (target + win) : hi;
+    const size_t p = find_safe_split(s, wlo, whi, target);
+    if (p > prev && p < len) {
+      cuts[ncuts++] = p;
+      prev = p;
+    }
+  }
+  cuts[ncuts++] = len;
+  const uint32_t nc = ncuts - 1u;
+  if (nc >= 2u) {
+    tok_job jobs[8];
+    memset(jobs, 0, sizeof jobs);
+    for (uint32_t k = 0u; k < nc; k++) {
+      jobs[k].t = t;
+      jobs[k].s = s + cuts[k];
+      jobs[k].len = cuts[k + 1u] - cuts[k];
+      jobs[k].fast_bpe = fast_bpe;
+    }
+    tok_run_jobs(jobs, nc, out);
+    return;
+  }
+  /* Fallback Path B: exact piece-boundary fan-out for single-line inputs (e.g. minified JSON). */
+  if (t->pre == PRE_FLINT) {
+    encode_plain_st(t, s, len, out, fast_bpe);
+    return;
+  }
+  cps c;
+  decode(s, len, &c);
+  uint32_t *poff = malloc((size_t)(c.n + 1u) * 4u);
+  if (!poff) ie_die("tok: out of memory");
+  uint32_t np = 0u;
+  for (uint32_t i = 0u; i < c.n;) {
+    const uint32_t j = (t->pre == PRE_INKLING2 || t->pre == PRE_GPT4O) ? match_gpt4o(&c, i) : match(&c, i, t->pre);
+    poff[np++] = c.off[i];
+    i = j;
+  }
+  poff[np] = c.off[c.n];
+  free(c.cp), free(c.off), free(c.cl);
+  if (np < (uint32_t)n_threads * 64u) {
+    for (uint32_t k = 0u; k < np; k++)
+      bpe(t, s + poff[k], poff[k + 1u] - poff[k], out, fast_bpe);
+    free(poff);
+    return;
+  }
+  tok_job jobs[8];
+  memset(jobs, 0, sizeof jobs);
+  const uint32_t nt = (uint32_t)n_threads;
+  for (uint32_t k = 0u; k < nt; k++) {
+    jobs[k].t = t;
+    jobs[k].s = s;
+    jobs[k].poff = poff;
+    jobs[k].p0 = (uint32_t)(((uint64_t)np * k) / nt);
+    jobs[k].p1 = (uint32_t)(((uint64_t)np * (k + 1u)) / nt);
+    jobs[k].fast_bpe = fast_bpe;
+  }
+  tok_run_jobs(jobs, nt, out);
+  free(poff);
+}
+
 void tok_encode(const tokenizer *t, const char *text, size_t len, int parse_control, tok_ids *out) {
+  const int fast_bpe = tok_fast_bpe_env();
+  const int n_threads = tok_threads_env();
   size_t a = 0; /* start of the current plain part */
   for (size_t i = 0; i < len;) {
     const special *hit = NULL;
@@ -544,9 +772,9 @@ void tok_encode(const tokenizer *t, const char *text, size_t len, int parse_cont
         if ((parse_control || !sp->control) && sp->n <= len - i && !memcmp(text + i, sp->s, sp->n)) { hit = sp; break; }
       }
     if (!hit) { i++; continue; }
-    encode_plain(t, text + a, i - a, out);
+    encode_plain(t, text + a, i - a, out, fast_bpe, n_threads);
     tok_ids_push(out, hit->id);
     i += hit->n, a = i;
   }
-  encode_plain(t, text + a, len - a, out);
+  encode_plain(t, text + a, len - a, out, fast_bpe, n_threads);
 }

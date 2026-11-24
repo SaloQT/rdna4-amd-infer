@@ -82,6 +82,9 @@ uint32_t sample(sampler *sp, const float *lg, uint32_t V);
  * *hrow: the row of g->h_out that holds h(n-1). pa may be NULL. */
 uint32_t prefill(backend *b, const graph *g, uint32_t vocab, const uint32_t *toks, uint32_t n, uint32_t chunk, int mtp,
                  ppl_acc *pa, uint32_t *hrow);
+/* Same as prefill(), starting at KV position pos0 (used by IE_KV_SYNTH_POS). */
+uint32_t prefill_at(backend *b, const graph *g, uint32_t vocab, const uint32_t *toks, uint32_t n, uint32_t pos0,
+                    uint32_t chunk, int mtp, ppl_acc *pa, uint32_t *hrow);
 /* Speculative decoding with the MTP head (GPU). emit (or NULL) gets each
  * output token after the prompt; when it returns nonzero, the generation
  * ends. Returns the number of tokens in out. */
@@ -163,6 +166,7 @@ typedef struct {
  * end of the stable part of a system prompt, the start of the last user message) */
 enum { GEN_CK_PROMPT = 0, GEN_CK_ANSWER = 1, GEN_CK_SPLIT = 2, GEN_CK_EVERY = 3, GEN_CK_DISK = 4, GEN_CK_MARK = 5, GEN_CK_PREFIX = 6 };
 struct dcache;
+struct ie_sam_persist;
 #define GEN_CK_MAX IE_SNAP_MAX /* backend snapshot slots (backend.snap k = 0 .. GEN_CK_MAX - 1) */
 
 typedef struct {
@@ -197,6 +201,8 @@ typedef struct {
   uint32_t rope_custom_n;
   gen_img *kv_imgs;
   uint32_t kv_n_imgs;
+  /* R71 (H29): persistent 2-tier 256K prompt-suffix SAM (<= 22 MiB host RAM, 0 B VRAM) */
+  struct ie_sam_persist *sam_p;
 } gen_ctx;
 
 void gen_init(gen_ctx *c, backend *b, const model *m, const graph *g);
@@ -227,6 +233,9 @@ uint32_t gen_disk_idle(gen_ctx *c);
 uint32_t gen_disk_pending(const gen_ctx *c);
 /* Write the queued files (ie-serve: its disk thread, after each gen_disk_save). */
 void gen_disk_write(gen_ctx *c);
+/* Wave 15 R83 (H50): warm unwarmed .iec blocks from disk into Host-RAM Radix L2 up to max_bytes.
+ * Returns > 0 if work was done or more unwarmed blocks remain, 0 when done, disabled, or c == NULL. */
+int dc_prewarm_step(gen_ctx *c, size_t max_bytes);
 /* Run the prompt (positions 0 .. n_prompt - 1) and generate up to
  * p->max_new tokens. With p->cache, the prompt continues from the latest
  * checkpoint inside its first tokens that equal the cached ones (gen_ctx;

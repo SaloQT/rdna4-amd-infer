@@ -383,6 +383,27 @@ enum { K_EMBED_Q4, K_EMBED_F32, K_RMSNORM, K_QUANT, K_GEMV_Q4, K_GEMV_Q8, K_GEMV
        K_INK_MONOMOE_T1_R11, K_INK_REL_ATTN_VER_SWA_WMMA_R11, K_INK_REL_ATTN_VER_SWA_QT2_R11,
        K_INK_KV_STORE_GLOB_Q4_R14, K_INK_REL_ATTN_DEC_GLOB_Q4_R14, K_INK_REL_ATTN_VER_GLOB_Q4_R14,
        K_INK_REL_ATTN_PF_GLOB_Q4_R14, K_INK_DS_ROPE_FILL_R14, K_INK_MOE_WL_FILTER_R14,
+       K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15, K_INK_REL_ATTN_DEC_GLOB_Q4_FAST_R15, K_INK_KV_SYNTH_FILL_R15,
+       K_INK_REL_ATTN_PF_SPLIT_GLOB_Q4_R15, K_INK_REL_ATTN_PF_FAR_GLOB_Q4_R15, K_INK_REL_ATTN_PF_NEAR_GLOB_Q4_R15,
+       K_INK_REL_ATTN_PF_GLOB_Q4_FAST_R15,
+       K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16, K_INK_REL_ATTN_VER_GLOB_Q4_TREE_R16, K_INK_KV_STORE_GLOB_Q4_ROT_PF_R16,
+       K_DS_ADD_Q8_BATCH_R12, K_DS_RNN_FUSED_ZSYNC_R12,
+       K_DS_QKV_ROPE_Q4K_R12, K_DS_ATTN_WMMA_Q8_R12, K_DS_PROJ_RES_NORM_Q8_Q4K_R12,
+       K_INK_KV_SCONV_VCLIP_STORE_TREE_R12, K_INK_SCONV_POST_TREE_R12,
+       K_INK_EXP_DOWN_TAIL_VER_TREE_R12, K_INK_REL_ATTN_VER_GLOB_WMMA_TREE_R12,
+       K_INK_LC_PIPE_ATTN_EXACT_R16, K_INK_LC_PIPE_MLP_EXACT_R16,
+       K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16, K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16, K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16,
+       K_INK_REPACK_IQ4NL_WAVE_R13, K_INK_GEXP_IQ4NL_WAVE_TAIL_T1_R13, K_INK_GEXP_IQ4NL_WAVE_VER_R13,
+       K_INK_GEXP_IQ4NL_WAVE_T1_R13, K_INK_GEXP_IQ4NL_WAVE_COMPACT_R13, K_INK_GEMM_IQ4NL_WAVE_EXPMAJ_R13,
+       K_INK_REPACK_Q4K_WAVE_R13, K_INK_Q4K_HEAD_WAVE_R13, K_INK_Q4K_HEAD_WAVE_CAP_TOPK_R13, K_INK_DS_BASE_Q4K_WAVE_IDMAP_R13,
+       K_INK_REPACK_Q8_WAVE_R13, K_INK_GEMV_Q8_WAVE_HT_R13,
+       K_INK_GEMM_Q8_MULTI3_R13, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13, K_INK_GEMM_Q8_MED_SK_R13,
+       K_INK_KV_SCONV_VCLIP_STORE_PF_R13, K_INK_SCONV_POST_PF_R13, K_INK_ATTN_RES_NORM_Q8_PF_R13,
+       K_INK_GEMM_F32_ROUTER_BF16_R13, K_INK_GEMM_F32_ROUTER_EXACT_R13,
+       K_INK_REL_ATTN_PF_FAR_POLY_R13, K_INK_REL_ATTN_PF_SB_POLY_R13,
+       K_INK_DCACHE_UNSHUF_Q4_R16, K_INK_DCACHE_UNSHUF_F16_R16, K_INK_KV_COPY_LIST_R16,
+       K_INK_DS_QKV_ROPE_Q4K_R17, K_INK_FLUTE_SITU_VER_T8_R17, K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17,
+       K_INK_REL_ATTN_PF_SWA_FAST_R17, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17, K_INK_GEMM_IQ4NL_WAVE_M64_R17,
        K_N };
 static const char *kname[K_N] = {"ie_embed_q4", "ie_embed_f32", "ie_rmsnorm", "ie_quant_q8", "ie_gemv_q4q8", "ie_gemv_q8q8",
                                  "ie_gemv_f32", "ie_bias",      "ie_add",     "ie_swiglu",   "ie_rope",
@@ -512,7 +533,28 @@ static const char *kname[K_N] = {"ie_embed_q4", "ie_embed_f32", "ie_rmsnorm", "i
                "ie_inkling_qkv_sconv_kv_r11", "ie_inkling_wo_sconv_post_t8_r11", "ie_inkling_rel_attn_dec_glob_r11",
                "ie_inkling_monomoe_t1_r11", "ie_inkling_rel_attn_ver_swa_wmma_r11", "ie_inkling_rel_attn_ver_swa_qt2_r11",
                "ie_inkling_kv_store_glob_q4_r14", "ie_inkling_rel_attn_dec_glob_q4_r14", "ie_inkling_rel_attn_ver_glob_q4_r14",
-               "ie_inkling_rel_attn_pf_glob_q4_r14", "ie_inkling_ds_rope_fill_r14", "ie_inkling_moe_wl_filter_r14"};
+               "ie_inkling_rel_attn_pf_glob_q4_r14", "ie_inkling_ds_rope_fill_r14", "ie_inkling_moe_wl_filter_r14",
+               "ie_inkling_rel_attn_ver_glob_q4_wmma_r15", "ie_inkling_rel_attn_dec_glob_q4_fast_r15", "ie_inkling_kv_synth_fill_r15",
+               "ie_inkling_rel_attn_pf_split_glob_q4_r15", "ie_inkling_rel_attn_pf_far_glob_q4_r15", "ie_inkling_rel_attn_pf_near_glob_q4_r15",
+               "ie_inkling_rel_attn_pf_glob_q4_fast_r15",
+               "ie_inkling_c1_sconv_vclip_glob_q4_store_r16", "ie_inkling_rel_attn_ver_glob_q4_tree_r16", "ie_inkling_kv_store_glob_q4_rot_pf_r16",
+               "ie_inkling_ds_add_q8_batch_r12", "ie_inkling_ds_rnn_fused_zsync_r12",
+               "ie_inkling_ds_qkv_rope_q4k_r12", "ie_inkling_ds_attn_wmma_q8_r12", "ie_inkling_ds_proj_res_norm_q8_q4k_r12",
+               "ie_inkling_kv_sconv_vclip_store_tree_r12", "ie_inkling_sconv_post_tree_r12",
+               "ie_inkling_exp_down_tail_ver_tree_r12", "ie_inkling_rel_attn_ver_glob_wmma_tree_r12",
+               "ie_inkling_lc_pipe_attn_exact_r16", "ie_inkling_lc_pipe_mlp_exact_r16",
+               "ie_inkling_rel_attn_ver_swa_wmma_exact_r16", "ie_inkling_rel_attn_ver_swa_qt2_exact_r16", "ie_inkling_rel_attn_ver_swa_qtile_exact_r16",
+               "ie_inkling_repack_iq4nl_wave_r13", "ie_inkling_gexp_iq4nl_wave_tail_t1_r13", "ie_inkling_gexp_iq4nl_wave_ver_r13",
+               "ie_inkling_gexp_iq4nl_wave_t1_r13", "ie_inkling_gexp_iq4nl_wave_compact_r13", "ie_inkling_gemm_iq4nl_wave_expmaj_r13",
+               "ie_inkling_repack_q4k_wave_r13", "ie_inkling_q4k_head_wave_r13", "ie_inkling_q4k_head_wave_cap_topk_r13", "ie_inkling_ds_base_q4k_wave_idmap_r13",
+               "ie_inkling_repack_q8_wave_r13", "ie_inkling_gemv_q8_wave_ht_r13",
+               "ie_inkling_gemm_q8_multi3_r13", "ie_inkling_gemm_rq_exp_iq3xxs_flute_l0lut_r13", "ie_inkling_gemm_q8_med_sk_r13",
+               "ie_inkling_kv_sconv_vclip_store_pf_r13", "ie_inkling_sconv_post_pf_r13", "ie_inkling_attn_res_norm_q8_pf_r13",
+               "ie_inkling_gemm_f32_router_bf16_r13", "ie_inkling_gemm_f32_router_exact_r13",
+               "ie_inkling_rel_attn_pf_far_poly_r13", "ie_inkling_rel_attn_pf_sb_poly_r13",
+               "ie_inkling_dcache_unshuf_q4_r16", "ie_inkling_dcache_unshuf_f16_r16", "ie_inkling_kv_copy_list_r16",
+               "ie_inkling_ds_qkv_rope_q4k_r17", "ie_inkling_flute_situ_ver_t8_r17", "ie_inkling_rel_attn_ver_glob_q4_wmma_fast_r17",
+               "ie_inkling_rel_attn_pf_swa_fast_r17", "ie_inkling_gemm_rq_exp_iq3xxs_flute_m64_r17", "ie_inkling_gemm_iq4nl_wave_m64_r17"};
 static const uint8_t ink_bit[K_N - K_INK_REL_ATTN_PF] = {
     0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17,
     18, 19, 20, 21, 22, 23, 24, 25, 25, 26, 27, 28, 29, 30, 31, 32,
@@ -532,7 +574,18 @@ static const uint8_t ink_bit[K_N - K_INK_REL_ATTN_PF] = {
     112, 113, 114, 114, 115,
     116, 116, 117, 118, 118,
     111, 122, 122, 121, 124, 126, 123, 125, 125,
-    153, 153, 153, 153, 154, 91};
+    153, 153, 153, 153, 154, 91,
+    155, 156, 157, 158, 159, 159, 162, 163, 164, 165,
+    128, 128, 129, 129, 129, 131, 131, 131, 131,
+    142, 142, 143, 143, 143,
+    144, 144, 144, 144, 144, 144,
+    145, 145, 145, 145,
+    146, 146,
+    148, 149, 150,
+    151, 151, 151, 151, 151,
+    152, 152,
+    160, 160, 161,
+    166, 167, 168, 169, 170, 171};
 _Static_assert(sizeof(ink_bit) == (size_t)(K_N - K_INK_REL_ATTN_PF), "ink_bit table length mismatch");
 /* ie_gdn: conv input ring slots and state slots per linear layer */
 /* ie_gdn: conv input ring slots (as in ie_kernels.c); the state slots per
@@ -589,7 +642,12 @@ typedef struct {
   uint64_t pf_freq[INK_MOE_C_MAXE];
   u32 *pf_offs_pin;
   hipEvent_t pf_offs_ev;
+  hipEvent_t w0_ready;       /* R57: cross-layer prefetched Wave 0 [0..half) ready on moe_c_cs */
+  hipEvent_t pf_done_ev;     /* R57: compute stream finished reading C->slab_dev */
   int pf_offs_pending, pf_dirty;
+  int w0_prefetched, pf_done_valid;
+  uint8_t prot[INK_MOE_C_MAXE]; /* R58: 1 if slot is in SLRU protected segment */
+  uint8_t hot_pin[INK_MOE_C_MAXE]; /* R77: IE_H38_PIN_HOT preferred non-eviction experts */
 } ink_moe_cache_layer;
 
 typedef struct {
@@ -665,17 +723,18 @@ typedef struct {
     uint8_t *hq;             /* IE_DS_SPLIT: q8(hidden_i + bias) [block][xq_str] */
     void *zbuf;              /* R5/R7 zero-sync control + draft_ids/probs + qnode + partials (32 KiB) */
     void *zpin;              /* R7 pinned host readback buffer for probabilistic zsync (8 KiB) */
-    /* R30: 0-VRAM 60K+4K FR-Spec / MicroSpec certified id_map shortlist (+0.256 MiB VRAM) */
+    /* R30/R70: 0-VRAM 60K+4K (and H27 2-tier 28K+4K -> 60K+4K) FR-Spec / MicroSpec certified id_map shortlist */
     u32 *id_map_dev;         /* device u32[65536] */
-    u32 *id_core_host;       /* host u32[n_core], ascending */
+    u32 *id_core_host;       /* host u32[n_core_t0], ascending */
+    u32 *id_core_t1_host;    /* H27 Tier 1 (61440) core IDs in host RAM for <20 us escalation */
     u32 *id_dyn_pin;         /* pinned host u32[4096] for async tail H2D */
-    uint8_t *core_bm, *dyn_bm;
-    u32 n_core, n_dyn, n_act;
-    int sl_bypass, id_dyn_pinned;
+    uint8_t *core_bm, *core_t0_bm, *core_t1_bm, *dyn_bm;
+    u32 n_core, n_core_t0, n_core_t1, n_dyn, n_act;
+    int sl_bypass, sl_tier, id_dyn_pinned;
     float sl_miss_ema;
-    /* R33: Multi-stream ds_ctx overlap behind target output head */
+    /* R33/R69: Multi-stream (mode 1/2) & same-stream Saguaro (mode 3) ds_ctx overlap behind target output head */
     hipStream_t ctx_stream;
-    hipEvent_t ev_feat_ready, ev_ctx_done;
+    hipEvent_t ev_feat_ready, ev_ctx_done, ev_head_ready;
     int ctx_pending, ov_mode;
     u32 ctx_pos, ctx_T;
     float *frnn_prev;        /* R38 (H42): 9.2 KiB copy of frnn at pos-1 for post-token-1 GEN_CK_PROMPT snap */
@@ -738,7 +797,9 @@ typedef struct {
   unsigned char tr_tab[384];
   uint64_t ink_tree_mask;  /* R32: bit (t*8+j)==1 iff node j is an ancestor of (or equal to) node t */
   u32 ink_tree_dep_pack;   /* R32: 4-bit logical tree depth per node t in [0..7] */
+  u32 ink_tree_par_pack;   /* R68: 4-bit topological parent per node t in [0..7] (linear = 0x65432100u) */
   u32 ink_tree_split;      /* R32: first node t>=2 with par[t]==0 (T if linear chain) */
+  int ink_tree_nonlin;     /* R68: 1 if any node t>=1 has par[t] != t-1 */
   int has_tr8m;            /* the code object has ie_gemv_raw_tr8_m (several raw GEMVs of one input in one launch) */
   int has_tr4m;            /* the code object has ie_gemv_raw_tr4_m (2 to 4 tokens, several raw GEMVs in one launch) */
   int has_raw_swiglu;      /* the code object has ie_gemv_raw_swiglu[|_tr4|_tr8] (fused gate + up + SwiGLU + Q8) */
@@ -811,6 +872,12 @@ typedef struct {
   ink_moe_cache_layer *moe_c;
   u32 *moe_rt_pin;          /* 2 KiB pinned host buffer for rt D2H/remap/H2D */
   void *moe_rt_dev;         /* 2 KiB device buffer for remapped rt */
+  hipStream_t moe_c_cs;     /* R57/R58: hipStreamNonBlocking DMA stream for H38 overlap */
+  hipStream_t moe_c_exec_s; /* R57/R58: created blocking compute stream (avoids NULL-stream host-block) */
+  hipEvent_t moe_c_ready[2];/* R57: ping-pong half p DMA finished on moe_c_cs */
+  hipEvent_t moe_c_done[2]; /* R57: ping-pong half p compute finished on compute stream */
+  hipEvent_t moe_c_egu_ev;  /* R58: Mode A/B egu DMA done before ed0/ed1 starts on moe_c_cs */
+  hipEvent_t moe_c_ed_ev;   /* R58: Mode A/B ed0/ed1 DMA done on moe_c_cs before IQ4NL */
   uint64_t moe_c_hits, moe_c_misses, moe_c_dma_bytes, moe_c_waves, moe_c_subbatches;
   int ink_graph_cap;        /* 1 while capturing T=1 decode graph -> emit *_ctx kernels */
   int in_step;              /* 1 while inside gpu_step() T=1 decode run_ops */
@@ -823,6 +890,7 @@ typedef struct {
   u32 *ink_sp_sync;         /* 16 B device sync control block (zero-init once; sync[2]=poison_flag) */
   u32 ink_sp_ring;
   int ink_sp_poisoned, ink_sp_used;
+  int ink_h17_probed, ink_h16_probed;
   float *snap_ring[IE_SNAP_MAX], *snap_st[IE_SNAP_MAX]; /* the prompt cache snapshots (gpu_snap), allocated at the first save: in host memory
                                      * (pageable; 2 x 160 MB less VRAM at 128K), IE_SNAP_HOST=0: in VRAM */
   char *snap_h[IE_SNAP_MAX];
@@ -877,6 +945,21 @@ typedef struct {
   hipEvent_t *hs_done;       /* streamed layer s is in its slot */
   hipEvent_t hs_free[16];    /* the slot's last user has run */
   int hs_pending;            /* the streamed layer being run (its slot is freed after its last op) */
+  /* Wave 14 (R72 H36a/H36b/H37): wave-repacked weight state (all opt-in OFF by default). */
+  int ink_iq4_wave, ink_q4k_wave, ink_q8_wave;
+  void *ink_q4k_w0, *ink_q4k_w1;
+  void **ink_q8p_op;         /* per-op contiguous packed Q8_0 buffer (NULL unless IE_INKLING_Q8_REPACK=1) */
+  void **ink_q8p_allocs;     /* unique device allocations to free at gpu_close */
+  u32 ink_q8p_nalloc;
+  /* Wave 15 (R78-R80): async/pipelined disk-cache KV I/O, GPU unshuffle staging, and fast ephemeral stash. */
+  hipEvent_t kv_h2d_ev[64];
+  uint8_t kv_h2d_ev_valid[64];
+  int kv_h2d_piped, kv_async_active;
+  void *dc_stage_dev;
+  size_t dc_stage_bytes;
+  void *ephem_pin;
+  size_t ephem_pin_cap;
+  u32 ephem_pos_saved;
 } gpu_backend;
 
 /* The copy of streamed layer s into its slot, on the copy stream, after the slot's previous user ran. */
@@ -1069,11 +1152,335 @@ static int ink_h15_mode(void) {
   }
   return v;
 }
+static int ink_h09_256k_chunk1024(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_H09_256K_CHUNK1024");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R56 (H09-256K): promoted default (IE_H09_256K_CHUNK1024=0 or IE_CHUNK_LONG_512=1 opts out) */
+  }
+  return v;
+}
+static int ink_h38_async_pf(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_H38_ASYNC_PF");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R57 (H38-ASYNC-PF): promoted default (IE_H38_ASYNC_PF=0 opts out) */
+  }
+  return v;
+}
+static int ink_h38_ed_overlap(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_H38_ED_OVERLAP");
+    v = (e && *e) ? (atoi(e) != 0) : 0; /* R58 (H38-DEC-OV): opt-in during screen; flip to 1 on promotion */
+  }
+  return v;
+}
+static int ink_h38_slru_pct(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_H38_SLRU_PCT");
+    v = (e && *e) ? atoi(e) : 0; /* R58: 0 = decaying LFU; 1..95 = 2-segment SLRU protected % */
+    if (v < 0) v = 0;
+    if (v > 95) v = 95;
+  }
+  return v;
+}
+static int ink_h38_draft_prot(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_H38_DRAFT_PROT");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R58: 0 = only token 0 gets full score/protected promotion */
+  }
+  return v;
+}
+static u32 ink_pf_split_min_pos(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_PF_SPLIT_MIN_POS");
+    v = (e && *e) ? atoi(e) : 8192;
+    if (v < 0) v = 0;
+  }
+  return (u32)v;
+}
+static u32 ink_pf_far_min_pos(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_PF_FAR_MIN_POS");
+    v = (e && *e) ? atoi(e) : 4096;
+    if (v < 0) v = 0;
+  }
+  return (u32)v;
+}
+static int ink_q4_wmma_t1(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_Q4_WMMA_T1");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R59 promoted default: WMMA Q4 single-pass at T=1 (+43% at 256K) */
+  }
+  return v;
+}
+static u32 ink_q4_dec_maxsp(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_Q4_DEC_MAXSP");
+    v = (e && *e) ? atoi(e) : 16; /* R59 measured sweet spot: 16 splits x 8 kv_heads = 128 WGs (2 WGs/CU) */
+    if (v < 1) v = 1;
+    if (v > 128) v = 128;
+  }
+  return (u32)v;
+}
+static u32 ink_q4_ver_maxsp(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_Q4_VER_MAXSP");
+    v = (e && *e) ? atoi(e) : 16; /* R59 measured sweet spot: 16 splits x 8 kv_heads = 128 WGs (2 WGs/CU) */
+    if (v < 1) v = 1;
+    if (v > 128) v = 128;
+  }
+  return (u32)v;
+}
+static int ink_h21_mode(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H21_MODE");
+    if (!e || !*e) v = 1;
+    else if (strcmp(e, "wmma") == 0) v = 1;
+    else if (strcmp(e, "qt2") == 0) v = 2;
+    else if (strcmp(e, "qtile") == 0) v = 3;
+    else v = atoi(e); /* 1=SWA_WMMA (T<=8), 2=SWA_QT2 (T<=16), 3=SWA_QTILE_EXACT (T<=16) */
+  }
+  return v;
+}
+static int ink_exact_rescue(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_EXACT_RESCUE");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* Wave 14 opt-in OFF */
+  }
+  return v;
+}
+static int ink_h17_exact(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H17_EXACT");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R72 promoted default ON (=0 opts out) */
+  }
+  return v;
+}
+static int ink_h21_exact(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H21_EXACT");
+    const char *m = getenv("IE_INK_H21_MODE");
+    const int str_mode = m && (strcmp(m, "wmma") == 0 || strcmp(m, "qt2") == 0 || strcmp(m, "qtile") == 0);
+    v = ((e && *e && atoi(e) != 0) || ink_exact_rescue() || str_mode) ? 1 : 0; /* Wave 14 opt-in OFF */
+  }
+  return v;
+}
+static int ink_h21_fuse_gate(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H21_FUSE_GATE");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* 1=fuse gate+q8 when eligible, 0=standalone OP_REL_ATTN */
+  }
+  return v;
+}
+static int ink_iq4_repack_want(void) {
+  const char *e = getenv("IE_INKLING_IQ4_REPACK");
+  return (e && *e) ? (atoi(e) != 0) : 1; /* R74 H36a promoted default ON (=0 opts out) */
+}
+static int ink_q4k_repack_want(void) {
+  const char *e = getenv("IE_INKLING_Q4K_REPACK");
+  return (e && *e && atoi(e) != 0) ? 1 : 0; /* R74 H36b opt-in OFF */
+}
+static int ink_q8_repack_want(void) {
+  const char *e = getenv("IE_INKLING_Q8_REPACK");
+  return (e && *e) ? (atoi(e) != 0) : 1; /* R76 H37 promoted default ON (=0 opts out) */
+}
+static int ink_q8_multi3_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_Q8_MULTI3");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R74 H07 opt-in OFF */
+  }
+  return v;
+}
+static int ink_flute_l0lut_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_FLUTE_L0LUT");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R74 H10 opt-in OFF */
+  }
+  return v;
+}
+static int ink_q8_streamk_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_Q8_STREAMK");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R75 H11 opt-in OFF */
+  }
+  return v;
+}
+static int ink_pf_polish_r13_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_PF_POLISH_R13");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R75 H12 opt-in OFF */
+  }
+  return v;
+}
+static int ink_router_r13_mode(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_ROUTER_R13");
+    if (!e || !*e) v = 2; /* R75 exact router promoted default ON (=0 opts out) */
+    else if (strcmp(e, "0") == 0) v = 0;
+    else if (strcmp(e, "bf16") == 0 || strcmp(e, "1") == 0) v = 1;
+    else if (strcmp(e, "exact") == 0 || strcmp(e, "2") == 0) v = 2;
+    else v = 2;
+  }
+  return v;
+}
+static int ink_attn_poly_r13_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_ATTN_POLY_R13");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* H05b poly attention opt-in OFF */
+  }
+  return v;
+}
+static int ink_slab_color_want(void) {
+  const char *e = getenv("IE_INK_SLAB_COLOR");
+  return (e && *e && atoi(e) != 0) ? 1 : 0; /* R76 H39 slab coloring opt-in OFF */
+}
+static u32 ink_h38_pin_hot_req(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_H38_PIN_HOT");
+    v = (e && *e && atoi(e) > 0) ? atoi(e) : 0; /* R77 H38 hot-pin opt-in OFF */
+  }
+  return (u32)v;
+}
+static int ink_dcache_unshuf_want(void) {
+  const char *e1 = getenv("IE_DCACHE_UNSHUF"), *e2 = getenv("IE_DISK_LZ4");
+  return ((e1 && *e1 && atoi(e1) != 0) || (e2 && *e2 && atoi(e2) != 0)) ? 1 : 0; /* R78 H43 opt-in OFF */
+}
+static int ink_ephem_fast_want(void) {
+  const char *e = getenv("IE_EPHEM_FAST");
+  return (e && *e) ? (atoi(e) != 0) : 1; /* R79 H44b promoted default ON (=0 opts out) */
+}
+static int ink_r17_ds_qkv_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_R17_DS_QKV");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R73 R17 bit 166 promoted default ON (=0 opts out) */
+  }
+  return v;
+}
+static int ink_r17_flute_ver_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_R17_FLUTE_VER");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R17 bit 167 opt-in OFF */
+  }
+  return v;
+}
+static int ink_r17_q4_ver_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_R17_Q4_VER");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R17 bit 168 opt-in OFF */
+  }
+  return v;
+}
+static int ink_r17_swa_pf_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_R17_SWA_PF");
+    v = (e && *e && atoi(e) != 0) ? 1 : 0; /* R17 bit 169 opt-in OFF */
+  }
+  return v;
+}
+static int ink_r17_flute_pf64_mode(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_R17_FLUTE_PF64");
+    v = (e && *e) ? atoi(e) : 1; /* R75 R17 bit 170 worklist promoted default ON (=0 opts out) */
+    if (v < 0 || v > 2) v = 0;
+  }
+  return v;
+}
+static int ink_r17_iq4_pf64_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_R17_IQ4_PF64");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R74 R17 bit 171 promoted default ON (=0 opts out) */
+  }
+  return v;
+}
+static int g_weights_loaded = 0;
+static u32 ink_h17_ng(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H17_NG");
+    v = (e && *e) ? atoi(e) : 64;
+    if (v < 1) v = 1;
+    if (v > 64) v = 64;
+  }
+  return (u32)v;
+}
+static u32 ink_h16_ng(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H16_NG");
+    v = (e && *e) ? atoi(e) : 64;
+    if (v < 1) v = 1;
+    if (v > 64) v = 64;
+  }
+  return (u32)v;
+}
+static u32 ink_h18_ng(u32 dim) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H18_NG");
+    v = (e && *e) ? atoi(e) : 0;
+  }
+  return v > 0 ? (u32)v : ((dim + 15u) / 16u);
+}
 uint32_t gpu_chunk_clamp(uint32_t chunk, const model *m, uint32_t n_ctx) {
   if (chunk <= 512u || !m || m->arch != ARCH_INKLING2) return chunk;
   if (n_ctx >= 131072u && !getenv("IE_CHUNK_FORCE")) {
-    fprintf(stderr, "gpu: --chunk %u clamped to 512 (n_ctx %u >= 131072; set IE_CHUNK_FORCE=1 to override)\n", chunk, n_ctx);
-    return 512u;
+    const char *cl512 = getenv("IE_CHUNK_LONG_512");
+    int allow_1024 = 0;
+    if (ink_h09_256k_chunk1024() && !(cl512 && cl512[0] == '1')) {
+      const char *gkve = getenv("IE_INK_GLOB_KV");
+      const int is_q4_glob = gkve && (strcmp(gkve, "q4") == 0 || strcmp(gkve, "q4k") == 0 ||
+                                      strcmp(gkve, "q4krot") == 0 || strcmp(gkve, "q4rot") == 0);
+      const char *mcse = getenv("IE_MOE_CACHE_SLOTS");
+      const int is_auto = mcse && (strcmp(mcse, "auto") == 0 || strcmp(mcse, "AUTO") == 0);
+      const int req_slots = (mcse && *mcse && !is_auto) ? atoi(mcse) : 0;
+      if (is_q4_glob && (is_auto || (req_slots > 0 && req_slots <= 64))) {
+        uint64_t dxgi_b = 0ULL, dxgi_u = 0ULL;
+        const int dxgi_ok = dxgi_local_mem(&dxgi_b, &dxgi_u) && dxgi_b > 0ULL;
+        /* Only add static resident weights when called pre-load (ie-run: !g_weights_loaded); ie-serve already loaded them. */
+        const uint64_t static_est = (dxgi_ok && !g_weights_loaded) ? ((m->ds ? 6400ULL : 5900ULL) << 20) : 0ULL;
+        const uint64_t kv_est = 16ULL * (uint64_t)n_ctx * 576ULL + (260ULL << 20);
+        const uint64_t arena_misc = (300ULL << 20);
+        const uint64_t slots_est = is_auto ? 32ULL : (uint64_t)req_slots;
+        const uint64_t h38_est = slots_est * 42300000ULL; /* 12 outer layers * 3.362 MiB/slot = 40.34 MiB/slot */
+        const uint64_t min_res = (640ULL << 20);
+        if (!dxgi_ok || dxgi_u + static_est + kv_est + arena_misc + h38_est + min_res <= dxgi_b) {
+          allow_1024 = 1;
+          fprintf(stderr, "gpu: keeping --chunk %u at n_ctx %u (q4 global KV + H38 active, proj reserve >= 640 MiB)\n",
+                  chunk, n_ctx);
+        }
+      }
+    }
+    if (!allow_1024) {
+      fprintf(stderr, "gpu: --chunk %u clamped to 512 (n_ctx %u >= 131072; set IE_CHUNK_FORCE=1 to override)\n", chunk, n_ctx);
+      return 512u;
+    }
   }
   if (!H.MemGetInfo) hip_load();
   size_t fr = 0, tot = 0;
@@ -1093,6 +1500,11 @@ uint32_t gpu_chunk_clamp(uint32_t chunk, const model *m, uint32_t n_ctx) {
 }
 static size_t gpu_snap_io(backend *bk, int k, int out, void *buf, uint32_t pos);
 static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf);
+static void gpu_kv_io_async(backend *bk, int out, uint32_t p0, uint32_t n, void *buf, int layer_pipe);
+static void gpu_kv_io_sync(backend *bk);
+static int gpu_kv_io_unshuf(backend *bk, uint32_t p0, uint32_t n, const void *buf, uint32_t fmt, int async_pipe);
+static int gpu_kv_ephem_copy(backend *bk, int save, uint32_t pos);
+static void gpu_synth_kv_seed(backend *bk, uint32_t synth_pos);
 static void snap_async_join(gpu_backend *b);
 static void snap_async_shutdown(gpu_backend *b);
 static void gpu_kv_trim(backend *bk, uint32_t keep_pos);
@@ -1379,7 +1791,7 @@ static int ink_moe_adap_mode(void) {
 }
 static void topk_prefetch(gpu_backend *b, uint32_t n);
 static void topk_prefetch_clear(void);
-static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, int fold, uint32_t *out);
+static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, uint32_t pos, int fold, int do_ss_ctx, uint32_t *out);
 static void gpu_copy_rows(backend *bk, int dst, uint32_t d0, int src, uint32_t r0, uint32_t n);
 static void gpu_close(backend *bk);
 static double op_wbytes(const op *o);
@@ -1528,13 +1940,15 @@ static void *slab_take(slab_list *s, size_t bytes) {
   return p;
 }
 static void slab_free(slab_list *s) {
-  for (uint32_t i = 0; i < s->n; i++) H.Free(s->a[i]);
+  for (uint32_t i = 0; i < s->n; i++)
+    if (s->a[i]) H.Free(s->a[i]);
   free(s->a), free(s->cur), free(s->left);
   memset(s, 0, sizeof *s);
 }
 
 /* Streaming load: the device arrays of the streamed matrices (freed at close). */
 static slab_list sdev;
+static slab_list sdev_hot; /* R76 H39 (IE_INK_SLAB_COLOR=1): contiguous MALL-pinned core blk.6..17 slab */
 static uint32_t n_sdev; /* arrays */
 static size_t sdev_bytes;
 static void *shost[4096]; /* the arrays of mat.host matrices: pinned host memory */
@@ -1551,7 +1965,14 @@ static void *sdev_put(void *host, size_t bytes, int in_host) {
     free(host);
     return dev;
   }
-  dev = slab_take(&sdev, bytes);
+  if (ink_slab_color_want()) {
+    const size_t padded = bytes + 128u;
+    HIP(H.Malloc(&dev, padded));
+    HIP(H.Memset(dev, 0, padded));
+    slab_keep(&sdev, dev, NULL, 0);
+  } else {
+    dev = slab_take(&sdev, bytes);
+  }
   HIP(H.Memcpy(dev, host, bytes, hipMemcpyHostToDevice));
   n_sdev++, sdev_bytes += bytes;
   free(host);
@@ -1559,6 +1980,7 @@ static void *sdev_put(void *host, size_t bytes, int in_host) {
 }
 static void gpu_sink(mat *w) {
   if (!w->rows || w->d0) return;
+  g_weights_loaded = 1;
   const size_t ne = w->n_exp > 1 ? w->n_exp : 1; /* experts: n_exp matrices one after the other */
   if (w->kind == MAT_RAWQ) { /* raw GGUF blocks: qs only */
     if (!w->qs) return;
@@ -2075,14 +2497,22 @@ static void ink_moe_cache_setup(gpu_backend *b) {
       future_kv += (uint64_t)n_dsvm * 2ULL * (uint64_t)ds_rem;
     }
     if (dxgi_local_mem(&dxgi_b, &dxgi_u) && dxgi_b > 0ULL) {
-      const uint64_t reserve_target = (uint64_t)768u << 20; /* 768 MiB target (>= 512 MiB gate + WDDM margin) */
-      const u32 cands[] = {96u, 80u, 64u, 48u, 32u};
+      /* WDDM reports an inflated pre-allocation budget (~15.0 GiB on 16 GiB cards) while VRAM < 9 GiB,
+       * then clamps to ~12.8 GiB once allocations cross 9.5 GiB. Cap effective budget to 80% of physical VRAM. */
+      uint64_t eff_b = dxgi_b;
+      size_t mfr = 0, mtot = 0;
+      if (H.MemGetInfo && H.MemGetInfo(&mfr, &mtot) == 0 && mtot > 0u) {
+        const uint64_t cap80 = ((uint64_t)mtot * 80ULL) / 100ULL;
+        if (eff_b > cap80) eff_b = cap80;
+      }
+      const uint64_t reserve_target = (uint64_t)768u << 20; /* 768 MiB target (>= 640 MiB gate + WDDM margin) */
+      const u32 cands[] = {96u, 80u, 64u, 56u, 48u, 40u, 32u};
       n_slots = 32u;
       for (unsigned ci = 0u; ci < sizeof(cands) / sizeof(cands[0]); ci++) {
         const u32 ns = cands[ci] < m->n_exp ? cands[ci] : m->n_exp;
         const uint64_t slab_tot = (uint64_t)n_outer *
             (uint64_t)ink_moe_slab_bytes(sample_egu, sample_ed0, sample_ed1, ns, NULL, NULL);
-        if (dxgi_u + future_kv + slab_tot + ((uint64_t)16u << 20) + reserve_target <= dxgi_b) {
+        if (dxgi_u + future_kv + slab_tot + ((uint64_t)16u << 20) + reserve_target <= eff_b) {
           n_slots = ns;
           break;
         }
@@ -2090,9 +2520,9 @@ static void ink_moe_cache_setup(gpu_backend *b) {
       const uint64_t slab_sel = (uint64_t)n_outer *
           (uint64_t)ink_moe_slab_bytes(sample_egu, sample_ed0, sample_ed1, n_slots, NULL, NULL);
       const double proj_res_mib =
-          ((double)dxgi_b - (double)(dxgi_u + future_kv + slab_sel)) / (1024.0 * 1024.0);
-      fprintf(stderr, "gpu: H38 auto slots=%u (DXGI budget=%.2f GiB, cur=%.2f GiB, future_kv=%.1f MiB, proj_reserve=%.0f MiB)\n",
-              n_slots, dxgi_b / 1073741824.0, dxgi_u / 1073741824.0, future_kv / 1048576.0, proj_res_mib);
+          ((double)eff_b - (double)(dxgi_u + future_kv + slab_sel)) / (1024.0 * 1024.0);
+      fprintf(stderr, "gpu: H38 auto slots=%u (DXGI budget=%.2f GiB, eff=%.2f GiB, cur=%.2f GiB, future_kv=%.1f MiB, proj_reserve=%.0f MiB)\n",
+              n_slots, dxgi_b / 1073741824.0, eff_b / 1073741824.0, dxgi_u / 1073741824.0, future_kv / 1048576.0, proj_res_mib);
     } else {
       n_slots = 64u;
       fprintf(stderr, "gpu: H38 auto slots=%u (DXGI query unavailable; default 64)\n", n_slots);
@@ -2134,13 +2564,24 @@ static void ink_moe_cache_setup(gpu_backend *b) {
     C->ed1_dev = (char *)C->slab_dev + off_ed1;
     HIP(H.HostMalloc((void **)&C->pf_offs_pin, (size_t)(m->n_exp + 1u) * sizeof(u32), 0));
     HIP(ie_event_create_notiming(&C->pf_offs_ev));
+    HIP(ie_event_create_notiming(&C->w0_ready));
+    HIP(ie_event_create_notiming(&C->pf_done_ev));
     for (u32 ex = 0u; ex < INK_MOE_C_MAXE; ex++) {
       C->slot_of[ex] = -1;
       C->exp_of[ex] = -1;
+      C->prot[ex] = 0u;
     }
     total_vram += sb;
     total_full += (size_t)m->n_exp * C->tot_eb;
   }
+  HIP(H.StreamCreateWithFlags ? H.StreamCreateWithFlags(&b->moe_c_cs, 1u) : H.StreamCreate(&b->moe_c_cs));
+  HIP(H.StreamCreate(&b->moe_c_exec_s));
+  HIP(ie_event_create_notiming(&b->moe_c_ready[0]));
+  HIP(ie_event_create_notiming(&b->moe_c_ready[1]));
+  HIP(ie_event_create_notiming(&b->moe_c_done[0]));
+  HIP(ie_event_create_notiming(&b->moe_c_done[1]));
+  HIP(ie_event_create_notiming(&b->moe_c_egu_ev));
+  HIP(ie_event_create_notiming(&b->moe_c_ed_ev));
   b->moe_c_on = 1;
   b->moe_c_slots = n_slots;
   b->moe_c_nlayers = n_outer;
@@ -2477,6 +2918,10 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
   b->base.snap = gpu_snap;
   b->base.snap_io = gpu_snap_io;
   b->base.kv_io = gpu_kv_io;
+  b->base.kv_io_async = gpu_kv_io_async;
+  b->base.kv_io_sync = gpu_kv_io_sync;
+  b->base.kv_io_unshuf = gpu_kv_io_unshuf;
+  b->base.kv_ephem_copy = gpu_kv_ephem_copy;
   b->base.kv_trim = gpu_kv_trim;
   b->base.snap_f32b = (size_t)m->n_rec * m->n_vh * m->sd * m->sd * 4;
   b->base.host_alloc = gpu_host_alloc;
@@ -2484,6 +2929,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
   b->base.read_rows = gpu_read_rows;
   b->base.topk = gpu_topk;
   b->base.set_rope = gpu_set_rope;
+  b->base.synth_kv_seed = gpu_synth_kv_seed;
   b->base.close = gpu_close;
   b->m = m;
   b->g = g;
@@ -2771,11 +3217,50 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     uint64_t ink_mask = 0ULL, ink_mask2 = 0ULL, ink_mask3 = 0ULL;
     ie_ink_parse_mask(&ink_mask, &ink_mask2, &ink_mask3);
     if (m->arch == ARCH_INKLING2) {
-      if (req_glob_kv_mode == 2) ink_mask3 |= (1ULL << (153u - 128u));
+      if (req_glob_kv_mode == 2) {
+        ink_mask3 |= (1ULL << (153u - 128u));
+        const char *wve = getenv("IE_INK_Q4_WMMA_VER");
+        if (!(wve && wve[0] == '0')) ink_mask3 |= (1ULL << (155u - 128u)); /* R59 promoted default */
+        const char *pse = getenv("IE_INK_Q4_PF_SPLIT");
+        if (!(pse && pse[0] == '0')) ink_mask3 |= (1ULL << (158u - 128u)); /* R60 promoted default */
+        const char *pfe = getenv("IE_INK_Q4_PF_FAST");
+        if (!(pfe && pfe[0] == '0')) ink_mask3 |= (1ULL << (162u - 128u)); /* R61 promoted default */
+        const char *c1e = getenv("IE_INK_Q4_C1");
+        if (!(c1e && c1e[0] == '0')) ink_mask3 |= (1ULL << (163u - 128u)); /* R65 promoted default */
+        const char *tre = getenv("IE_INK_Q4_TREE");
+        if (tre && tre[0] == '1') ink_mask3 |= (1ULL << (164u - 128u)) | (1ULL << (131u - 128u)); /* R68 opt-in */
+      }
+      {
+        const char *te = getenv("IE_DS_TREE");
+        if (te && atoi(te) > 0) {
+          ink_mask3 |= (1ULL << (131u - 128u));
+          if (req_glob_kv_mode == 2) ink_mask3 |= (1ULL << (164u - 128u));
+        }
+      }
       if (req_ds_rope_otf) ink_mask3 |= (1ULL << (154u - 128u));
       const char *mcse = getenv("IE_MOE_CACHE_SLOTS");
       if (mcse && *mcse && (strcmp(mcse, "auto") == 0 || strcmp(mcse, "AUTO") == 0 || atoi(mcse) > 0))
         ink_mask2 |= (1ULL << (91u - 64u));
+      /* Wave 14 + Wave 15 strictly opt-in kernel bits (ALL default OFF when env vars unset). */
+      if (ink_h17_exact()) ink_mask3 |= (1ULL << (142u - 128u));
+      if (ink_h21_exact()) ink_mask3 |= (1ULL << (143u - 128u));
+      if (ink_iq4_repack_want()) ink_mask3 |= (1ULL << (144u - 128u));
+      if (ink_q4k_repack_want()) ink_mask3 |= (1ULL << (145u - 128u));
+      if (ink_q8_repack_want()) ink_mask3 |= (1ULL << (146u - 128u));
+      if (ink_q8_multi3_want()) ink_mask3 |= (1ULL << (148u - 128u));
+      if (ink_flute_l0lut_want()) ink_mask3 |= (1ULL << (149u - 128u));
+      if (ink_q8_streamk_want()) ink_mask3 |= (1ULL << (150u - 128u));
+      if (ink_pf_polish_r13_want() || ink_router_r13_mode() > 0) ink_mask3 |= (1ULL << (151u - 128u));
+      if (ink_attn_poly_r13_want()) ink_mask3 |= (1ULL << (152u - 128u));
+      if (ink_dcache_unshuf_want()) ink_mask3 |= (1ULL << (160u - 128u));
+      if (ink_ephem_fast_want()) ink_mask3 |= (1ULL << (161u - 128u));
+      /* Round 17 256K kernels strictly opt-in OFF by default (bits 166..171). */
+      if (ink_r17_ds_qkv_want()) ink_mask3 |= (1ULL << (166u - 128u));
+      if (ink_r17_flute_ver_want()) ink_mask3 |= (1ULL << (167u - 128u));
+      if (ink_r17_q4_ver_want() && req_glob_kv_mode == 2) ink_mask3 |= (1ULL << (168u - 128u));
+      if (ink_r17_swa_pf_want()) ink_mask3 |= (1ULL << (169u - 128u));
+      if (ink_r17_flute_pf64_mode() > 0) ink_mask3 |= (1ULL << (170u - 128u));
+      if (ink_r17_iq4_pf64_want()) ink_mask3 |= (1ULL << (171u - 128u));
     }
     {
       const char *ge = getenv("IE_INKLING_GRAPH"), *pe = getenv("IE_INKLING_PWGRAPH");
@@ -3447,8 +3932,13 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     if (m->arch == ARCH_INKLING2) {
       const char *gwe = getenv("IE_DS_GLOB_WIN");
       if (gwe && *gwe) {
-        long gv = strtol(gwe, NULL, 10);
-        if (gv > 0) ds_glob_win = (u32)gv;
+        if (strcmp(gwe, "auto16k") == 0 || strcmp(gwe, "AUTO16K") == 0) {
+          const u32 pad = g->T > 64u ? g->T : 64u;
+          ds_glob_win = (16384u > pad) ? (16384u - pad) : 8192u;
+        } else {
+          long gv = strtol(gwe, NULL, 10);
+          if (gv > 0) ds_glob_win = (u32)gv;
+        }
       }
     }
     for (u32 il = 0; il < d->n_layer; il++) {
@@ -3597,16 +4087,22 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
             b->ds.head_kind == MAT_Q4K ? "Q4_K" : b->ds.head_kind == MAT_Q6K ? "Q6_K" : "Q8_0",
             b->ds.qkind == MAT_Q4K ? "Q4_K" : "Q8_0");
     if (ds_glob_win > 0u)
-      fprintf(stderr, "gpu: dspark global window override IE_DS_GLOB_WIN=%u (wins %u/%u/%u, caps %u/%u/%u)\n",
+      fprintf(stderr, "gpu: dspark global window override IE_DS_GLOB_WIN=%u (wins %u/%u/%u, caps %u/%u/%u, l1_slack %u)\n",
               ds_glob_win, b->ds.kv_win[0], d->n_layer > 1 ? b->ds.kv_win[1] : 0u,
               d->n_layer > 2 ? b->ds.kv_win[2] : 0u, b->ds.kv_cap[0],
-              d->n_layer > 1 ? b->ds.kv_cap[1] : 0u, d->n_layer > 2 ? b->ds.kv_cap[2] : 0u);
+              d->n_layer > 1 ? b->ds.kv_cap[1] : 0u, d->n_layer > 2 ? b->ds.kv_cap[2] : 0u,
+              d->n_layer > 1 && b->ds.kv_cap[1] >= b->ds.kv_win[1] ? (b->ds.kv_cap[1] - b->ds.kv_win[1]) : 0u);
     const char *sp_env = getenv("IE_DS_SPLIT");
     if (sp_env && sp_env[0] && sp_env[0] != '0') ds_split_setup(b);
     ds_shortlist_setup(b, hsaco);
-    const char *ov_env = getenv("IE_DS_OVERLAP");
+    const char *ov_env = getenv("IE_DS_OV_MODE");
+    if (!ov_env) ov_env = getenv("IE_DS_OVERLAP");
     const int ov_req = ov_env ? atoi(ov_env) : 0;
-    if ((ov_req == 1 || ov_req == 2) && H.StreamCreateWithFlags) {
+    if (ov_req == 3) {
+      HIP(ie_event_create_notiming(&b->ds.ev_head_ready));
+      b->ds.ov_mode = 3;
+      fprintf(stderr, "gpu: dspark same-stream Saguaro ds_ctx overlap enabled (mode 3)\n");
+    } else if ((ov_req == 1 || ov_req == 2) && H.StreamCreateWithFlags) {
       if (H.StreamCreateWithFlags(&b->ds.ctx_stream, 1u) == 0 && b->ds.ctx_stream) {
         HIP(ie_event_create_notiming(&b->ds.ev_feat_ready));
         HIP(ie_event_create_notiming(&b->ds.ev_ctx_done));
@@ -3632,15 +4128,94 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       b->d[i].nw = upload(b, L->ssm_norm.f, L->ssm_norm.n * 4);
     }
   }
+  g_weights_loaded = 1;
+  /* R76 H39 (IE_INK_SLAB_COLOR=1, opt-in OFF): pack resident blk.6..17 weights contiguously into sdev_hot (0 net VRAM). */
+  if (m->arch == ARCH_INKLING2 && ink_slab_color_want() && m->loop_end > m->loop_start) {
+    struct hot_ent { void *old_p, *new_p; size_t bytes, off; uint32_t sdev_idx; };
+    struct hot_ent *he = NULL;
+    u32 nhe = 0u, caphe = 0u;
+    size_t tot_hot = 0u;
+    for (u32 i = 0u; i < g->n_ops; i++) {
+      const op *o = &g->ops[i];
+      if (!o->w || o->w->host || o->layer < (int)m->loop_start || o->layer >= (int)m->loop_end) continue;
+      const mat *w = o->w;
+      const size_t ne = w->n_exp > 1u ? w->n_exp : 1u;
+      void *ptrs[2] = {NULL, NULL};
+      size_t bsz[2] = {0u, 0u};
+      u32 np = 0u;
+      if (w->kind == MAT_RAWQ) {
+        ptrs[0] = b->d[i].w1; bsz[0] = (size_t)ie_rawq_bytes(w) * ne; np = 1u;
+      } else if (w->kind == MAT_F32) {
+        ptrs[0] = b->d[i].w0; bsz[0] = (size_t)w->rows * w->cols * 4u * ne; np = 1u;
+      } else {
+        ptrs[0] = b->d[i].w0; bsz[0] = (size_t)mat_qw_words(w->kind, w->rows, w->cols) * 4u * ne;
+        ptrs[1] = b->d[i].w1; bsz[1] = (size_t)mat_qs_n(w->kind, w->rows, w->cols) * 2u * ne;
+        np = 2u;
+      }
+      for (u32 k = 0u; k < np; k++) {
+        void *op_p = ptrs[k];
+        if (!op_p || !bsz[k]) continue;
+        int dup = 0;
+        for (u32 j = 0u; j < nhe; j++) if (he[j].old_p == op_p) { dup = 1; break; }
+        if (dup) continue;
+        uint32_t si = sdev.n;
+        for (uint32_t j = 0u; j < sdev.n; j++)
+          if (sdev.a[j] == op_p && sdev.cur[j] == NULL) { si = j; break; }
+        if (si == sdev.n) continue; /* only relocate owned individual sdev allocations */
+        int ext_use = (op_p == b->tok0 || op_p == b->tok1 || op_p == m->out.d0 || op_p == m->out.d1 ||
+                       (b->ds.ready && (op_p == b->ds.head_w0 || op_p == b->ds.head_w1)));
+        for (u32 j = 0u; !ext_use && j < g->n_ops; j++) {
+          const op *oj = &g->ops[j];
+          if (oj->layer >= (int)m->loop_start && oj->layer < (int)m->loop_end) continue;
+          if (b->d[j].w0 == op_p || b->d[j].w1 == op_p) ext_use = 1;
+        }
+        if (ext_use) continue;
+        if (nhe == caphe) {
+          caphe = caphe ? caphe * 2u : 128u;
+          he = realloc(he, (size_t)caphe * sizeof(*he));
+          if (!he) ie_die("out of memory (slab_color)");
+        }
+        const size_t step = (bsz[k] + 128u + 4095u) & ~(size_t)4095u;
+        he[nhe++] = (struct hot_ent){op_p, NULL, bsz[k], tot_hot, si};
+        tot_hot += step;
+      }
+    }
+    if (nhe > 0u && tot_hot > 0u) {
+      void *hot_base = NULL;
+      if (H.Malloc(&hot_base, tot_hot) == 0 && hot_base) {
+        HIP(H.Memset(hot_base, 0, tot_hot));
+        slab_keep(&sdev_hot, hot_base, NULL, 0);
+        for (u32 j = 0u; j < nhe; j++) {
+          he[j].new_p = (char *)hot_base + he[j].off;
+          HIP(H.MemcpyAsync(he[j].new_p, he[j].old_p, he[j].bytes, hipMemcpyDeviceToDevice, cur_stream));
+        }
+        HIP(H.DeviceSynchronize());
+        for (u32 i = 0u; i < g->n_ops; i++) {
+          for (u32 j = 0u; j < nhe; j++) {
+            if (b->d[i].w0 == he[j].old_p) b->d[i].w0 = he[j].new_p;
+            if (b->d[i].w1 == he[j].old_p) b->d[i].w1 = he[j].new_p;
+          }
+        }
+        for (u32 j = 0u; j < nhe; j++) {
+          H.Free(he[j].old_p);
+          sdev.a[he[j].sdev_idx] = NULL;
+        }
+        fprintf(stderr, "gpu: R76 slab coloring packed %u blk.%u..%u weight arrays into contiguous %.1f MiB sdev_hot slab\n",
+                nhe, m->loop_start, m->loop_end - 1u, (double)tot_hot / 1048576.0);
+      }
+    }
+    free(he);
+  }
   hs_setup(b, g);
   ink_moe_cache_setup(b);
   b->ink_iq3_flute = 0;
   if (m->arch == ARCH_INKLING2 && !mk.on && ink_iq3_repack_want() &&
       b->k[K_INK_REPACK_IQ3XXS_FLUTE_R10] &&
       (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_T1_R7]) &&
-      (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7]) &&
+      (b->k[K_INK_FLUTE_SITU_VER_T8_R17] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7]) &&
       b->k[K_INK_MOE_SORT_COMPACT_R6] &&
-      b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10] && b->k[K_INK_MOE_PF_WORKLIST_R7] &&
+      (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10]) &&
+      b->k[K_INK_MOE_PF_WORKLIST_R7] &&
       !getenv("IE_GEMM_RQ_EXP_NO") && !getenv("IE_GEMV_NOBATCH") &&
       (!getenv("IE_DUMP_GPU_OPS") || getenv("IE_DUMP_GPU_OPS")[0] == '0') &&
       g->T <= 1024u && m->n_exp > 0u && m->n_exp <= 256u) {
@@ -3675,11 +4250,10 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
         const mat *w = &m->l[ip].egu;
         const int host_ok = (b->moe_c_on && b->moe_c[ip].active);
         if (w->kind != MAT_RAWQ || w->sub != 18u || (w->host && !host_ok) || w->n_exp == 0u) continue;
-        void *dev = w->d1;
-        if (!dev) {
-          for (u32 i = 0; i < g->n_ops && !dev; i++)
-            if (g->ops[i].w == w && b->d[i].w1) dev = b->d[i].w1;
-        }
+        void *dev = NULL;
+        for (u32 i = 0; i < g->n_ops && !dev; i++)
+          if (g->ops[i].w == w && b->d[i].w1) dev = b->d[i].w1;
+        if (!dev) dev = w->d1;
         if (!dev) { ok_all = 0; break; }
         int seen = 0;
         for (u32 k = 0; k < n_uniq; k++)
@@ -3728,6 +4302,202 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
                 n_uniq, any_host ? ", incl. H38 host-pinned outer layers" : "");
       }
     }
+  }
+  /* R72 H36a (IE_INKLING_IQ4_REPACK=1, bit 144, opt-in OFF): wave-strided IQ4_NL MoE down repack (0 persistent VRAM). */
+  b->ink_iq4_wave = 0;
+  if (m->arch == ARCH_INKLING2 && !mk.on && ink_iq4_repack_want() &&
+      b->k[K_INK_REPACK_IQ4NL_WAVE_R13] &&
+      b->k[K_INK_GEXP_IQ4NL_WAVE_TAIL_T1_R13] && b->k[K_INK_GEXP_IQ4NL_WAVE_VER_R13] &&
+      b->k[K_INK_GEXP_IQ4NL_WAVE_T1_R13] && b->k[K_INK_GEXP_IQ4NL_WAVE_COMPACT_R13] &&
+      (b->k[K_INK_GEMM_IQ4NL_WAVE_M64_R17] || b->k[K_INK_GEMM_IQ4NL_WAVE_EXPMAJ_R13]) && b->k[K_INK_MOE_SORT_COMPACT_R6] &&
+      !getenv("IE_GEMM_KX_NOE") && !getenv("IE_GEMV_NOBATCH") &&
+      (!getenv("IE_DUMP_GPU_OPS") || getenv("IE_DUMP_GPU_OPS")[0] == '0') &&
+      g->T <= 1024u && m->n_exp > 0u && m->n_exp <= 256u) {
+    int ok_all = 1;
+    u32 n_iq4_ops = 0u;
+    for (u32 i = 0u; i < g->n_ops; i++) {
+      const op *o0 = &g->ops[i];
+      if (o0->kind != OP_GEMV_EXP || !o0->w || o0->w->kind != MAT_IQ4NL) continue;
+      n_iq4_ops++;
+      const int host_ok = (b->moe_c_on && o0->layer >= 0 && (u32)o0->layer < m->n_layer && b->moe_c[o0->layer].active);
+      if ((o0->w->host && !host_ok) || !b->d[i].w0 || !b->d[i].w1 ||
+          o0->w->rows == 0u || (o0->w->rows & 3u) != 0u ||
+          o0->w->nb == 0u || (o0->w->nb & 3u) != 0u || o0->w->n_exp == 0u) {
+        ok_all = 0;
+        break;
+      }
+    }
+    if (ok_all && n_iq4_ops > 0u) {
+      void *uw0[64], *uw1[64];
+      u32 urows[64], unb[64], uqwn[64], uqsn[64], une[64];
+      uint8_t uhost[64];
+      u32 n_uniq = 0u;
+      int any_host = 0;
+      size_t max_qwb = 0u, max_qsb = 0u;
+      for (u32 ip = 0u; ip < m->n_layer; ip++) {
+        const mat *w = &m->l[ip].ed;
+        const int host_ok = (b->moe_c_on && b->moe_c[ip].active);
+        if (w->kind != MAT_IQ4NL || (w->host && !host_ok) || w->n_exp == 0u) continue;
+        void *d0 = NULL, *d1 = NULL;
+        for (u32 i = 0u; i < g->n_ops && !d0; i++)
+          if (g->ops[i].w == w && b->d[i].w0 && b->d[i].w1) { d0 = b->d[i].w0; d1 = b->d[i].w1; }
+        if (!d0) { d0 = w->d0; d1 = w->d1; }
+        if (!d0 || !d1) { ok_all = 0; break; }
+        int seen = 0;
+        for (u32 k = 0u; k < n_uniq; k++)
+          if (uw0[k] == d0) { seen = 1; break; }
+        if (seen) continue;
+        if (n_uniq >= 64u) { ok_all = 0; break; }
+        const u32 qwn = (u32)mat_qw_words(w->kind, w->rows, w->cols);
+        const u32 qsn = (u32)mat_qs_n(w->kind, w->rows, w->cols);
+        uw0[n_uniq] = d0; uw1[n_uniq] = d1;
+        urows[n_uniq] = w->rows; unb[n_uniq] = w->nb;
+        uqwn[n_uniq] = qwn; uqsn[n_uniq] = qsn; une[n_uniq] = w->n_exp;
+        uhost[n_uniq] = (uint8_t)(w->host ? 1u : 0u);
+        if (w->host) any_host = 1;
+        if ((size_t)qwn * 4u > max_qwb) max_qwb = (size_t)qwn * 4u;
+        if ((size_t)qsn * 2u > max_qsb) max_qsb = (size_t)qsn * 2u;
+        n_uniq++;
+      }
+      if (ok_all && n_uniq > 0u && max_qwb > 0u && max_qsb > 0u) {
+        const u32 batch_e = 16u;
+        void *scr_qw = NULL, *scr_qs = NULL, *dev_qw = NULL, *dev_qs = NULL;
+        HIP(H.Malloc(&scr_qw, (size_t)batch_e * max_qwb));
+        HIP(H.Malloc(&scr_qs, (size_t)batch_e * max_qsb));
+        if (any_host) {
+          HIP(H.Malloc(&dev_qw, (size_t)batch_e * max_qwb));
+          HIP(H.Malloc(&dev_qs, (size_t)batch_e * max_qsb));
+        }
+        for (u32 u = 0u; u < n_uniq; u++) {
+          u32 rows = urows[u], nb = unb[u], qwn = uqwn[u], qsn = uqsn[u], ne = une[u];
+          const u32 gx = ((rows >> 2u) + 7u) / 8u;
+          for (u32 e0 = 0u; e0 < ne; e0 += batch_e) {
+            u32 nb_e = ne - e0 < batch_e ? (ne - e0) : batch_e;
+            void *sp0 = (char *)uw0[u] + (size_t)e0 * qwn * 4u;
+            void *sp1 = (char *)uw1[u] + (size_t)e0 * qsn * 2u;
+            if (uhost[u]) {
+              HIP(H.MemcpyAsync(dev_qw, sp0, (size_t)nb_e * qwn * 4u, hipMemcpyHostToDevice, cur_stream));
+              HIP(H.MemcpyAsync(dev_qs, sp1, (size_t)nb_e * qsn * 2u, hipMemcpyHostToDevice, cur_stream));
+              void *ra[] = {&dev_qw, &dev_qs, &scr_qw, &scr_qs, &rows, &nb, &qwn, &qsn, &nb_e};
+              HIP(H.ModuleLaunchKernel(b->k[K_INK_REPACK_IQ4NL_WAVE_R13], gx, nb_e, 1, 256, 1, 1, 0, cur_stream, ra, NULL));
+              HIP(H.MemcpyAsync(sp0, scr_qw, (size_t)nb_e * qwn * 4u, hipMemcpyDeviceToHost, cur_stream));
+              HIP(H.MemcpyAsync(sp1, scr_qs, (size_t)nb_e * qsn * 2u, hipMemcpyDeviceToHost, cur_stream));
+            } else {
+              void *ra[] = {&sp0, &sp1, &scr_qw, &scr_qs, &rows, &nb, &qwn, &qsn, &nb_e};
+              HIP(H.ModuleLaunchKernel(b->k[K_INK_REPACK_IQ4NL_WAVE_R13], gx, nb_e, 1, 256, 1, 1, 0, cur_stream, ra, NULL));
+              HIP(H.MemcpyAsync(sp0, scr_qw, (size_t)nb_e * qwn * 4u, hipMemcpyDeviceToDevice, cur_stream));
+              HIP(H.MemcpyAsync(sp1, scr_qs, (size_t)nb_e * qsn * 2u, hipMemcpyDeviceToDevice, cur_stream));
+            }
+          }
+        }
+        HIP(H.DeviceSynchronize());
+        HIP(H.Free(scr_qw));
+        HIP(H.Free(scr_qs));
+        if (dev_qw) HIP(H.Free(dev_qw));
+        if (dev_qs) HIP(H.Free(dev_qs));
+        b->ink_iq4_wave = 1;
+        fprintf(stderr, "gpu: R72 H36a IQ4_NL wave-repacked %u physical layers (0.0 MiB persistent VRAM%s)\n",
+                n_uniq, any_host ? ", incl. H38 host-pinned outer layers" : "");
+      }
+    }
+  }
+  /* R72 H36b (IE_INKLING_Q4K_REPACK=1, bit 145, opt-in OFF): chunked wave-strided Q4_K output head repack (0 persistent VRAM). */
+  b->ink_q4k_wave = 0;
+  b->ink_q4k_w0 = NULL;
+  b->ink_q4k_w1 = NULL;
+  if (m->arch == ARCH_INKLING2 && !mk.on && ink_q4k_repack_want() &&
+      b->k[K_INK_REPACK_Q4K_WAVE_R13] && b->k[K_INK_Q4K_HEAD_WAVE_R13] &&
+      b->k[K_INK_Q4K_HEAD_WAVE_CAP_TOPK_R13] && b->k[K_INK_DS_BASE_Q4K_WAVE_IDMAP_R13] &&
+      m->out.kind == MAT_Q4K && !m->out.host && m->out.rows > 0u &&
+      (m->out.rows & 3u) == 0u && m->out.nb >= 8u && (m->out.nb & 7u) == 0u &&
+      (!getenv("IE_DUMP_GPU_OPS") || getenv("IE_DUMP_GPU_OPS")[0] == '0') && !getenv("IE_GEMV_NOBATCH")) {
+    void *out_w0 = (g->i_head < g->n_ops && g->ops[g->i_head].w == &m->out) ? b->d[g->i_head].w0 : m->out.d0;
+    void *out_w1 = (g->i_head < g->n_ops && g->ops[g->i_head].w == &m->out) ? b->d[g->i_head].w1 : m->out.d1;
+    if (out_w0 && out_w1) {
+      u32 total_rows = m->out.rows, nb = m->out.nb;
+      const u32 nsb = nb >> 3u;
+      const u32 chunk_r = (total_rows < 16384u) ? total_rows : 16384u;
+      void *tmp_qw = NULL, *tmp_qs = NULL;
+      HIP(H.Malloc(&tmp_qw, (size_t)chunk_r * nb * 16u));
+      HIP(H.Malloc(&tmp_qs, (size_t)chunk_r * (nb + nsb * 2u) * 2u));
+      for (u32 row0 = 0u; row0 < total_rows; row0 += chunk_r) {
+        u32 cur_r = (total_rows - row0 < chunk_r) ? (total_rows - row0) : chunk_r;
+        const u32 gx = ((cur_r >> 2u) + 7u) / 8u;
+        void *ra[] = {&out_w0, &out_w1, &tmp_qw, &tmp_qs, &total_rows, &row0, &cur_r, &nb};
+        HIP(H.ModuleLaunchKernel(b->k[K_INK_REPACK_Q4K_WAVE_R13], gx, 1, 1, 256, 1, 1, 0, cur_stream, ra, NULL));
+        HIP(H.MemcpyAsync((char *)out_w0 + (size_t)row0 * nb * 16u, tmp_qw, (size_t)cur_r * nb * 16u,
+                          hipMemcpyDeviceToDevice, cur_stream));
+        HIP(H.MemcpyAsync((char *)out_w1 + (size_t)row0 * nb * 2u, tmp_qs, (size_t)cur_r * nb * 2u,
+                          hipMemcpyDeviceToDevice, cur_stream));
+        HIP(H.MemcpyAsync((char *)out_w1 + (size_t)total_rows * nb * 2u + (size_t)row0 * nsb * 4u,
+                          (char *)tmp_qs + (size_t)cur_r * nb * 2u, (size_t)cur_r * nsb * 4u,
+                          hipMemcpyDeviceToDevice, cur_stream));
+      }
+      HIP(H.DeviceSynchronize());
+      HIP(H.Free(tmp_qw));
+      HIP(H.Free(tmp_qs));
+      b->ink_q4k_wave = 1;
+      b->ink_q4k_w0 = out_w0;
+      b->ink_q4k_w1 = out_w1;
+      fprintf(stderr, "gpu: R72 H36b Q4_K output head wave-repacked (%ux%u, 0.0 MiB persistent VRAM)\n",
+              total_rows, m->out.cols);
+    }
+  }
+  /* R72 H37 (IE_INKLING_Q8_REPACK=1, bit 146, opt-in OFF): contiguous packed Q8_0 wave copies for blk.6..17 T=1..16. */
+  b->ink_q8_wave = 0;
+  if (m->arch == ARCH_INKLING2 && !mk.on && ink_q8_repack_want() &&
+      b->k[K_INK_REPACK_Q8_WAVE_R13] && b->k[K_INK_GEMV_Q8_WAVE_HT_R13] &&
+      (!getenv("IE_DUMP_GPU_OPS") || getenv("IE_DUMP_GPU_OPS")[0] == '0') &&
+      !getenv("IE_GEMV_NOBATCH") && m->loop_end > m->loop_start) {
+    struct q8_uniq { void *w0, *w1, *q8p; u32 rows, nb; };
+    struct q8_uniq *qu = NULL;
+    u32 nqu = 0u, capqu = 0u;
+    size_t tot_q8p = 0u;
+    for (u32 i = 0u; i < g->n_ops; i++) {
+      const op *o = &g->ops[i];
+      if (o->kind != OP_GEMV_Q8 || !o->w || o->w->host || o->w->kind != MAT_Q8) continue;
+      if (o->layer < (int)m->loop_start || o->layer >= (int)m->loop_end) continue;
+      if (o->w->rows < 128u || (o->w->rows & 3u) != 0u || o->w->nb < 8u || (o->w->nb & 7u) != 0u) continue;
+      if (!b->d[i].w0 || !b->d[i].w1) continue;
+      int seen = 0;
+      for (u32 k = 0u; k < nqu; k++)
+        if (qu[k].w0 == b->d[i].w0 && qu[k].w1 == b->d[i].w1) { seen = 1; break; }
+      if (seen) continue;
+      if (nqu == capqu) {
+        capqu = capqu ? capqu * 2u : 64u;
+        qu = realloc(qu, (size_t)capqu * sizeof(*qu));
+        if (!qu) ie_die("out of memory (q8_repack)");
+      }
+      qu[nqu++] = (struct q8_uniq){b->d[i].w0, b->d[i].w1, NULL, o->w->rows, o->w->nb};
+    }
+    if (nqu > 0u) {
+      b->ink_q8p_op = calloc(g->n_ops, sizeof(void *));
+      b->ink_q8p_allocs = calloc(nqu, sizeof(void *));
+      if (!b->ink_q8p_op || !b->ink_q8p_allocs) ie_die("out of memory (q8_repack tables)");
+      for (u32 k = 0u; k < nqu; k++) {
+        const size_t bytes = (size_t)qu[k].rows * (size_t)qu[k].nb * 34u;
+        void *q8p = NULL;
+        HIP(H.Malloc(&q8p, bytes));
+        u32 rows = qu[k].rows, nb = qu[k].nb;
+        const u32 gx = ((rows >> 2u) + 7u) / 8u;
+        void *ra[] = {&qu[k].w0, &qu[k].w1, &q8p, &rows, &nb};
+        HIP(H.ModuleLaunchKernel(b->k[K_INK_REPACK_Q8_WAVE_R13], gx, 1, 1, 256, 1, 1, 0, cur_stream, ra, NULL));
+        qu[k].q8p = q8p;
+        b->ink_q8p_allocs[b->ink_q8p_nalloc++] = q8p;
+        tot_q8p += bytes;
+      }
+      HIP(H.DeviceSynchronize());
+      for (u32 i = 0u; i < g->n_ops; i++) {
+        const op *o = &g->ops[i];
+        if (o->kind != OP_GEMV_Q8 || !b->d[i].w0) continue;
+        for (u32 k = 0u; k < nqu; k++)
+          if (qu[k].w0 == b->d[i].w0 && qu[k].w1 == b->d[i].w1) { b->ink_q8p_op[i] = qu[k].q8p; break; }
+      }
+      b->ink_q8_wave = 1;
+      fprintf(stderr, "gpu: R72 H37 Q8_0 wave-repacked %u blk.%u..%u matrices (%.1f MiB opt-in VRAM)\n",
+              nqu, m->loop_start, m->loop_end - 1u, (double)tot_q8p / 1048576.0);
+    }
+    free(qu);
   }
   if (b->moe_c_on) ink_moe_cache_prepop(b);
   HIP(H.EventCreate(&b->e0));
@@ -4696,6 +5466,7 @@ static void gpu_kv_trim(backend *bk, uint32_t keep_pos) {
   gpu_backend *b = (gpu_backend *)bk;
   if (!kv_shrink_on()) return;
   if (b->kv_grow != 1 && !(b->ds.ready && b->ds.kv_grow)) return;
+  gpu_kv_io_sync(bk);
   ds_ctx_drain(b);
   snap_async_join(b);
   if (b->snap_cs) HIP(H.StreamSynchronize(b->snap_cs));
@@ -4863,6 +5634,27 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
       }
       case OP_GEMV_Q4K: {
         u32 rows = o->w->rows, nb = o->w->nb;
+        if (b->ink_q4k_wave && w0 == b->ink_q4k_w0) {
+          static int gmin_w = -1;
+          if (gmin_w < 0) gmin_w = getenv("IE_GEMM_MIN") ? atoi(getenv("IE_GEMM_MIN")) : 17;
+          if (T > 1u && (int)T >= gmin_w)
+            ie_die("IE_INKLING_Q4K_REPACK=1 is incompatible with T=%u >= %d OP_GEMV_Q4K (--ppl); unset IE_INKLING_Q4K_REPACK", T, gmin_w);
+          if (NW) ie_die("IE_INKLING_Q4K_REPACK=1 is incompatible with IE_NORM_FUSE on output head");
+          const u32 gr = (rows + 31u) / 32u;
+          u32 xs = T > 1u ? g->bufs[o->a].stride : 0u;
+          u32 ys = T > 1u ? (g->bufs[o->b].stride / 4u) : 0u;
+          u32 rs = (T > 1u && o->res >= 0) ? (g->bufs[o->res].stride / 4u) : 0u;
+          u32 unpad0 = 0u;
+          float cap0 = 0.0f;
+          for (u32 t0 = 0u; t0 < T; t0 += 8u) {
+            u32 tn = T - t0 < 8u ? T - t0 : 8u;
+            void *Ab = (char *)A + (size_t)t0 * xs, *Bb = (char *)B + (size_t)t0 * ys * 4u;
+            const void *Rb = R ? (const char *)R + (size_t)t0 * rs * 4u : NULL;
+            void *qa[] = {&w0, &w1, &Ab, &Bb, &rows, &nb, &bias, &Rb, &tn, &xs, &ys, &rs, &unpad0, &cap0};
+            launch(b, K_INK_Q4K_HEAD_WAVE_R13, gr >= 253u && gr <= 256u ? 257u : gr, qa);
+          }
+          break;
+        }
         if (T > 1) { /* all tokens, 16 at a time: the weights read once per 16 tokens */
           if (NW) ie_die("a GEMV with a fused norm (IE_NORM_FUSE) cannot do several tokens");
           u32 xs = g->bufs[o->a].stride, ys = g->bufs[o->b].stride / 4u, rs = o->res >= 0 ? g->bufs[o->res].stride / 4u : 0u;
@@ -4983,6 +5775,28 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
             } else if (gk == K_GEMM_Q8R && b->k[K_INK_GEMM_Q8_FP8_MED_R10] && (ink_fp8_mode() & 1) && !mk.rec &&
                 T >= 64u && rows >= 512u && nb >= 4u && (nb & 3u) == 0u) {
               launch(b, K_INK_GEMM_Q8_FP8_MED_R10, ((rows + 127u) / 128u) * ((T + 63u) / 64u), args);
+            } else if (gk == K_GEMM_Q8R && b->k[K_INK_GEMM_Q8_MED_SK_R13] && !mk.rec &&
+                b->at_part && b->at_count && rows >= 512u && nb >= 4u && (nb & 3u) == 0u) {
+              const u32 total_tiles = ((rows + 127u) / 128u) * ((T + 63u) / 64u);
+              u32 sk_wgs = 192u;
+              const u32 cap_cnt = m->n_head * b->at_tmax;
+              const u32 cap_buf = (u32)(b->at_part_floats / 16384u);
+              if (sk_wgs > cap_cnt) sk_wgs = cap_cnt;
+              if (sk_wgs > cap_buf) sk_wgs = cap_buf;
+              const u32 rem = sk_wgs > 0u ? (total_tiles % sk_wgs) : 0u;
+              if (sk_wgs >= 64u && total_tiles > sk_wgs && rem >= 32u && rem <= sk_wgs - 32u) {
+                void *sk_part = (void *)b->at_part;
+                void *ska[] = {&w0, &w1, &A, &B, &rows, &nb, &bias, &R, &T, &xs, &ys, &rs, &sk_part, &b->at_count, &sk_wgs};
+                launch(b, K_INK_GEMM_Q8_MED_SK_R13, sk_wgs, ska);
+              } else if ((b->k[K_INK_GEMM_Q8_MED_SWIZ_R10] && (q8_swiz_mask & 1)) ||
+                         b->k[K_INK_GEMM_Q8_MED_R9] || b->k[K_INK_GEMM_Q8_MED_R7]) {
+                const int km = (b->k[K_INK_GEMM_Q8_MED_SWIZ_R10] && (q8_swiz_mask & 1))
+                                   ? K_INK_GEMM_Q8_MED_SWIZ_R10
+                                   : (b->k[K_INK_GEMM_Q8_MED_R9] ? K_INK_GEMM_Q8_MED_R9 : K_INK_GEMM_Q8_MED_R7);
+                launch(b, km, total_tiles, args);
+              } else {
+                launch(b, gk, ((rows + grows - 1u) / grows) * ((T + 63u) / 64u), args);
+              }
             } else if (gk == K_GEMM_Q8R &&
                 ((b->k[K_INK_GEMM_Q8_MED_SWIZ_R10] && (q8_swiz_mask & 1)) ||
                  b->k[K_INK_GEMM_Q8_MED_R9] || b->k[K_INK_GEMM_Q8_MED_R7]) && !mk.rec &&
@@ -5031,6 +5845,12 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
               fprintf(stderr, "gemm check %ux%u T=%u: max |gemm - gemv| / max |gemv| = %.2e\n", rows, o->w->cols, T, mx > 0 ? d / mx : 0);
               free(y1), free(y2);
             }
+          } else if (b->ink_q8_wave && b->k[K_INK_GEMV_Q8_WAVE_HT_R13] && b->ink_q8p_op && b->ink_q8p_op[i] &&
+                     !mk.rec && T >= 2u && T <= 16u && rows >= 128u && nb >= 8u && (nb & 7u) == 0u) {
+            void *q8p = b->ink_q8p_op[i];
+            void *wa[] = {&q8p, &A, &B, &rows, &nb, &bias, &R, &T, &xs, &ys, &rs};
+            const u32 gr = (rows + 31u) / 32u;
+            launch(b, K_INK_GEMV_Q8_WAVE_HT_R13, gr >= 253u && gr <= 256u ? 257u : gr, wa);
           } else if (b->k[K_INK_GEMV_Q8_HT_R10] && !mk.rec && m->arch == ARCH_INKLING2 &&
                      o->layer >= (int)m->loop_start && o->layer < (int)m->loop_end &&
                      T >= 2u && T <= 16u && rows >= 256u && nb >= 8u && (nb & 7u) == 0u) {
@@ -5065,6 +5885,13 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           launch(b, K_INK_GEMV_Q8_NB2, (rows + 63u) / 64u, args);
         } else if (b->k[K_INK_GEMV_Q8_SMALL] && mk_ok_k(K_INK_GEMV_Q8_SMALL) && rows > 0u && rows <= 64u && nb >= 32u) {
           launch(b, K_INK_GEMV_Q8_SMALL, rows, args);
+        } else if (b->ink_q8_wave && b->k[K_INK_GEMV_Q8_WAVE_HT_R13] && b->ink_q8p_op && b->ink_q8p_op[i] &&
+                   !mk.rec && !NW && rows >= 128u && rows <= 8192u && nb >= 8u && (nb & 7u) == 0u) {
+          void *q8p = b->ink_q8p_op[i];
+          u32 one = 1u, z0 = 0u;
+          void *wa[] = {&q8p, &A, &B, &rows, &nb, &bias, &R, &one, &z0, &z0, &z0};
+          const u32 gr = (rows + 31u) / 32u;
+          launch(b, K_INK_GEMV_Q8_WAVE_HT_R13, gr >= 253u && gr <= 256u ? 257u : gr, wa);
         } else if (b->k[K_INK_GEMV_Q8_HT_R10] && !mk.rec && !NW && m->arch == ARCH_INKLING2 &&
                    o->layer >= (int)m->loop_start && o->layer < (int)m->loop_end &&
                    rows >= 128u && rows <= 8192u && nb >= 8u && (nb & 7u) == 0u) {
@@ -5130,6 +5957,16 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
               u32 TT = T;
               void *sa[] = {&w0, &A, &B, &rows, &cols, &xs, &ys, &TT};
               launch(b, K_SALUKI_LORA_A_T4, gx, sa);
+            } else if (ink_router_r13_mode() > 0 && !mk.rec && rows > 0u && cols >= 16u && (cols & 15u) == 0u &&
+                       ((ink_router_r13_mode() == 1 && b->k[K_INK_GEMM_F32_ROUTER_BF16_R13]) ||
+                        (ink_router_r13_mode() == 2 && b->k[K_INK_GEMM_F32_ROUTER_EXACT_R13])) &&
+                       (xs & 15u) == 0u && (((uintptr_t)w0) & 15u) == 0u && (((uintptr_t)A) & 15u) == 0u) {
+              u32 TT = T, K0 = 0u, ost0 = 0u;
+              float sc0 = 0.0f;
+              void *nul = NULL;
+              void *sa[] = {&w0, &A, &B, &rows, &cols, &bias, &R, &xs, &ys, &rs, &TT, &K0, &nul, &sc0, &nul, &ost0, &nul};
+              const int kr = (ink_router_r13_mode() == 1) ? K_INK_GEMM_F32_ROUTER_BF16_R13 : K_INK_GEMM_F32_ROUTER_EXACT_R13;
+              launch_t(b, kr, (rows + 31u) / 32u, (T + 31u) / 32u, sa);
             } else if (b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] && !mk.rec && rows > 0u && cols >= 16u && (cols & 15u) == 0u &&
                        (xs & 15u) == 0u && (((uintptr_t)w0) & 15u) == 0u && (((uintptr_t)A) & 15u) == 0u) {
               u32 TT = T, K0 = 0u, ost0 = 0u;
@@ -5435,13 +6272,13 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           u32 ne = m->n_exp;
           if (T * K > IE_MS_MAXP || ne > 1024u) ie_die("flint chunk: %u pairs (at most %u), %u experts (at most 1024)", T * K, IE_MS_MAXP, ne);
           const u32 slot_max = ink_moe_slot_max(b);
-          const int skip_sort = T >= 2u && T <= 16u && T <= slot_max && b->ink_moe_all_slot && !b->ink_iq3_flute && !mk.rec &&
+          const int skip_sort = T >= 2u && T <= 16u && T <= slot_max && b->ink_moe_all_slot && !b->ink_iq3_flute && !b->ink_iq4_wave && !mk.rec &&
                                 b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
           const u32 mp_a = T * K, mp_b = ne + (T * K) / 4u;
           const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
           if (skip_sort) {
             /* direct per-slot R6 MoE kernels read route directly without sort */
-          } else if (T >= 2u && T <= 16u && !mk.rec && !b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] &&
+          } else if (T >= 2u && T <= 16u && !mk.rec && !b->ink_iq3_flute && !b->ink_iq4_wave && b->k[K_INK_MOE_SORT_ADAP_R8] &&
                      ink_moe_adap_mode() == 1 && b->ms_packs1 && b->ms_npacks1 && b->ms_packsM && b->ms_npacksM &&
                      ne <= 256u && T * K <= 4096u && max_packs <= 512u) {
             void *sa[] = {&B, &ost, &T, &K, &ne, &b->ms_offs, &b->ms_list,
@@ -5546,6 +6383,24 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           u32 xs = as ? as : at, xdiv = as ? 1u : K, zero = 0u;
           void *nul = NULL;
           void *ta[] = {&w0, &w1, &A, &B, &rows, &nb, &b->ms_list, &b->ms_offs, &zero, &qwn, &qsn, &xs, &bs, &xdiv, &kind, &nul, &zero};
+          if (b->ink_iq4_wave && kind == (u32)MAT_IQ4NL) {
+            const int kw_pf = b->k[K_INK_GEMM_IQ4NL_WAVE_M64_R17] ? K_INK_GEMM_IQ4NL_WAVE_M64_R17 : K_INK_GEMM_IQ4NL_WAVE_EXPMAJ_R13;
+            if (gx_wmma(b, T, nb, kind) && !getenv("IE_GEMM_KX_NOE") && !mk.rec &&
+                b->k[kw_pf] && nb > 0u && (nb & 3u) == 0u) {
+              launch_t(b, kw_pf, (rows + 127u) / 128u, m->n_exp, ta);
+            } else if (T >= 2u && T <= 16u && !mk.rec && b->k[K_INK_GEXP_IQ4NL_WAVE_COMPACT_R13] &&
+                       b->k[K_INK_MOE_SORT_COMPACT_R6] && b->ms_packs && b->ms_npacks &&
+                       rows > 0u && nb > 0u && m->n_exp <= 256u && T * K <= 4096u &&
+                       (T * K < m->n_exp + (T * K) / 4u ? T * K : m->n_exp + (T * K) / 4u) <= 160u) {
+              const u32 mp_a = T * K, mp_b = m->n_exp + (T * K) / 4u;
+              const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
+              void *ca[] = {&w0, &w1, &A, &B, &rows, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks, &qwn, &qsn, &xs, &bs, &xdiv, &kind, &nul, &zero};
+              launch_t(b, K_INK_GEXP_IQ4NL_WAVE_COMPACT_R13, (rows + 31u) / 32u, max_packs, ca);
+            } else {
+              ie_die("OP_GEMV_EXP: wave-repacked IQ4_NL reached AoS fallback (T=%u)", T);
+            }
+            break;
+          }
           if (gx_wmma(b, T, nb, kind) && !getenv("IE_GEMM_KX_NOE")) {
             const u32 mt_a = T * K, mt_b = m->n_exp + (T * K) / 64u;
             const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
@@ -5637,6 +6492,12 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           break;
         }
         void *args[] = {&w0, &w1, &A, &B, &rows, &nb, &C, &qwn, &qsn, &as, &bs, &kind, &two_off};
+        if (b->ink_iq4_wave && kind == (u32)MAT_IQ4NL) {
+          if (!b->k[K_INK_GEXP_IQ4NL_WAVE_T1_R13] || mk.rec)
+            ie_die("OP_GEMV_EXP: wave-repacked IQ4_NL reached T=1 AoS fallback");
+          launch_t(b, K_INK_GEXP_IQ4NL_WAVE_T1_R13, (rows + 31u) / 32u, o->nh, args);
+          break;
+        }
         const int kg4 = (kind == (u32)MAT_IQ4NL)
                             ? ((b->k[K_INK_GEXP_IQ4NL_T1_NT_R10] && !mk.rec)
                                    ? K_INK_GEXP_IQ4NL_T1_NT_R10
@@ -6011,8 +6872,14 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
           u32 kvlen = g->kv_len[kvi], ks = g->bufs[o->a].stride, vs = g->bufs[o->b].stride;
           u32 TT = T, rot = b->ink_glob_kv_rot;
-          void *args[] = {&A, &B, &kc, &vc, &pos, &TT, &kvlen, (void *)&nkv, (void *)&hd, &ks, &vs, &rot};
-          launch_t(b, K_INK_KV_STORE_GLOB_Q4_R14, nkv, T, args);
+          if (b->k[K_INK_KV_STORE_GLOB_Q4_ROT_PF_R16]) {
+            float k_clamp = 0.0f, v_eps = 0.0f;
+            void *args[] = {&A, &B, &kc, &vc, &pos, &TT, &kvlen, (void *)&nkv, (void *)&hd, &ks, &vs, &k_clamp, &v_eps, &rot};
+            launch(b, K_INK_KV_STORE_GLOB_Q4_ROT_PF_R16, (T * nkv + 7u) / 8u, args);
+          } else {
+            void *args[] = {&A, &B, &kc, &vc, &pos, &TT, &kvlen, (void *)&nkv, (void *)&hd, &ks, &vs, &rot};
+            launch_t(b, K_INK_KV_STORE_GLOB_Q4_R14, nkv, T, args);
+          }
         } else if (T > 1u || b->kvq8 || b->kvq4) {
           void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
           u32 kvlen = g->kv_len[kvi], ks = g->bufs[o->a].stride, vs = g->bufs[o->b].stride;
@@ -6381,7 +7248,9 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
         u32 nh = o->nh, as = g->bufs[o->a].stride, cs = o->c >= 0 ? g->bufs[o->c].stride : 0u, bs = g->bufs[o->b].stride;
         float esc = o->escale;
         u32 TT = T;
-        if (b->tr_on && m->arch == ARCH_INKLING2 && b->ink_tree_split > 0u && b->ink_tree_split < T) {
+        if (b->tr_on && m->arch == ARCH_INKLING2 && b->ink_tree_nonlin) {
+          if (!(b->ink_tree_split > 0u && b->ink_tree_split < T))
+            ie_die("OP_SCONV: multi-depth tree requires bit 131/163 tree-aware sconv kernels");
           /* R32 exact 2-branch depth-1 tree sconv: Branch A [0..s-1] at pos, write x[0]->ring[pos%4], Branch B [s..T-1] at pos+1. */
           const u32 s_br = b->ink_tree_split, nb_br = T - s_br;
           const int use_ik = b->k[K_INK_SCONV] && mk_ok_k(K_INK_SCONV) && (n & 3u) == 0u &&
@@ -6439,39 +7308,137 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
       }
       case OP_REL_ATTN: {
         u32 kvi = o->kvi, kvlen = g->kv_len[kvi], nh = o->nh, d_rel = o->qstr, relext = m->rel_extent, win = o->win;
+        if (__builtin_expect(b->kv_h2d_piped && kvi < 64u && b->kv_h2d_ev_valid[kvi], 0)) {
+          HIP(H.StreamWaitEvent(cur_stream, b->kv_h2d_ev[kvi], 0));
+          b->kv_h2d_ev_valid[kvi] = 0u;
+        }
         void *kc = kv_ptr(b, 0, kvi, 0), *vc = kv_ptr(b, 1, kvi, 0);
         if (b->ink_glob_kv_mode == 2 && win == 0u && kvlen >= g->n_ctx) {
           u32 rot = b->ink_glob_kv_rot;
           if (T == 1u) {
-            u32 np = pos + 1u;
-            u32 max_sp = (u32)(g->bufs[o->c].size / ((size_t)nh * (hd + 2u) * 4u));
-            if (max_sp > 64u) max_sp = 64u;
-            if (max_sp == 0u) max_sp = 1u;
-            u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
-            if (nsplit > max_sp) nsplit = max_sp;
-            u32 ch = (np + nsplit - 1u) / nsplit;
-            nsplit = (np + ch - 1u) / ch;
-            void *ag_nul = NULL, *oq_nul = NULL;
-            void *ga[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &B, &pos, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
-                          &relext, &win, &nsplit, &ch, &b->at_count, &ag_nul, &oq_nul, &rot};
-            launch(b, K_INK_REL_ATTN_DEC_GLOB_Q4_R14, nkv * nsplit, ga);
+            const int k_q4w = b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17] ? K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17
+                                                                             : K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15;
+            if (ink_q4_wmma_t1() && b->k[k_q4w] && b->at_part && b->at_count &&
+                ((uintptr_t)A & 15u) == 0u) {
+              u32 np = pos + 1u, TT1 = 1u;
+              u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+              u32 cap_sp = ink_q4_dec_maxsp();
+              if (nsplit > cap_sp) nsplit = cap_sp;
+              while (nsplit > 1u && (size_t)nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+              u32 qs = g->bufs[o->a].stride, rs = g->bufs[o->nq].stride, ss = g->bufs[o->res].stride, os = g->bufs[o->b].stride;
+              u32 gs0 = 0u, oqs0 = 0u;
+              void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+              void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT1, &kvlen, (void *)&hd, &nh,
+                            (void *)&nkv, &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count,
+                            &ag_nul, &oq_nul, &gs0, &oqs0, &rot};
+              launch_t(b, k_q4w, nkv * nsplit, 1u, va);
+            } else {
+              const int use_fast = b->k[K_INK_REL_ATTN_DEC_GLOB_Q4_FAST_R15] != NULL;
+              const u32 cap_sp = ink_q4_dec_maxsp();
+              const int use_atp = use_fast && cap_sp > 64u && b->at_part && ((size_t)nh * cap_sp * 130u <= b->at_part_floats);
+              void *part_p = use_atp ? (void *)b->at_part : C;
+              u32 np = pos + 1u;
+              u32 max_sp = use_atp ? cap_sp : (u32)(g->bufs[o->c].size / ((size_t)nh * (hd + 2u) * 4u));
+              if (!use_atp && max_sp > 64u) max_sp = 64u;
+              if (max_sp > cap_sp) max_sp = cap_sp;
+              if (max_sp == 0u) max_sp = 1u;
+              u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
+              if (nsplit > max_sp) nsplit = max_sp;
+              u32 ch = (np + nsplit - 1u) / nsplit;
+              nsplit = (np + ch - 1u) / ch;
+              void *ag_nul = NULL, *oq_nul = NULL;
+              void *ga[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
+                            &relext, &win, &nsplit, &ch, &b->at_count, &ag_nul, &oq_nul, &rot};
+              launch(b, use_fast ? K_INK_REL_ATTN_DEC_GLOB_Q4_FAST_R15 : K_INK_REL_ATTN_DEC_GLOB_Q4_R14, nkv * nsplit, ga);
+            }
           } else {
             u32 qs = g->bufs[o->a].stride, rs = g->bufs[o->nq].stride, ss = g->bufs[o->res].stride, os = g->bufs[o->b].stride;
             u32 TT = T;
             if (T <= 16u && b->at_part && b->at_count) {
-              u32 np = pos + T;
-              u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
-              if (nsplit > 64u) nsplit = 64u;
-              while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
-              void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
-              u32 gs0 = 0u, oqs0 = 0u;
-              void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
-                            &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag_nul, &oq_nul, &gs0, &oqs0, &rot};
-              launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_R14, nkv * nsplit, (T + 3u) / 4u, va);
+              if (b->tr_on && T <= 8u && b->k[K_INK_REL_ATTN_VER_GLOB_Q4_TREE_R16] &&
+                  ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
+                u32 np = pos + T;
+                u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+                u32 vcap = ink_q4_ver_maxsp();
+                if (nsplit > vcap) nsplit = vcap;
+                while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+                void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+                u32 gs0 = 0u, oqs0 = 0u;
+                uint64_t tmask = b->ink_tree_mask;
+                u32 tdep = b->ink_tree_dep_pack;
+                void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh,
+                              (void *)&nkv, &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count,
+                              &tmask, &tdep, &ag_nul, &oq_nul, &gs0, &oqs0, &rot};
+                launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_TREE_R16, nkv * nsplit, 1u, va);
+              } else if ((b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17] || b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15]) && !b->tr_on &&
+                  ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
+                const int k_q4w = b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17] ? K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17
+                                                                                 : K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15;
+                for (u32 s0 = 0u; s0 < T; s0 += 8u) {
+                  u32 sT = (T - s0 > 8u) ? 8u : (T - s0);
+                  u32 spos = pos + s0;
+                  void *A_s = (char *)A + (size_t)s0 * qs;
+                  void *NQ_s = (char *)NQ + (size_t)s0 * rs;
+                  void *R_s = (char *)R + (size_t)s0 * ss;
+                  void *B_s = (char *)B + (size_t)s0 * os;
+                  u32 np = spos + sT;
+                  u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+                  u32 vcap = ink_q4_ver_maxsp();
+                  if (nsplit > vcap) nsplit = vcap;
+                  while (nsplit > 1u && (size_t)sT * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+                  void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+                  u32 gs0 = 0u, oqs0 = 0u;
+                  void *va[] = {&A_s, &kc, &vc, &NQ_s, &w0, &R_s, &part_p, &B_s, &spos, &sT, &kvlen, (void *)&hd, &nh,
+                                (void *)&nkv, &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count,
+                                &ag_nul, &oq_nul, &gs0, &oqs0, &rot};
+                  launch_t(b, k_q4w, nkv * nsplit, 1u, va);
+                }
+              } else {
+                u32 np = pos + T;
+                u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+                if (nsplit > 64u) nsplit = 64u;
+                while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+                void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+                u32 gs0 = 0u, oqs0 = 0u;
+                void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                              &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag_nul, &oq_nul, &gs0, &oqs0, &rot};
+                launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_R14, nkv * nsplit, (T + 3u) / 4u, va);
+              }
             } else {
-              void *pa[] = {&A, &kc, &vc, &NQ, &w0, &R, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
-                            &relext, &win, &qs, &rs, &ss, &os, &rot};
-              launch_t(b, K_INK_REL_ATTN_PF_GLOB_Q4_R14, (T + 31u) / 32u, nkv, pa);
+              const u32 ntile = (T + 31u) / 32u;
+              u32 pf_nsplit = 0u;
+              if (b->k[K_INK_REL_ATTN_PF_SPLIT_GLOB_Q4_R15] && !mk.rec && T >= 17u && T <= 256u &&
+                  pos >= ink_pf_split_min_pos() && b->at_part && b->at_count &&
+                  ntile * nkv <= m->n_head * b->at_tmax) {
+                u32 max_sp = (u32)(b->at_part_floats / ((size_t)T * nh * 130u));
+                if (max_sp > 16u) max_sp = 16u;
+                u32 sp = (256u + ntile * nkv - 1u) / (ntile * nkv);
+                if (sp < 2u) sp = 2u;
+                if (sp > max_sp) sp = max_sp;
+                if (sp >= 2u) pf_nsplit = sp;
+              }
+              if (pf_nsplit >= 2u) {
+                void *part_p = (void *)b->at_part;
+                void *sa[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                              &d_rel, &relext, &win, &pf_nsplit, &qs, &rs, &ss, &os, &b->at_count, &rot};
+                launch_t(b, K_INK_REL_ATTN_PF_SPLIT_GLOB_Q4_R15, ntile * pf_nsplit, nkv, sa);
+              } else if (b->k[K_INK_REL_ATTN_PF_FAR_GLOB_Q4_R15] && b->k[K_INK_REL_ATTN_PF_NEAR_GLOB_Q4_R15] &&
+                         !mk.rec && pos >= ink_pf_far_min_pos() && b->at_part &&
+                         (size_t)T * nh * 130u <= b->at_part_floats) {
+                void *part_p = (void *)b->at_part;
+                void *fa[] = {&A, &kc, &vc, &R, &part_p, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &relext,
+                              &qs, &ss, &rot};
+                void *na[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                              &d_rel, &relext, &win, &qs, &rs, &ss, &os, &rot};
+                launch_t(b, K_INK_REL_ATTN_PF_FAR_GLOB_Q4_R15, ntile, nkv, fa);
+                launch_t(b, K_INK_REL_ATTN_PF_NEAR_GLOB_Q4_R15, ntile, nkv, na);
+              } else {
+                const int kp = b->k[K_INK_REL_ATTN_PF_GLOB_Q4_FAST_R15] ? K_INK_REL_ATTN_PF_GLOB_Q4_FAST_R15
+                                                                        : K_INK_REL_ATTN_PF_GLOB_Q4_R14;
+                void *pa[] = {&A, &kc, &vc, &NQ, &w0, &R, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
+                              &relext, &win, &qs, &rs, &ss, &os, &rot};
+                launch_t(b, kp, ntile, nkv, pa);
+              }
             }
           }
           break;
@@ -6481,7 +7448,23 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
           u32 TT = T;
           void *args[] = {&A, &kc, &vc, &NQ, &w0, &R, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &d_rel,
                           &relext, &win, &qs, &rs, &ss, &os};
-          if (b->tr_on && b->k[K_INK_REL_ATTN_VER_TREE_R8] && !b->kvq8 && !b->kvq4 && !mk.rec &&
+          if (b->tr_on && win == 0u && pos >= 2048u && b->k[K_INK_REL_ATTN_VER_GLOB_WMMA_TREE_R12] &&
+              !b->kvq8 && !b->kvq4 && !mk.rec && T >= 2u && T <= 8u && hd == 128u && d_rel == 16u && nkv > 0u &&
+              nh == nkv * 3u && kvlen > 0u && b->at_part && b->at_count &&
+              ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
+            u32 np = pos + T;
+            u32 nsplit = (np >= 256u) ? (np + 255u) / 256u : 1u;
+            if (nsplit > 64u) nsplit = 64u;
+            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+            void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+            u32 gs0 = 0u, oqs0 = 0u;
+            uint64_t tmask = b->ink_tree_mask;
+            u32 tdep = b->ink_tree_dep_pack;
+            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                          &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &tmask, &tdep,
+                          &ag_nul, &oq_nul, &gs0, &oqs0};
+            launch_t(b, K_INK_REL_ATTN_VER_GLOB_WMMA_TREE_R12, nkv * nsplit, 1u, va);
+          } else if (b->tr_on && b->k[K_INK_REL_ATTN_VER_TREE_R8] && !b->kvq8 && !b->kvq4 && !mk.rec &&
               T >= 2u && T <= 8u && hd == 128u && d_rel == 16u && nkv > 0u &&
               nh == nkv * 3u && kvlen > 0u && ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
             u32 np_pfx = (win > 0u && pos + T > win) ? win : pos;
@@ -6494,6 +7477,30 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
             void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
                           &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &tmask, &tdep};
             launch_t(b, K_INK_REL_ATTN_VER_TREE_R8, nkv * nsplit, T, va);
+          } else if (((ink_h21_mode() == 1 && (b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_WMMA_R11]) && T <= 8u) ||
+                      (ink_h21_mode() == 2 && (b->k[K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_QT2_R11]) && T <= 16u) ||
+                      (ink_h21_mode() == 3 && b->k[K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16] && T <= 16u)) &&
+              !b->kvq8 && !b->kvq4 && !mk.rec && !b->tr_on &&
+              win > 0u && T >= 2u && hd == 128u && d_rel == 16u && nkv > 0u &&
+              nh == nkv * 3u && kvlen > 0u && b->at_part && b->at_count &&
+              ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
+            const int hm = ink_h21_mode();
+            const int use_qtile_ex = (hm == 3 && b->k[K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16] != NULL);
+            const int use_wmma = (!use_qtile_ex && hm == 1 && T <= 8u &&
+                                  (b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_WMMA_R11]));
+            u32 np_u = use_qtile_ex ? ((pos + T > win) ? (win + 3u) : (pos + T))
+                                    : ((pos + T > win) ? (win + T) : (pos + T));
+            u32 nsplit = (np_u >= 128u) ? (np_u + 63u) / 64u : 1u;
+            const u32 sp_cap = use_qtile_ex ? 64u : 16u;
+            if (nsplit > sp_cap) nsplit = sp_cap;
+            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+            void *part_p = (void *)b->at_part, *ag_nul = NULL, *oq_nul = NULL;
+            u32 gs0 = 0u, oqs0 = 0u;
+            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
+                          &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag_nul, &oq_nul, &gs0, &oqs0};
+            if (use_qtile_ex) launch_t(b, K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16, nkv * nsplit, (T + 3u) / 4u, va);
+            else if (use_wmma) launch_t(b, b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] ? K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16 : K_INK_REL_ATTN_VER_SWA_WMMA_R11, nkv * nsplit, 1u, va);
+            else launch_t(b, b->k[K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16] ? K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16 : K_INK_REL_ATTN_VER_SWA_QT2_R11, nkv * nsplit, (T + 1u) / 2u, va);
           } else if (b->k[K_INK_REL_ATTN_VER_SWA_QTILE_R7] && !b->kvq8 && !b->kvq4 && mk_ok_k(K_INK_REL_ATTN_VER_SWA_QTILE_R7) &&
               win > 0u && T >= 2u && T <= 16u && hd == 128u && d_rel == 16u && nkv > 0u &&
               nh == nkv * 3u && kvlen > 0u && ((qs | os) & 15u) == 0u && ((uintptr_t)A & 15u) == 0u) {
@@ -6558,12 +7565,14 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
                             &d_rel, &relext, &win, &nsplit, &qs, &rs, &ss, &os, &b->at_count};
               launch_t(b, K_INK_REL_ATTN_PF_SPLIT_R7, ntile * nsplit, nkv, va);
             } else {
-              const int ka = b->k[K_INK_REL_ATTN_PF_SB_R10] ? K_INK_REL_ATTN_PF_SB_R10
+              const int ka = b->k[K_INK_REL_ATTN_PF_SWA_FAST_R17] ? K_INK_REL_ATTN_PF_SWA_FAST_R17
+                           : (b->k[K_INK_REL_ATTN_PF_SB_POLY_R13] ? K_INK_REL_ATTN_PF_SB_POLY_R13
+                           : (b->k[K_INK_REL_ATTN_PF_SB_R10] ? K_INK_REL_ATTN_PF_SB_R10
                            : (b->k[K_INK_REL_ATTN_PF_R7] ? K_INK_REL_ATTN_PF_R7
-                           : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF));
+                           : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF))));
               launch_t(b, ka, ntile, nkv, args);
             }
-          } else if (b->k[K_INK_REL_ATTN_PF_FAR_R10] && b->k[K_INK_REL_ATTN_PF_NEAR_MERGE_R10] &&
+          } else if ((b->k[K_INK_REL_ATTN_PF_FAR_POLY_R13] || b->k[K_INK_REL_ATTN_PF_FAR_R10]) && b->k[K_INK_REL_ATTN_PF_NEAR_MERGE_R10] &&
               !b->kvq8 && !b->kvq4 && !mk.rec && win == 0u && pos >= 2048u && T > 1u &&
               hd == 128u && d_rel == 16u && nkv > 0u && nh == nkv * 3u && kvlen > 0u &&
               b->at_part && (size_t)T * nh * 130u <= b->at_part_floats) {
@@ -6572,13 +7581,15 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
             void *fa[] = {&A, &kc, &vc, &R, &part_p, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &relext, &qs, &ss};
             void *na[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &B, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv,
                           &d_rel, &relext, &win, &qs, &rs, &ss, &os};
-            launch_t(b, K_INK_REL_ATTN_PF_FAR_R10, ntile, nkv, fa);
+            launch_t(b, b->k[K_INK_REL_ATTN_PF_FAR_POLY_R13] ? K_INK_REL_ATTN_PF_FAR_POLY_R13 : K_INK_REL_ATTN_PF_FAR_R10, ntile, nkv, fa);
             launch_t(b, K_INK_REL_ATTN_PF_NEAR_MERGE_R10, ntile, nkv, na);
-          } else if ((b->k[K_INK_REL_ATTN_PF_SB_R10] || b->k[K_INK_REL_ATTN_PF_R7] || b->k[K_INK_REL_ATTN_PF_R3] || b->k[K_INK_REL_ATTN_PF]) &&
+          } else if ((b->k[K_INK_REL_ATTN_PF_SWA_FAST_R17] || b->k[K_INK_REL_ATTN_PF_SB_POLY_R13] || b->k[K_INK_REL_ATTN_PF_SB_R10] || b->k[K_INK_REL_ATTN_PF_R7] || b->k[K_INK_REL_ATTN_PF_R3] || b->k[K_INK_REL_ATTN_PF]) &&
               !b->kvq8 && !b->kvq4 && !mk.rec && hd == 128u && d_rel == 16u && nkv > 0u && nh == nkv * 3u && kvlen > 0u) {
-            const int ka = b->k[K_INK_REL_ATTN_PF_SB_R10] ? K_INK_REL_ATTN_PF_SB_R10
+            const int ka = b->k[K_INK_REL_ATTN_PF_SWA_FAST_R17] ? K_INK_REL_ATTN_PF_SWA_FAST_R17
+                         : (b->k[K_INK_REL_ATTN_PF_SB_POLY_R13] ? K_INK_REL_ATTN_PF_SB_POLY_R13
+                         : (b->k[K_INK_REL_ATTN_PF_SB_R10] ? K_INK_REL_ATTN_PF_SB_R10
                          : (b->k[K_INK_REL_ATTN_PF_R7] ? K_INK_REL_ATTN_PF_R7
-                         : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF));
+                         : (b->k[K_INK_REL_ATTN_PF_R3] ? K_INK_REL_ATTN_PF_R3 : K_INK_REL_ATTN_PF))));
             launch_t(b, ka, (T + 31u) / 32u, nkv, args);
           } else {
             launch_t(b, K_REL_ATTN_PF, (T + 7u) / 8u, nh, args);
@@ -6840,25 +7851,101 @@ static void ink_moe_cache_flush_pf(ink_moe_cache_layer *C, int merge_scores) {
         C->pf_freq[e] = 0ULL;
       }
     }
+    const u32 pin_req = ink_h38_pin_hot_req();
+    if (pin_req > 0u && C->n_slots >= 4u) {
+      u32 pin_k = (pin_req == 1u) ? (C->n_slots / 4u) : pin_req;
+      if (pin_k < 1u) pin_k = 1u;
+      if (pin_k > C->n_slots / 2u) pin_k = C->n_slots / 2u;
+      memset(C->hot_pin, 0, C->n_exp);
+      for (u32 p = 0u; p < pin_k; p++) {
+        int best_e = -1;
+        u32 best_sc = 0u;
+        for (u32 e = 0u; e < C->n_exp; e++) {
+          if (C->hot_pin[e] || C->score[e] == 0u) continue;
+          if (best_e < 0 || C->score[e] > best_sc) { best_e = (int)e; best_sc = C->score[e]; }
+        }
+        if (best_e < 0) break;
+        C->hot_pin[best_e] = 1u;
+      }
+    }
     C->pf_dirty = 0;
   }
 }
 
+static void ink_moe_cache_sync_w0(ink_moe_cache_layer *C) {
+  if (!C->w0_prefetched) return;
+  HIP(H.EventSynchronize(C->w0_ready));
+  C->w0_prefetched = 0;
+  const u32 half = C->n_slots / 2u;
+  const u32 cnt = half < C->n_exp ? half : C->n_exp;
+  for (u32 s = 0u; s < cnt; s++) {
+    const int old_e = C->exp_of[s];
+    if (old_e >= 0) C->slot_of[old_e] = -1;
+    C->exp_of[s] = -1;
+  }
+  for (u32 s = 0u; s < cnt; s++) {
+    const int prev_s = C->slot_of[s];
+    if (prev_s >= 0) C->exp_of[prev_s] = -1;
+    C->exp_of[s] = (int16_t)s;
+    C->slot_of[s] = (int16_t)s;
+    C->prot[s] = 0u;
+    C->tick_of[s] = ++C->tick;
+  }
+}
+
+static void ink_moe_cache_prefetch_w0(gpu_backend *b, u32 ip) {
+  if (!b->moe_c_on || !b->moe_c || !b->moe_c_cs || ip >= b->m->n_layer) return;
+  ink_moe_cache_layer *C = &b->moe_c[ip];
+  if (!C->active || C->w0_prefetched || C->n_slots < 16u) return;
+  const u32 half = C->n_slots / 2u;
+  const u32 cnt = half < C->n_exp ? half : C->n_exp;
+  if (C->pf_done_valid) HIP(H.StreamWaitEvent(b->moe_c_cs, C->pf_done_ev, 0));
+  HIP(H.MemcpyAsync(C->egu_dev, C->egu_host, (size_t)cnt * C->egu_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+  HIP(H.MemcpyAsync(C->ed0_dev, C->ed0_host, (size_t)cnt * C->ed0_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+  HIP(H.MemcpyAsync(C->ed1_dev, C->ed1_host, (size_t)cnt * C->ed1_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+  HIP(H.EventRecord(C->w0_ready, b->moe_c_cs));
+  C->w0_prefetched = 1;
+  b->moe_c_waves++;
+  b->moe_c_dma_bytes += (uint64_t)cnt * (uint64_t)C->tot_eb;
+}
+
+static void ink_moe_cache_enqueue_ed(gpu_backend *b, ink_moe_cache_layer *C,
+                                     const u32 *miss_e, const u32 *miss_s, u32 n_miss) {
+  if (!n_miss) return;
+  HIP(H.StreamWaitEvent(b->moe_c_cs, b->moe_c_egu_ev, 0));
+  for (u32 mi = 0u; mi < n_miss; mi++) {
+    const size_t e = (size_t)miss_e[mi], s = (size_t)miss_s[mi];
+    HIP(H.MemcpyAsync((char *)C->ed0_dev + s * C->ed0_eb, (const char *)C->ed0_host + e * C->ed0_eb,
+                      C->ed0_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+    HIP(H.MemcpyAsync((char *)C->ed1_dev + s * C->ed1_eb, (const char *)C->ed1_host + e * C->ed1_eb,
+                      C->ed1_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+  }
+  HIP(H.EventRecord(b->moe_c_ed_ev, b->moe_c_cs));
+}
+
 /* Resolve SLRU cache for T_sub tokens in rt_rows (planar per token: u32 ids[K], float w[K]),
  * DMA missed experts from pinned host RAM into C->*_dev, remap ids in-place to VRAM slot [0..n_slots-1],
- * and upload remapped rt_rows to b->moe_rt_dev. Caller guarantees |unique(ids)| <= C->n_slots. */
+ * and upload remapped rt_rows to b->moe_rt_dev. Caller guarantees |unique(ids)| <= C->n_slots.
+ * When defer_ed != 0, copies only egu on cur_stream and returns miss_e/miss_s for concurrent ed DMA on moe_c_cs. */
 static void ink_moe_cache_resolve(gpu_backend *b, ink_moe_cache_layer *C,
-                                  char *rt_rows, u32 rst, u32 T_sub, u32 K) {
+                                  char *rt_rows, u32 rst, u32 T_sub, u32 K,
+                                  u32 *miss_e_out, u32 *miss_s_out, u32 *n_miss_out,
+                                  int defer_ed, int is_first_sub) {
   const u32 ne = C->n_exp, ns = C->n_slots;
-  uint8_t pin[INK_MOE_C_MAXE];
+  const int slru_pct = ink_h38_slru_pct();
+  const int draft_prot = ink_h38_draft_prot();
+  const u32 n_prot_max = slru_pct > 0 ? ((ns * (u32)slru_pct) / 100u > 0u ? (ns * (u32)slru_pct) / 100u : 1u) : 0u;
+  uint8_t pin[INK_MOE_C_MAXE], is_t0[INK_MOE_C_MAXE];
   u32 uniq[INK_MOE_C_MAXE];
   memset(pin, 0, ne);
+  memset(is_t0, 0, ne);
   u32 nu = 0u;
   for (u32 t = 0u; t < T_sub; t++) {
     u32 *ids = (u32 *)(rt_rows + (size_t)t * rst);
     for (u32 k = 0u; k < K; k++) {
       const u32 e = ids[k];
       if (e >= ne) ie_die("H38: expert id %u >= n_exp %u", e, ne);
+      if (is_first_sub && t == 0u) is_t0[e] = 1u;
       if (!pin[e]) {
         pin[e] = 1u;
         uniq[nu++] = e;
@@ -6878,13 +7965,18 @@ static void ink_moe_cache_resolve(gpu_backend *b, ink_moe_cache_layer *C,
         if (C->exp_of[j] < 0) { vic = (int)j; break; }
       }
       if (vic < 0) {
-        u32 best_sc = 0xffffffffu, best_tk = 0xffffffffu;
+        const int use_hp = ink_h38_pin_hot_req() > 0u;
+        u32 best_pr = 4u, best_sc = 0xffffffffu, best_tk = 0xffffffffu;
         for (u32 j = 0u; j < ns; j++) {
           const int old_e = C->exp_of[j];
           if (pin[old_e]) continue;
+          const u32 hp = (use_hp && C->hot_pin[old_e]) ? 2u : 0u;
+          const u32 pr = hp + (slru_pct > 0 ? (u32)C->prot[j] : 0u);
           const u32 sc = C->score[old_e], tk = C->tick_of[j];
-          if (vic < 0 || sc < best_sc || (sc == best_sc && tk < best_tk)) {
+          if (vic < 0 || pr < best_pr ||
+              (pr == best_pr && (sc < best_sc || (sc == best_sc && tk < best_tk)))) {
             vic = (int)j;
+            best_pr = pr;
             best_sc = sc;
             best_tk = tk;
           }
@@ -6895,15 +7987,33 @@ static void ink_moe_cache_resolve(gpu_backend *b, ink_moe_cache_layer *C,
       if (old_e >= 0) C->slot_of[old_e] = -1;
       C->exp_of[vic] = (int16_t)e;
       C->slot_of[e] = (int16_t)vic;
+      C->prot[vic] = 0u;
       miss_e[n_miss] = e;
       miss_s[n_miss] = (u32)vic;
       n_miss++;
       s = vic;
     } else {
       b->moe_c_hits++;
+      if (slru_pct > 0 && C->prot[s] == 0u && (draft_prot || is_t0[e])) {
+        C->prot[s] = 1u;
+        u32 n_prot = 0u;
+        int dem = -1;
+        u32 dem_tk = 0xffffffffu;
+        for (u32 j = 0u; j < ns; j++) {
+          if (C->exp_of[j] >= 0 && C->prot[j]) {
+            n_prot++;
+            if (j != (u32)s && C->tick_of[j] < dem_tk) {
+              dem = (int)j;
+              dem_tk = C->tick_of[j];
+            }
+          }
+        }
+        if (n_prot > n_prot_max && dem >= 0) C->prot[dem] = 0u;
+      }
     }
     C->tick_of[s] = ++C->tick;
-    if (C->score[e] < 252u) C->score[e] += 4u;
+    const u32 inc = (!draft_prot && T_sub > 1u && !is_t0[e]) ? 1u : 4u;
+    C->score[e] = (C->score[e] + inc > 252u) ? 252u : (C->score[e] + inc);
   }
   b->moe_c_misses += (uint64_t)n_miss;
   b->moe_c_dma_bytes += (uint64_t)n_miss * (uint64_t)C->tot_eb;
@@ -6917,10 +8027,22 @@ static void ink_moe_cache_resolve(gpu_backend *b, ink_moe_cache_layer *C,
     const size_t e = (size_t)miss_e[mi], s = (size_t)miss_s[mi];
     HIP(H.MemcpyAsync((char *)C->egu_dev + s * C->egu_eb, (const char *)C->egu_host + e * C->egu_eb,
                       C->egu_eb, hipMemcpyHostToDevice, cur_stream));
-    HIP(H.MemcpyAsync((char *)C->ed0_dev + s * C->ed0_eb, (const char *)C->ed0_host + e * C->ed0_eb,
-                      C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
-    HIP(H.MemcpyAsync((char *)C->ed1_dev + s * C->ed1_eb, (const char *)C->ed1_host + e * C->ed1_eb,
-                      C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
+    if (!defer_ed) {
+      HIP(H.MemcpyAsync((char *)C->ed0_dev + s * C->ed0_eb, (const char *)C->ed0_host + e * C->ed0_eb,
+                        C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
+      HIP(H.MemcpyAsync((char *)C->ed1_dev + s * C->ed1_eb, (const char *)C->ed1_host + e * C->ed1_eb,
+                        C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
+    }
+  }
+  if (defer_ed) {
+    if (n_miss > 0u) HIP(H.EventRecord(b->moe_c_egu_ev, cur_stream));
+    if (miss_e_out && miss_s_out && n_miss > 0u) {
+      memcpy(miss_e_out, miss_e, (size_t)n_miss * sizeof(u32));
+      memcpy(miss_s_out, miss_s, (size_t)n_miss * sizeof(u32));
+    }
+    if (n_miss_out) *n_miss_out = n_miss;
+  } else if (n_miss_out) {
+    *n_miss_out = 0u;
   }
 }
 
@@ -6956,13 +8078,18 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   /* --- Mode A: T == 1 decode --- */
   if (T == 1u) {
     if ((size_t)rst > 16384u) ie_die("H38: route stride %u > 16384", rst);
+    ink_moe_cache_sync_w0(C);
     HIP(H.MemcpyAsync(b->moe_rt_pin, rt_orig, rst, hipMemcpyDeviceToHost, cur_stream));
     HIP(H.StreamSynchronize(cur_stream));
     ink_moe_cache_flush_pf(C, 1);
     if ((++C->step_ctr & 63u) == 0u) {
       for (u32 e = 0u; e < ne; e++) C->score[e] >>= 1u;
     }
-    ink_moe_cache_resolve(b, C, (char *)b->moe_rt_pin, rst, 1u, K);
+    const int do_ov = ink_h38_ed_overlap() && b->moe_c_cs && b->moe_c_exec_s && !mk.rec;
+    hipStream_t saved_s = cur_stream;
+    if (do_ov && !cur_stream) cur_stream = b->moe_c_exec_s;
+    u32 miss_e[INK_MOE_C_MAXE], miss_s[INK_MOE_C_MAXE], n_miss = 0u;
+    ink_moe_cache_resolve(b, C, (char *)b->moe_rt_pin, rst, 1u, K, miss_e, miss_s, &n_miss, do_ov, 1);
 
     u32 astr = o0->astr, dastr = o2->astr, dbstr = o2->bstr;
     u32 eff_u = eff, nb_u = nb, qb_u = q_bytes, drows_u = drows, dnb_u = dnb;
@@ -6979,19 +8106,30 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
                        : (b->k[K_INK_GEXP_IQ3XXS_SITU_R3] ? K_INK_GEXP_IQ3XXS_SITU_R3 : K_INK_GEXP_IQ3XXS_SITU_R2);
     tr_span(g, i, 2u);
     launch_t(b, ks, (eff + 31u) / 32u, K, args1);
+    if (do_ov && n_miss > 0u) {
+      ink_moe_cache_enqueue_ed(b, C, miss_e, miss_s, n_miss);
+      HIP(H.StreamWaitEvent(cur_stream, b->moe_c_ed_ev, 0));
+    }
 
     void *args2[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u, &rt_dev, &qwn_u, &qsn_u, &dastr, &dbstr, &dkind, &two_off};
-    const int kg4 = (b->k[K_INK_GEXP_IQ4NL_T1_NT_R10] && !mk.rec)
-                        ? K_INK_GEXP_IQ4NL_T1_NT_R10
-                        : (b->k[K_INK_GEXP_IQ4NL_BW_T1_R7] && !mk.rec)
-                              ? K_INK_GEXP_IQ4NL_BW_T1_R7
-                              : (b->k[K_INK_GEXP_IQ4NL_R3] && mk_ok_k(K_INK_GEXP_IQ4NL_R3))
-                                    ? K_INK_GEXP_IQ4NL_R3
-                                    : (b->k[K_INK_GEXP_IQ4NL] && mk_ok_k(K_INK_GEXP_IQ4NL))
-                                          ? K_INK_GEXP_IQ4NL : -1;
+    const int kg4 = b->ink_iq4_wave
+                        ? K_INK_GEXP_IQ4NL_WAVE_T1_R13
+                        : ((b->k[K_INK_GEXP_IQ4NL_T1_NT_R10] && !mk.rec)
+                               ? K_INK_GEXP_IQ4NL_T1_NT_R10
+                               : (b->k[K_INK_GEXP_IQ4NL_BW_T1_R7] && !mk.rec)
+                                     ? K_INK_GEXP_IQ4NL_BW_T1_R7
+                                     : (b->k[K_INK_GEXP_IQ4NL_R3] && mk_ok_k(K_INK_GEXP_IQ4NL_R3))
+                                           ? K_INK_GEXP_IQ4NL_R3
+                                           : (b->k[K_INK_GEXP_IQ4NL] && mk_ok_k(K_INK_GEXP_IQ4NL))
+                                                 ? K_INK_GEXP_IQ4NL : -1);
     tr_span(g, i + 2u, 1u);
     if (kg4 >= 0) launch_t(b, kg4, (drows + 31u) / 32u, K, args2);
     else launch_t(b, K_GEXP, (dnb <= 16u || (dnb <= 64u && !two_off)) ? (drows + 15u) / 16u : gemv_groups(drows), K, args2);
+    if (b->moe_c_cs) {
+      HIP(H.EventRecord(C->pf_done_ev, cur_stream));
+      C->pf_done_valid = 1;
+    }
+    cur_stream = saved_s;
     return 3u;
   }
 
@@ -6999,6 +8137,7 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   if (T <= 16u) {
     const size_t rt_bytes = (size_t)T * rst;
     if (rt_bytes > 16384u) ie_die("H38: verify route bytes %zu > 16384", rt_bytes);
+    ink_moe_cache_sync_w0(C);
     HIP(H.MemcpyAsync(b->moe_rt_pin, rt_orig, rt_bytes, hipMemcpyDeviceToHost, cur_stream));
     HIP(H.StreamSynchronize(cur_stream));
     ink_moe_cache_flush_pf(C, 1);
@@ -7024,17 +8163,26 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
     u32 eff_u = eff, nb_u = nb, qb_u = q_bytes, drows_u = drows, dnb_u = dnb;
     u32 qwn_u = qwn, qsn_u = qsn, KK = K, ns_u = ns, rst_u = rst;
     const int kf = b->ink_iq3_flute
-                       ? (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10]
-                              ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10
-                              : K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7)
+                       ? (b->k[K_INK_FLUTE_SITU_VER_T8_R17]
+                              ? K_INK_FLUTE_SITU_VER_T8_R17
+                              : (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10]
+                                     ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10
+                                     : K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7))
                        : K_INK_GEXP_IQ3XXS_SITU_COMPACT_R7;
-    const int kc4 = (b->k[K_INK_GEXP_IQ4NL_BW_COMPACT_R7] && !mk.rec)
-                        ? K_INK_GEXP_IQ4NL_BW_COMPACT_R7 : K_INK_GEXP_IQ4NL_COMPACT_R6;
+    const int kc4 = b->ink_iq4_wave
+                        ? K_INK_GEXP_IQ4NL_WAVE_COMPACT_R13
+                        : ((b->k[K_INK_GEXP_IQ4NL_BW_COMPACT_R7] && !mk.rec)
+                               ? K_INK_GEXP_IQ4NL_BW_COMPACT_R7 : K_INK_GEXP_IQ4NL_COMPACT_R6);
     if (!b->k[kf] || !b->k[kc4]) ie_die("H38: missing compact verify MoE kernels");
+
+    const int do_ov = ink_h38_ed_overlap() && b->moe_c_cs && b->moe_c_exec_s && !mk.rec;
+    hipStream_t saved_s = cur_stream;
+    if (do_ov && !cur_stream) cur_stream = b->moe_c_exec_s;
 
     if (nu <= ns) {
       /* Fast single-pass path (guaranteed whenever T * K <= ns). */
-      ink_moe_cache_resolve(b, C, (char *)b->moe_rt_pin, rst, T, K);
+      u32 miss_e[INK_MOE_C_MAXE], miss_s[INK_MOE_C_MAXE], n_miss = 0u;
+      ink_moe_cache_resolve(b, C, (char *)b->moe_rt_pin, rst, T, K, miss_e, miss_s, &n_miss, do_ov, 1);
       u32 TT = T;
       void *rt_dev = b->moe_rt_dev;
       void *sa[] = {&rt_dev, &rst_u, &TT, &KK, &ns_u, &b->ms_offs, &b->ms_list, &b->ms_packs, &b->ms_npacks};
@@ -7046,6 +8194,10 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
                     &qb_u, &xs, &bstr0, &qstr, &xdiv, &beta, &lbeta};
       tr_span(g, i, 2u);
       launch_t(b, kf, eff / 32u, max_packs, fa);
+      if (do_ov && n_miss > 0u) {
+        ink_moe_cache_enqueue_ed(b, C, miss_e, miss_s, n_miss);
+        HIP(H.StreamWaitEvent(cur_stream, b->moe_c_ed_ev, 0));
+      }
 
       /* Try exact B2 fused tail (matches ink_r2_fuse:7226-7296). */
       static int moe_tail_mode = -1;
@@ -7053,8 +8205,11 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
         const char *me = getenv("IE_INK_MOE_TAIL_MODE");
         moe_tail_mode = me ? atoi(me) : 0;
       }
-      const int sc_tree = b->tr_on && b->ink_tree_split > 0u && b->ink_tree_split < T;
-      const int allow_b2 = !sc_tree && !mk.rec && b->ink_moe_rcount && b->k[K_INK_EXP_DOWN_TAIL_VER_R7] &&
+      const int sc_tree = b->tr_on && b->ink_tree_nonlin;
+      const int b2_wave = b->ink_iq4_wave && b->k[K_INK_GEXP_IQ4NL_WAVE_VER_R13] != NULL && (!sc_tree || T <= 8u);
+      const int b2_tree = !b2_wave && sc_tree && T <= 8u && b->k[K_INK_EXP_DOWN_TAIL_VER_TREE_R12] != NULL;
+      const int allow_b2 = (b2_wave || !sc_tree || b2_tree) && !mk.rec && b->ink_moe_rcount &&
+                           (b2_wave || b2_tree || b->k[K_INK_EXP_DOWN_TAIL_VER_R7] != NULL) &&
                            (moe_tail_mode == 0 || moe_tail_mode == 2) && i + 5u < i1 && max_packs <= 160u;
       if (allow_b2) {
         const op *o3 = &g->ops[i + 3u], *o4 = &g->ops[i + 4u], *o5 = &g->ops[i + 5u];
@@ -7079,13 +8234,28 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
               ((uintptr_t)res & 15u) == 0u && ((uintptr_t)out & 15u) == 0u &&
               ((yts | rs | os) & 15u) == 0u &&
               (!hist || (((uintptr_t)hist & 15u) == 0u && (hrs & 3u) == 0u))) {
-            void *fb[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u,
-                          &b->ms_list, &b->ms_packs, &b->ms_npacks,
-                          &qwn_u, &qsn_u, &dxs, &dys, &dxdiv,
-                          &rt_dev, &KK, &rst_u, &v, &ring, &res, &out, &hist,
-                          &esc, &pos, &TT, &yts_u, &rs, &os, &hrs, &b->ink_moe_rcount};
             tr_span(g, i + 2u, 4u);
-            launch_t(b, K_INK_EXP_DOWN_TAIL_VER_R7, (drows + 31u) / 32u, max_packs, fb);
+            if (b2_wave || b2_tree) {
+              u32 tpar = sc_tree ? b->ink_tree_par_pack : 0xFFFFFFFFu;
+              void *fb[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u,
+                            &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                            &qwn_u, &qsn_u, &dxs, &dys, &dxdiv,
+                            &rt_dev, &KK, &rst_u, &v, &ring, &res, &out, &hist,
+                            &esc, &pos, &TT, &yts_u, &rs, &os, &hrs, &b->ink_moe_rcount, &tpar};
+              launch_t(b, b2_wave ? K_INK_GEXP_IQ4NL_WAVE_VER_R13 : K_INK_EXP_DOWN_TAIL_VER_TREE_R12, (drows + 31u) / 32u, max_packs, fb);
+            } else {
+              void *fb[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u,
+                            &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                            &qwn_u, &qsn_u, &dxs, &dys, &dxdiv,
+                            &rt_dev, &KK, &rst_u, &v, &ring, &res, &out, &hist,
+                            &esc, &pos, &TT, &yts_u, &rs, &os, &hrs, &b->ink_moe_rcount};
+              launch_t(b, K_INK_EXP_DOWN_TAIL_VER_R7, (drows + 31u) / 32u, max_packs, fb);
+            }
+            if (b->moe_c_cs) {
+              HIP(H.EventRecord(C->pf_done_ev, cur_stream));
+              C->pf_done_valid = 1;
+            }
+            cur_stream = saved_s;
             return 6u;
           }
         }
@@ -7094,6 +8264,11 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
                     &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
       tr_span(g, i + 2u, 1u);
       launch_t(b, kc4, (drows + 31u) / 32u, max_packs, ca);
+      if (b->moe_c_cs) {
+        HIP(H.EventRecord(C->pf_done_ev, cur_stream));
+        C->pf_done_valid = 1;
+      }
+      cur_stream = saved_s;
       return 3u;
     }
 
@@ -7109,7 +8284,8 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
       u32 len = (T - t0 < t_sub) ? (T - t0) : t_sub;
       b->moe_c_subbatches++;
       char *rt_slice = (char *)b->moe_rt_pin + (size_t)t0 * rst;
-      ink_moe_cache_resolve(b, C, rt_slice, rst, len, K);
+      u32 miss_e[INK_MOE_C_MAXE], miss_s[INK_MOE_C_MAXE], n_miss = 0u;
+      ink_moe_cache_resolve(b, C, rt_slice, rst, len, K, miss_e, miss_s, &n_miss, do_ov, t0 == 0u);
       void *rt_dev = b->moe_rt_dev;
       void *sa[] = {&rt_dev, &rst_u, &len, &KK, &ns_u, &b->ms_offs, &b->ms_list, &b->ms_packs, &b->ms_npacks};
       launch(b, K_INK_MOE_SORT_COMPACT_R6, 1u, sa);
@@ -7122,11 +8298,20 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
       void *fa[] = {&qw, &X_sub, &bout, &Q_sub, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
                     &qb_u, &xs, &bstr0, &qstr, &xdiv, &beta, &lbeta};
       launch_t(b, kf, eff / 32u, max_packs, fa);
+      if (do_ov && n_miss > 0u) {
+        ink_moe_cache_enqueue_ed(b, C, miss_e, miss_s, n_miss);
+        HIP(H.StreamWaitEvent(cur_stream, b->moe_c_ed_ev, 0));
+      }
 
       void *ca[] = {&w0, &w1, &Q_sub, &Y_sub, &drows_u, &dnb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
                     &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
       launch_t(b, kc4, (drows + 31u) / 32u, max_packs, ca);
     }
+    if (b->moe_c_cs) {
+      HIP(H.EventRecord(C->pf_done_ev, cur_stream));
+      C->pf_done_valid = 1;
+    }
+    cur_stream = saved_s;
     return 3u;
   }
 
@@ -7150,7 +8335,7 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   int use_scatter = 0;
   void *ysum_sc = NULL;
   u32 os_sc = 0u, rst_sc = rst, KK_sc = K;
-  if (!mk.rec && b->k[K_INK_GEMM_IQ4NL_SCATTER_R10] && i + 3u < i1 &&
+  if (!mk.rec && !b->ink_iq4_wave && b->k[K_INK_GEMM_IQ4NL_SCATTER_R10] && i + 3u < i1 &&
       gx_wmma(b, T, dnb, dkind) && !getenv("IE_GEMM_KX_NOE") &&
       drows > 0u && dnb > 0u && (dnb & 3u) == 0u) {
     const op *o3 = &g->ops[i + 3u];
@@ -7166,6 +8351,175 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   }
 
   tr_span(g, i, use_scatter ? 4u : 3u);
+  if (ink_h38_async_pf() && b->moe_c_cs && b->moe_c_exec_s && ns >= 16u && !mk.rec) {
+    /* R57 (H38-ASYNC-PF): Ping-pong half-cache [0..half) / [half..2*half) async DMA overlap on moe_c_cs
+     * with cross-layer Wave-0 prefetch + core-visit exit prefetch (blk.18..23). 0 B extra VRAM, 100% bit-exact. */
+    hipStream_t saved_s = cur_stream;
+    if (!cur_stream) cur_stream = b->moe_c_exec_s;
+    const u32 half = ns / 2u;
+    const u32 n_waves = (ne + half - 1u) / half;
+    hipEvent_t w0_ev;
+    if (C->w0_prefetched) {
+      w0_ev = C->w0_ready;
+      C->w0_prefetched = 0;
+    } else {
+      const u32 cnt0 = half < ne ? half : ne;
+      HIP(H.EventRecord(b->moe_c_done[0], cur_stream));
+      HIP(H.StreamWaitEvent(b->moe_c_cs, b->moe_c_done[0], 0));
+      HIP(H.MemcpyAsync(C->egu_dev, C->egu_host, (size_t)cnt0 * C->egu_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+      HIP(H.MemcpyAsync(C->ed0_dev, C->ed0_host, (size_t)cnt0 * C->ed0_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+      HIP(H.MemcpyAsync(C->ed1_dev, C->ed1_host, (size_t)cnt0 * C->ed1_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+      HIP(H.EventRecord(b->moe_c_ready[0], b->moe_c_cs));
+      w0_ev = b->moe_c_ready[0];
+      b->moe_c_waves++;
+      b->moe_c_dma_bytes += (uint64_t)cnt0 * (uint64_t)C->tot_eb;
+    }
+    HIP(H.EventRecord(b->moe_c_done[1], cur_stream));
+
+    u32 last_lo_h[2] = {0u, 0u}, last_hi_h[2] = {0u, 0u};
+    for (u32 w = 0u; w < n_waves; w++) {
+      const u32 p = w & 1u, pn = p ^ 1u;
+      u32 e_lo = w * half;
+      u32 e_hi = e_lo + half;
+      if (e_hi > ne) e_hi = ne;
+      const u32 cnt = e_hi - e_lo;
+      last_lo_h[p] = e_lo;
+      last_hi_h[p] = e_hi;
+
+      /* Enqueue NEXT wave DMA onto moe_c_cs BEFORE launching current wave compute for full overlap! */
+      if (w + 1u < n_waves) {
+        const u32 n_lo = (w + 1u) * half;
+        const u32 n_hi = (n_lo + half < ne) ? (n_lo + half) : ne;
+        const u32 n_cnt = n_hi - n_lo;
+        void *dqw = (char *)C->egu_dev + (size_t)pn * half * C->egu_eb;
+        void *dw0 = (char *)C->ed0_dev + (size_t)pn * half * C->ed0_eb;
+        void *dw1 = (char *)C->ed1_dev + (size_t)pn * half * C->ed1_eb;
+        HIP(H.StreamWaitEvent(b->moe_c_cs, b->moe_c_done[pn], 0));
+        HIP(H.MemcpyAsync(dqw, (const char *)C->egu_host + (size_t)n_lo * C->egu_eb,
+                          (size_t)n_cnt * C->egu_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+        HIP(H.MemcpyAsync(dw0, (const char *)C->ed0_host + (size_t)n_lo * C->ed0_eb,
+                          (size_t)n_cnt * C->ed0_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+        HIP(H.MemcpyAsync(dw1, (const char *)C->ed1_host + (size_t)n_lo * C->ed1_eb,
+                          (size_t)n_cnt * C->ed1_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+        HIP(H.EventRecord(b->moe_c_ready[pn], b->moe_c_cs));
+        b->moe_c_waves++;
+        b->moe_c_dma_bytes += (uint64_t)n_cnt * (uint64_t)C->tot_eb;
+      } else {
+        /* Last wave of layer o0->layer: cross-layer Wave-0 prefetch! */
+        const u32 ip = (u32)o0->layer;
+        if (ip + 1u < m->loop_start || (ip >= m->loop_end && ip + 1u < m->n_layer)) {
+          ink_moe_cache_prefetch_w0(b, ip + 1u);
+        } else if (ip + 1u == m->loop_start) {
+          /* Entering 36 core visits (blk.6..17 x 3): hide all 6 exit layers' Wave 0 behind core compute! */
+          for (u32 ex_ip = m->loop_end; ex_ip < m->n_layer; ex_ip++)
+            ink_moe_cache_prefetch_w0(b, ex_ip);
+        }
+      }
+
+      /* Compute Wave w from half p on cur_stream. */
+      HIP(H.StreamWaitEvent(cur_stream, (w == 0u) ? w0_ev : b->moe_c_ready[p], 0));
+      void *qw_p = (char *)C->egu_dev + (size_t)p * half * C->egu_eb;
+      void *w0_p = (char *)C->ed0_dev + (size_t)p * half * C->ed0_eb;
+      void *w1_p = (char *)C->ed1_dev + (size_t)p * half * C->ed1_eb;
+
+      const int use_fl_m64_em = b->ink_iq3_flute && b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17] &&
+                                ink_r17_flute_pf64_mode() == 2;
+      const int iq4_uses_packs = !use_scatter && !b->ink_iq4_wave && !b->k[K_INK_GEMM_IQ4NL_EXPMAJ_R10] &&
+                                 !(b->k[K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10] && (ink_fp8_mode() & 2)) &&
+                                 (b->k[K_INK_GEMM_IQ4NL_EXP_R9] || b->k[K_INK_GEMM_IQ4NL_EXP_R7]);
+      if (!use_fl_m64_em || iq4_uses_packs) {
+        void *wf[] = {&b->ms_offs, &ne_u, &e_lo, &e_hi, &b->ms_packs, &b->ms_npacks, &nul};
+        launch(b, K_INK_MOE_WL_FILTER_R14, 1u, wf);
+      }
+
+      u32 *offs_w = b->ms_offs + e_lo;
+      const u32 mt_a = T * K, mt_b = cnt + (T * K) / 64u;
+      const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
+      if (b->ink_iq3_flute) {
+        if (use_fl_m64_em) {
+          void *nt_nul = NULL;
+          void *fa[] = {&qw_p, &X, &qout, &eff_u, &nb_u, &b->ms_list, &offs_w, &nt_nul,
+                        &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+          launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17, (eff + 63u) / 64u, cnt, fa);
+        } else {
+          void *fa[] = {&qw_p, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                        &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+          const int kfl = b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17]
+                              ? K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17
+                              : (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13]
+                                     ? K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13
+                                     : K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10);
+          launch_t(b, kfl, (eff + 63u) / 64u, max_tiles, fa);
+        }
+      } else if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7]) {
+        void *fa[] = {&qw_p, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                      &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+        const int ki3 = b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] ? K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9 : K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7;
+        launch_t(b, ki3, (eff + 63u) / 64u, max_tiles, fa);
+      } else if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6]) {
+        void *fa[] = {&qw_p, &X, &qout, &eff_u, &nb_u, &b->ms_list, &offs_w, &zero,
+                      &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+        launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6, (eff + 63u) / 64u, cnt, fa);
+      } else {
+        ie_die("H38: no fused prefill IQ3_XXS+SITU kernel available");
+      }
+
+      if (use_scatter) {
+        void *fs[] = {&w0_p, &w1_p, &qout, &ysum_sc, &drows_u, &dnb_u, &b->ms_list, &offs_w,
+                      &rt_orig, &rst_sc, &KK_sc, &qwn_u, &qsn_u, &dxs, &os_sc, &dxdiv};
+        launch_t(b, K_INK_GEMM_IQ4NL_SCATTER_R10, (drows + 127u) / 128u, cnt, fs);
+      } else {
+        void *ta[] = {&w0_p, &w1_p, &qout, &yd, &drows_u, &dnb_u, &b->ms_list, &offs_w, &zero,
+                      &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
+        if (b->ink_iq4_wave) {
+          const int kw_pf = b->k[K_INK_GEMM_IQ4NL_WAVE_M64_R17] ? K_INK_GEMM_IQ4NL_WAVE_M64_R17 : K_INK_GEMM_IQ4NL_WAVE_EXPMAJ_R13;
+          if (!gx_wmma(b, T, dnb, dkind) || getenv("IE_GEMM_KX_NOE") || !b->k[kw_pf])
+            ie_die("H38 Mode C: wave-repacked IQ4_NL reached AoS fallback (T=%u)", T);
+          launch_t(b, kw_pf, (drows + 127u) / 128u, cnt, ta);
+        } else if (gx_wmma(b, T, dnb, dkind) && !getenv("IE_GEMM_KX_NOE")) {
+          if (b->k[K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10] && (ink_fp8_mode() & 2) && !mk.rec && dnb >= 4u && (dnb & 3u) == 0u) {
+            launch_t(b, K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10, (drows + 127u) / 128u, cnt, ta);
+          } else if (b->k[K_INK_GEMM_IQ4NL_EXPMAJ_R10] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
+            launch_t(b, K_INK_GEMM_IQ4NL_EXPMAJ_R10, (drows + 127u) / 128u, cnt, ta);
+          } else if ((b->k[K_INK_GEMM_IQ4NL_EXP_R9] || b->k[K_INK_GEMM_IQ4NL_EXP_R7]) && !mk.rec &&
+                     dnb > 0u && (dnb & 3u) == 0u && max_tiles <= 512u) {
+            void *t7[] = {&w0_p, &w1_p, &qout, &yd, &drows_u, &dnb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                          &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
+            const int ki4 = b->k[K_INK_GEMM_IQ4NL_EXP_R9] ? K_INK_GEMM_IQ4NL_EXP_R9 : K_INK_GEMM_IQ4NL_EXP_R7;
+            launch_t(b, ki4, (drows + 127u) / 128u, max_tiles, t7);
+          } else if (b->k[K_INK_GEMM_IQ4NL_EXP_R2] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
+            launch_t(b, K_INK_GEMM_IQ4NL_EXP_R2, (drows + 127u) / 128u, cnt, ta);
+          } else if (b->k[K_INK_GEMM_IQ4NL_EXP] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
+            launch_t(b, K_INK_GEMM_IQ4NL_EXP, (drows + 127u) / 128u, cnt, ta);
+          } else {
+            launch_t(b, K_GEMM_KX, (drows + 127u) / 128u, cnt, ta);
+          }
+        } else {
+          launch_t(b, K_GEXP_T, (drows + 63u) / 64u, cnt, ta);
+        }
+      }
+      HIP(H.EventRecord(b->moe_c_done[p], cur_stream));
+    }
+    HIP(H.EventRecord(C->pf_done_ev, cur_stream));
+    C->pf_done_valid = 1;
+    cur_stream = saved_s;
+
+    /* Update cache metadata across BOTH ping-pong halves currently resident in VRAM slots. */
+    for (u32 e = 0u; e < ne; e++) C->slot_of[e] = -1;
+    for (u32 s = 0u; s < ns; s++) { C->exp_of[s] = -1; C->tick_of[s] = 0u; C->prot[s] = 0u; }
+    for (u32 h = 0u; h < 2u; h++) {
+      const u32 hcnt = last_hi_h[h] > last_lo_h[h] ? (last_hi_h[h] - last_lo_h[h]) : 0u;
+      for (u32 k = 0u; k < hcnt; k++) {
+        const u32 s = h * half + k;
+        const u32 e = last_lo_h[h] + k;
+        C->exp_of[s] = (int16_t)e;
+        C->slot_of[e] = (int16_t)s;
+        C->tick_of[s] = C->tick;
+      }
+    }
+    return use_scatter ? 4u : 3u;
+  }
+
   u32 last_lo = 0u, last_hi = 0u;
   for (u32 e_lo = 0u; e_lo < ne; e_lo += ns) {
     u32 e_hi = e_lo + ns;
@@ -7183,22 +8537,41 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
     HIP(H.MemcpyAsync(C->ed1_dev, (const char *)C->ed1_host + (size_t)e_lo * C->ed1_eb,
                       (size_t)cnt * C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
 
-    void *wf[] = {&b->ms_offs, &ne_u, &e_lo, &e_hi, &b->ms_packs, &b->ms_npacks, &nul};
-    launch(b, K_INK_MOE_WL_FILTER_R14, 1u, wf);
+    const int use_fl_m64_em = b->ink_iq3_flute && b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17] &&
+                              ink_r17_flute_pf64_mode() == 2;
+    const int iq4_uses_packs = !use_scatter && !b->ink_iq4_wave && !b->k[K_INK_GEMM_IQ4NL_EXPMAJ_R10] &&
+                               !(b->k[K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10] && (ink_fp8_mode() & 2)) &&
+                               (b->k[K_INK_GEMM_IQ4NL_EXP_R9] || b->k[K_INK_GEMM_IQ4NL_EXP_R7]);
+    if (!use_fl_m64_em || iq4_uses_packs) {
+      void *wf[] = {&b->ms_offs, &ne_u, &e_lo, &e_hi, &b->ms_packs, &b->ms_npacks, &nul};
+      launch(b, K_INK_MOE_WL_FILTER_R14, 1u, wf);
+    }
 
+    u32 *offs_w = b->ms_offs + e_lo;
     const u32 mt_a = T * K, mt_b = cnt + (T * K) / 64u;
     const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
     if (b->ink_iq3_flute) {
-      void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
-                    &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
-      launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10, (eff + 63u) / 64u, max_tiles, fa);
+      if (use_fl_m64_em) {
+        void *nt_nul = NULL;
+        void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &offs_w, &nt_nul,
+                      &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+        launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17, (eff + 63u) / 64u, cnt, fa);
+      } else {
+        void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                      &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
+        const int kfl = b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17]
+                            ? K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17
+                            : (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13]
+                                   ? K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13
+                                   : K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10);
+        launch_t(b, kfl, (eff + 63u) / 64u, max_tiles, fa);
+      }
     } else if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7]) {
       void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &b->ms_packs, &b->ms_npacks,
                     &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
       const int ki3 = b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] ? K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9 : K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7;
       launch_t(b, ki3, (eff + 63u) / 64u, max_tiles, fa);
     } else if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6]) {
-      u32 *offs_w = b->ms_offs + e_lo;
       void *fa[] = {&qw, &X, &qout, &eff_u, &nb_u, &b->ms_list, &offs_w, &zero,
                     &qb_u, &xs, &qstr, &xdiv, &beta, &lbeta};
       launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6, (eff + 63u) / 64u, cnt, fa);
@@ -7206,7 +8579,6 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
       ie_die("H38: no fused prefill IQ3_XXS+SITU kernel available");
     }
 
-    u32 *offs_w = b->ms_offs + e_lo;
     if (use_scatter) {
       void *fs[] = {&w0, &w1, &qout, &ysum_sc, &drows_u, &dnb_u, &b->ms_list, &offs_w,
                     &rt_orig, &rst_sc, &KK_sc, &qwn_u, &qsn_u, &dxs, &os_sc, &dxdiv};
@@ -7214,7 +8586,12 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
     } else {
       void *ta[] = {&w0, &w1, &qout, &yd, &drows_u, &dnb_u, &b->ms_list, &offs_w, &zero,
                     &qwn_u, &qsn_u, &dxs, &dys, &dxdiv, &dkind, &nul, &zero};
-      if (gx_wmma(b, T, dnb, dkind) && !getenv("IE_GEMM_KX_NOE")) {
+      if (b->ink_iq4_wave) {
+        const int kw_pf = b->k[K_INK_GEMM_IQ4NL_WAVE_M64_R17] ? K_INK_GEMM_IQ4NL_WAVE_M64_R17 : K_INK_GEMM_IQ4NL_WAVE_EXPMAJ_R13;
+        if (!gx_wmma(b, T, dnb, dkind) || getenv("IE_GEMM_KX_NOE") || !b->k[kw_pf])
+          ie_die("H38 Mode C: wave-repacked IQ4_NL reached AoS fallback (T=%u)", T);
+        launch_t(b, kw_pf, (drows + 127u) / 128u, cnt, ta);
+      } else if (gx_wmma(b, T, dnb, dkind) && !getenv("IE_GEMM_KX_NOE")) {
         if (b->k[K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10] && (ink_fp8_mode() & 2) && !mk.rec && dnb >= 4u && (dnb & 3u) == 0u) {
           launch_t(b, K_INK_GEMM_IQ4NL_FP8_EXPMAJ_R10, (drows + 127u) / 128u, cnt, ta);
         } else if (b->k[K_INK_GEMM_IQ4NL_EXPMAJ_R10] && !mk.rec && dnb > 0u && (dnb & 3u) == 0u) {
@@ -7242,6 +8619,7 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   for (u32 e = 0u; e < ne; e++) C->slot_of[e] = -1;
   const u32 last_cnt = last_hi - last_lo;
   for (u32 s = 0u; s < ns; s++) {
+    C->prot[s] = 0u;
     if (s < last_cnt) {
       const u32 e = last_lo + s;
       C->exp_of[s] = (int16_t)e;
@@ -7269,9 +8647,10 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     if (mc) return mc;
   }
 
-  /* R7 Wave 4 bit 76 / R10 bit 107 NT: [OP_GEMV_Q4K, OP_LOGIT_CAP] (T=1..8) -> q4k_head_ver[_nt_r10|_r7] */
+  /* R7 Wave 4 bit 76 / R10 bit 107 NT / R72 H36b bit 145: [OP_GEMV_Q4K, OP_LOGIT_CAP] (T=1..8) */
   if (k0 == OP_GEMV_Q4K && !mk.rec && T >= 1u && T <= 8u && i + 1u < i1 &&
-      (b->k[K_INK_Q4K_HEAD_VER_NT_R10] || b->k[K_INK_GEMV_Q4K_HEAD_VER_R7]) && !o0->nv &&
+      ((b->ink_q4k_wave && b->d[i].w0 == b->ink_q4k_w0) ||
+       b->k[K_INK_Q4K_HEAD_VER_NT_R10] || b->k[K_INK_GEMV_Q4K_HEAD_VER_R7]) && !o0->nv &&
       o0->w->rows > 0u && o0->w->nb > 0u && (o0->w->nb & 7u) == 0u && o0->boff == 0u) {
     const op *o1 = &g->ops[i + 1u];
     static int q4k_min_t = -1;
@@ -7289,19 +8668,24 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       float cap = o1->clamp;
       u32 gr = (rows + 31u) / 32u;
       void *fa[] = {&qw, &qs, &xq, &y, &rows, &nb, &bias, &res, &TT, &xs, &ys, &rs, &unpad, &cap};
-      const int kh = (b->k[K_INK_Q4K_HEAD_VER_NT_R10] && rows >= 65536u)
-                         ? K_INK_Q4K_HEAD_VER_NT_R10 : K_INK_GEMV_Q4K_HEAD_VER_R7;
+      const int kh = (b->ink_q4k_wave && qw == b->ink_q4k_w0)
+                         ? K_INK_Q4K_HEAD_WAVE_R13
+                         : ((b->k[K_INK_Q4K_HEAD_VER_NT_R10] && rows >= 65536u)
+                                ? K_INK_Q4K_HEAD_VER_NT_R10 : K_INK_GEMV_Q4K_HEAD_VER_R7);
       tr_span(g, i, 2u);
       launch(b, kh, gr >= 253u && gr <= 256u ? 257u : gr, fa);
       return 2u;
     }
   }
 
-  /* Wave 11 R54 (H15 bit 110 + H19b bit 126 + R14 global Q4 bit 153): [OP_REL_ATTN, OP_GATE(qo=aq)] -> fused attn+sigmoid_gate+q8 (elides att) */
+  /* Wave 11 R54 (H15 bit 110 + H19b bit 126 + R14 global Q4 bit 153 + R64 H21 SWA bit 125/143): [OP_REL_ATTN, OP_GATE(qo=aq)] -> fused attn+sigmoid_gate+q8 (elides att) */
   if (k0 == OP_REL_ATTN && !mk.rec && !b->kvq8 && !b->kvq4 && !b->tr_on && !ctx_on && T >= 1u && T <= 16u &&
       i + 1u < i1 && m->hd == 128u && o0->qstr == 16u && m->n_kv > 0u && o0->nh == m->n_kv * 3u &&
       (b->k[K_INK_REL_ATTN_DEC_GATE_Q8_R10] || b->k[K_INK_REL_ATTN_VER_GATE_Q8_R10] ||
        b->k[K_INK_REL_ATTN_VER_GLOB_WMMA_GATE_Q8_R10] || (T == 1u && o0->win == 0u && b->k[K_INK_REL_ATTN_DEC_GLOB_R11]) ||
+       (T >= 2u && o0->win > 0u && (b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16] ||
+                                    b->k[K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16] ||
+                                    b->k[K_INK_REL_ATTN_VER_SWA_WMMA_R11] || b->k[K_INK_REL_ATTN_VER_SWA_QT2_R11])) ||
        (b->ink_glob_kv_mode == 2 && o0->win == 0u && g->kv_len[o0->kvi] >= g->n_ctx))) {
     const op *o1 = &g->ops[i + 1u];
     const u32 nh = o0->nh, nkv = m->n_kv, hd = 128u, d_rel = 16u, qd = nh * hd;
@@ -7312,6 +8696,10 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         buf_disjoint(g, o0->a, o1->qo) && buf_disjoint(g, o0->nq, o1->qo) &&
         buf_disjoint(g, o0->res, o1->qo) && buf_disjoint(g, o0->c, o1->qo) &&
         buf_disjoint(g, o1->b, o1->qo)) {
+      if (__builtin_expect(b->kv_h2d_piped && kvi < 64u && b->kv_h2d_ev_valid[kvi], 0)) {
+        HIP(H.StreamWaitEvent(cur_stream, b->kv_h2d_ev[kvi], 0));
+        b->kv_h2d_ev_valid[kvi] = 0u;
+      }
       void *A = b->arena + g->bufs[o0->a].off + o0->aoff;
       void *NQ = b->arena + g->bufs[o0->nq].off;
       void *R = b->arena + g->bufs[o0->res].off;
@@ -7325,19 +8713,41 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         u32 hd_u = hd, nh_u = nh, nkv_u = nkv, dr_u = d_rel, re_u = relext, win_u = win, kv_u = kvlen;
         u32 rot = b->ink_glob_kv_rot;
         if (T == 1u && (h15m & 1) && (((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u) {
+          const int k_q4w = b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17] ? K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17
+                                                                           : K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15;
+          if (ink_q4_wmma_t1() && b->k[k_q4w] && b->at_part && b->at_count) {
+            u32 qs = g->bufs[o0->a].stride, rs = g->bufs[o0->nq].stride, ss = g->bufs[o0->res].stride;
+            u32 os = g->bufs[o0->b].stride, gs = g->bufs[o1->b].stride, oqs = g->bufs[o1->qo].stride;
+            void *part_p = (void *)b->at_part;
+            u32 np = pos + 1u, TT1 = 1u;
+            u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+            u32 cap_sp = ink_q4_dec_maxsp();
+            if (nsplit > cap_sp) nsplit = cap_sp;
+            while (nsplit > 1u && (size_t)nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &TT1, &kv_u, &hd_u, &nh_u, &nkv_u,
+                          &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag, &oq, &gs, &oqs, &rot};
+            tr_span(g, i, 2u);
+            launch_t(b, k_q4w, nkv * nsplit, 1u, va);
+            return 2u;
+          }
+          const int use_fast = b->k[K_INK_REL_ATTN_DEC_GLOB_Q4_FAST_R15] != NULL;
+          const u32 cap_sp = ink_q4_dec_maxsp();
+          const int use_atp = use_fast && cap_sp > 64u && b->at_part && ((size_t)nh * cap_sp * 130u <= b->at_part_floats);
           void *C = b->arena + g->bufs[o0->c].off;
+          void *part_p = use_atp ? (void *)b->at_part : C;
           u32 np = pos + 1u;
-          u32 max_sp = (u32)(g->bufs[o0->c].size / ((size_t)nh * (hd + 2u) * 4u));
-          if (max_sp > 64u) max_sp = 64u;
+          u32 max_sp = use_atp ? cap_sp : (u32)(g->bufs[o0->c].size / ((size_t)nh * (hd + 2u) * 4u));
+          if (!use_atp && max_sp > 64u) max_sp = 64u;
+          if (max_sp > cap_sp) max_sp = cap_sp;
           if (max_sp == 0u) max_sp = 1u;
           u32 nsplit = (np >= 128u && b->at_count) ? (np + 63u) / 64u : 1u;
           if (nsplit > max_sp) nsplit = max_sp;
           u32 ch = (np + nsplit - 1u) / nsplit;
           nsplit = (np + ch - 1u) / ch;
-          void *fa[] = {&A, &kc, &vc, &NQ, &w0, &R, &C, &out_p, &pos, &kv_u, &hd_u, &nh_u, &nkv_u,
+          void *fa[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &kv_u, &hd_u, &nh_u, &nkv_u,
                         &dr_u, &re_u, &win_u, &nsplit, &ch, &b->at_count, &ag, &oq, &rot};
           tr_span(g, i, 2u);
-          launch(b, K_INK_REL_ATTN_DEC_GLOB_Q4_R14, nkv * nsplit, fa);
+          launch(b, use_fast ? K_INK_REL_ATTN_DEC_GLOB_Q4_FAST_R15 : K_INK_REL_ATTN_DEC_GLOB_Q4_R14, nkv * nsplit, fa);
           return 2u;
         } else if (T >= 2u && (h15m & 6) && b->at_part && b->at_count) {
           u32 qs = g->bufs[o0->a].stride, rs = g->bufs[o0->nq].stride, ss = g->bufs[o0->res].stride;
@@ -7345,16 +8755,41 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           if ((((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u &&
               ((qs | os | gs) & 15u) == 0u && (oqs & 3u) == 0u) {
             void *part_p = (void *)b->at_part;
-            u32 np = pos + T;
-            u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
-            if (nsplit > 64u) nsplit = 64u;
-            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
-            u32 TT = T;
-            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &TT, &kv_u, &hd_u, &nh_u, &nkv_u,
-                          &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag, &oq, &gs, &oqs, &rot};
-            tr_span(g, i, 2u);
-            launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_R14, nkv * nsplit, (T + 3u) / 4u, va);
-            return 2u;
+            if (b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17] || b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15]) {
+              const int k_q4w = b->k[K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17] ? K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17
+                                                                               : K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_R15;
+              tr_span(g, i, 2u);
+              for (u32 s0 = 0u; s0 < T; s0 += 8u) {
+                u32 sT = (T - s0 > 8u) ? 8u : (T - s0);
+                u32 spos = pos + s0;
+                void *A_s = (char *)A + (size_t)s0 * qs;
+                void *NQ_s = (char *)NQ + (size_t)s0 * rs;
+                void *R_s = (char *)R + (size_t)s0 * ss;
+                void *out_s = out_p ? ((char *)out_p + (size_t)s0 * os) : NULL;
+                void *ag_s = (char *)ag + (size_t)s0 * gs;
+                void *oq_s = (char *)oq + (size_t)s0 * oqs;
+                u32 np = spos + sT;
+                u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+                u32 vcap = ink_q4_ver_maxsp();
+                if (nsplit > vcap) nsplit = vcap;
+                while (nsplit > 1u && (size_t)sT * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+                void *va[] = {&A_s, &kc, &vc, &NQ_s, &w0, &R_s, &part_p, &out_s, &spos, &sT, &kv_u, &hd_u, &nh_u, &nkv_u,
+                              &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag_s, &oq_s, &gs, &oqs, &rot};
+                launch_t(b, k_q4w, nkv * nsplit, 1u, va);
+              }
+              return 2u;
+            } else {
+              u32 np = pos + T;
+              u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
+              if (nsplit > 64u) nsplit = 64u;
+              while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+              u32 TT = T;
+              void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &TT, &kv_u, &hd_u, &nh_u, &nkv_u,
+                            &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag, &oq, &gs, &oqs, &rot};
+              tr_span(g, i, 2u);
+              launch_t(b, K_INK_REL_ATTN_VER_GLOB_Q4_R14, nkv * nsplit, (T + 3u) / 4u, va);
+              return 2u;
+            }
           }
         }
       } else if (T == 1u && (h15m & 1) && (((uintptr_t)A | (uintptr_t)ag) & 15u) == 0u && (((uintptr_t)oq) & 3u) == 0u) {
@@ -7405,7 +8840,32 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
               launch_t(b, K_INK_REL_ATTN_VER_GLOB_WMMA_GATE_Q8_R10, nkv * nsplit, 1u, va);
             }
             return 2u;
-          } else if ((h15m & 4) && b->k[K_INK_REL_ATTN_VER_GATE_Q8_R10]) {
+          } else if (win > 0u && ink_h21_fuse_gate() &&
+                     ((ink_h21_mode() == 1 && (b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_WMMA_R11]) && T <= 8u) ||
+                      (ink_h21_mode() == 2 && (b->k[K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_QT2_R11]) && T <= 16u) ||
+                      (ink_h21_mode() == 3 && b->k[K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16] && T <= 16u))) {
+            const int hm = ink_h21_mode();
+            const int use_qtile_ex = (hm == 3 && b->k[K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16] != NULL);
+            const int use_wmma = (!use_qtile_ex && hm == 1 && T <= 8u &&
+                                  (b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_WMMA_R11]));
+            u32 np_u = use_qtile_ex ? ((pos + T > win) ? (win + 3u) : (pos + T))
+                                    : ((pos + T > win) ? (win + T) : (pos + T));
+            u32 nsplit = (np_u >= 128u) ? (np_u + 63u) / 64u : 1u;
+            const u32 sp_cap = use_qtile_ex ? 64u : 16u;
+            if (nsplit > sp_cap) nsplit = sp_cap;
+            while (nsplit > 1u && (size_t)T * nh * nsplit * 130u > b->at_part_floats) nsplit >>= 1u;
+            u32 TT = T;
+            void *va[] = {&A, &kc, &vc, &NQ, &w0, &R, &part_p, &out_p, &pos, &TT, &kv_u, &hd_u, &nh_u, &nkv_u,
+                          &dr_u, &re_u, &win_u, &nsplit, &qs, &rs, &ss, &os, &b->at_count, &ag, &oq, &gs, &oqs};
+            tr_span(g, i, 2u);
+            if (use_qtile_ex) launch_t(b, K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16, nkv * nsplit, (T + 3u) / 4u, va);
+            else if (use_wmma) launch_t(b, b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] ? K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16 : K_INK_REL_ATTN_VER_SWA_WMMA_R11, nkv * nsplit, 1u, va);
+            else launch_t(b, b->k[K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16] ? K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16 : K_INK_REL_ATTN_VER_SWA_QT2_R11, nkv * nsplit, (T + 1u) / 2u, va);
+            return 2u;
+          } else if ((h15m & 4) && b->k[K_INK_REL_ATTN_VER_GATE_Q8_R10] &&
+                     !(win > 0u && !ink_h21_fuse_gate() &&
+                       (b->k[K_INK_REL_ATTN_VER_SWA_WMMA_EXACT_R16] || b->k[K_INK_REL_ATTN_VER_SWA_QT2_EXACT_R16] ||
+                        b->k[K_INK_REL_ATTN_VER_SWA_QTILE_EXACT_R16]))) {
             u32 np = (win > 0u && pos + T > win) ? win : (pos + T);
             u32 nsplit = (np >= 128u) ? (np + 63u) / 64u : 1u;
             if (nsplit > 64u) nsplit = 64u;
@@ -7450,8 +8910,192 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Fusion E2 bit 67: non-loop [OP_ATTN_RES(K=1..3, n=2304), K x OP_RMSNORM[+Q8]] -> ie_inkling_attn_res_norm_q8_r7 */
-  if (k0 == OP_ATTN_RES && !mk.rec && b->k[K_INK_ATTN_RES_NORM_Q8_R7] &&
+  /* R62 (H17 bit 122 / exact rescue bit 142): 1-launch persistent MLP loop controller [opt OP_ATTN_RES + 8-op LC] */
+  if ((k0 == OP_ATTN_RES || (k0 == OP_RMSNORM && o0->v == &m->ones_dim)) &&
+      !ctx_on && !mk.rec && !b->ink_sp_poisoned && T >= 1u && T <= 8u &&
+      (b->k[K_INK_LC_PIPE_MLP_EXACT_R16] || b->k[K_INK_LC_PIPE_MLP_R11]) && b->ink_sp_sync) {
+    const int k_lc_mlp = b->k[K_INK_LC_PIPE_MLP_EXACT_R16] ? K_INK_LC_PIPE_MLP_EXACT_R16 : K_INK_LC_PIPE_MLP_R11;
+    const int has_ar = (k0 == OP_ATTN_RES);
+    const u32 n_span = has_ar ? 9u : 8u;
+    if (i + n_span - 1u < i1) {
+      const op *oar = has_ar ? o0 : NULL;
+      const u32 ib0 = has_ar ? (i + 1u) : i;
+      const op *r0 = &g->ops[ib0], *r1 = &g->ops[ib0 + 1u], *rq = &g->ops[ib0 + 2u];
+      const op *od = &g->ops[ib0 + 3u], *oq = &g->ops[ib0 + 4u], *og = &g->ops[ib0 + 5u];
+      const op *ol = &g->ops[ib0 + 6u], *on = &g->ops[ib0 + 7u];
+      int ok = (r0->kind == OP_RMSNORM && r1->kind == OP_RMSNORM && rq->kind == OP_QUANT &&
+                od->kind == OP_GEMV_Q8 && oq->kind == OP_QUANT && og->kind == OP_GEMV_Q8 &&
+                ol->kind == OP_LOOP_GATE && on->kind == OP_RMSNORM &&
+                r0->v == &m->ones_dim && r1->v == &m->ones_dim && r0->qo < 0 && r1->qo < 0 &&
+                r0->n == 2304u && r1->n == 2304u && rq->n == 4608u &&
+                r0->b >= 0 && r0->b == r1->b && r0->b == rq->a &&
+                r0->boff == 0u && r1->boff == 2304u * 4u && rq->aoff == 0u && rq->boff == 0u &&
+                od->a == rq->b && od->aoff == 0u && !od->v && od->res < 0 && !od->nv &&
+                od->w->nb == 144u && od->w->rows == 64u &&
+                oq->a == od->b && oq->n == 64u && oq->boff == 0u &&
+                og->a == oq->b && og->aoff == 0u && og->boff == 0u && !og->v && og->res < 0 && !og->nv &&
+                og->w->nb == 2u && og->w->rows == 4608u &&
+                ol->gt == og->b && ol->gtoff == 0u && ol->boff == 0u && ol->n == 2304u &&
+                ol->a == r0->a && ol->aoff == r0->aoff && ol->c == r1->a && ol->coff == r1->aoff &&
+                on->a == ol->b && on->aoff == 0u && on->boff == 0u && on->n == 2304u && on->v && on->qo >= 0);
+      if (ok && has_ar) {
+        if (oar->qstr != 1u || oar->c < 0 || oar->n != 2304u || oar->nh < 1u || oar->nh > 32u ||
+            oar->b != r0->a || oar->boff != r0->aoff || r0->aoff != 0u)
+          ok = 0;
+      }
+      if (ok) {
+        void *blk_p = (has_ar && oar->a >= 0) ? (b->arena + g->bufs[oar->a].off + oar->aoff) : NULL;
+        void *cinp_p = has_ar ? (b->arena + g->bufs[oar->c].off + oar->coff) : NULL;
+        void *arq_p = has_ar ? (void *)((float *)b->d[i].w0 + oar->roff) : NULL;
+        void *fres_p = b->arena + g->bufs[r0->a].off + r0->aoff;
+        void *msg_p = b->arena + g->bufs[r1->a].off + r1->aoff;
+        void *cq_p = b->arena + g->bufs[rq->b].off + rq->boff;
+        void *qwd_p = b->d[ib0 + 3u].w0, *qsd_p = b->d[ib0 + 3u].w1;
+        void *h_p = b->arena + g->bufs[od->b].off + od->boff;
+        void *qwf_p = b->d[ib0 + 5u].w0, *qsf_p = b->d[ib0 + 5u].w1;
+        void *minp_p = b->arena + g->bufs[ol->b].off + ol->boff;
+        void *nw_p = b->d[ib0 + 7u].w0;
+        void *ffn_in_p = (on->dead_b && deadb_on()) ? NULL : (b->arena + g->bufs[on->b].off + on->boff);
+        void *ffn_q8_p = b->arena + g->bufs[on->qo].off;
+        u32 bs_blk = (has_ar && oar->a >= 0) ? g->bufs[oar->a].stride : 0u;
+        u32 cs_inp = has_ar ? g->bufs[oar->c].stride : 0u;
+        u32 fs = g->bufs[r0->a].stride, ms = g->bufs[r1->a].stride, cqs = g->bufs[rq->b].stride;
+        u32 hs = g->bufs[od->b].stride, ts = g->bufs[ol->b].stride;
+        u32 ys = g->bufs[on->b].stride, qso = g->bufs[on->qo].stride;
+        u32 ng = ink_h17_ng(), M_ar = has_ar ? oar->nh : 0u, dim = 2304u, nb_dn = 144u, rank = 64u, TT = T;
+        u32 flags = 0u;
+        float eps = m->eps;
+        uint64_t bt = 0ull, kt = 0ull;
+        if (((uintptr_t)fres_p & 15u) == 0u && ((uintptr_t)msg_p & 15u) == 0u &&
+            ((uintptr_t)minp_p & 15u) == 0u && ((uintptr_t)nw_p & 15u) == 0u &&
+            (!ffn_in_p || ((uintptr_t)ffn_in_p & 15u) == 0u) &&
+            (!blk_p || ((uintptr_t)blk_p & 15u) == 0u) && (!cinp_p || ((uintptr_t)cinp_p & 15u) == 0u) &&
+            (!arq_p || ((uintptr_t)arq_p & 15u) == 0u)) {
+          if (!b->ink_h17_probed) {
+            u32 pflags = 4u;
+            void *pa[] = {&blk_p, &cinp_p, &arq_p, &fres_p, &msg_p, &cq_p,
+                          &qwd_p, &qsd_p, &h_p, &qwf_p, &qsf_p, &minp_p, &nw_p, &ffn_in_p, &ffn_q8_p,
+                          &b->ink_sp_sync, &ng, &M_ar, &dim, &nb_dn, &rank, &TT, &pflags, &eps,
+                          &bs_blk, &cs_inp, &fs, &ms, &cqs, &hs, &ts, &ys, &qso, &bt, &kt};
+            launch(b, k_lc_mlp, ng, pa);
+            HIP(H.StreamSynchronize(cur_stream));
+            u32 pf = 0u;
+            HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
+            b->ink_h17_probed = 1;
+            if (pf != 0u) {
+              b->ink_sp_poisoned = 1;
+              fprintf(stderr, "gpu: H17 persistent co-residency probe FAILED (flag=%u) -> latching off\n", pf);
+            }
+          }
+          if (!b->ink_sp_poisoned) {
+            void *fa[] = {&blk_p, &cinp_p, &arq_p, &fres_p, &msg_p, &cq_p,
+                          &qwd_p, &qsd_p, &h_p, &qwf_p, &qsf_p, &minp_p, &nw_p, &ffn_in_p, &ffn_q8_p,
+                          &b->ink_sp_sync, &ng, &M_ar, &dim, &nb_dn, &rank, &TT, &flags, &eps,
+                          &bs_blk, &cs_inp, &fs, &ms, &cqs, &hs, &ts, &ys, &qso, &bt, &kt};
+            b->ink_sp_used = 1;
+            tr_span(g, i, n_span);
+            launch(b, k_lc_mlp, ng, fa);
+            return n_span;
+          }
+        }
+      }
+    }
+  }
+
+  /* R62 (H17 bit 122 / exact rescue bit 142): 1-launch persistent 3-controller attention loop pipeline (24 ops -> 1 launch) */
+  if (k0 == OP_RMSNORM && o0->v == &m->ones_dim && !ctx_on && !mk.rec && !b->ink_sp_poisoned &&
+      T >= 1u && T <= 8u && i + 23u < i1 &&
+      (b->k[K_INK_LC_PIPE_ATTN_EXACT_R16] || b->k[K_INK_LC_PIPE_ATTN_R11]) && b->ink_sp_sync) {
+    const int k_lc_attn = b->k[K_INK_LC_PIPE_ATTN_EXACT_R16] ? K_INK_LC_PIPE_ATTN_EXACT_R16 : K_INK_LC_PIPE_ATTN_R11;
+    void *inp[3], *msg[3], *cq[3], *qwd[3], *qsd[3], *h[3], *qwf[3], *qsf[3], *tmp[3], *nw[3], *ny[3], *nq[3];
+    u32 is[3], ms[3], cqs = 0u, hs = 0u, ts = 0u, ys = 0u, qso = 0u;
+    int ok = 1;
+    for (u32 c = 0u; ok && c < 3u; c++) {
+      const op *r0 = &g->ops[i + 3u * c], *r1 = &g->ops[i + 3u * c + 1u], *rq = &g->ops[i + 3u * c + 2u];
+      const op *od = &g->ops[i + 9u + c];
+      const op *oq = &g->ops[i + 12u + 3u * c], *og = &g->ops[i + 13u + 3u * c], *ol = &g->ops[i + 14u + 3u * c];
+      const op *on = &g->ops[i + 21u + c];
+      if (r0->kind != OP_RMSNORM || r1->kind != OP_RMSNORM || rq->kind != OP_QUANT ||
+          od->kind != OP_GEMV_Q8 || oq->kind != OP_QUANT || og->kind != OP_GEMV_Q8 ||
+          ol->kind != OP_LOOP_GATE || on->kind != OP_RMSNORM ||
+          r0->v != &m->ones_dim || r1->v != &m->ones_dim || r0->qo >= 0 || r1->qo >= 0 ||
+          r0->n != 2304u || r1->n != 2304u || rq->n != 4608u ||
+          r0->b < 0 || r0->b != r1->b || r0->b != rq->a ||
+          r0->boff != 0u || r1->boff != 2304u * 4u || rq->aoff != 0u || rq->boff != 0u ||
+          od->a != rq->b || od->aoff != 0u || od->v || od->res >= 0 || od->nv ||
+          od->w->nb != 144u || od->w->rows != 64u ||
+          oq->a != od->b || oq->n != 64u || oq->boff != 0u ||
+          og->a != oq->b || og->aoff != 0u || og->boff != 0u || og->v || og->res >= 0 || og->nv ||
+          og->w->nb != 2u || og->w->rows != 4608u ||
+          ol->gt != og->b || ol->gtoff != 0u || ol->boff != 0u || ol->n != 2304u ||
+          ol->a != r0->a || ol->aoff != r0->aoff || ol->c != r1->a || ol->coff != r1->aoff ||
+          on->a != ol->b || on->aoff != 0u || on->boff != 0u || on->n != 2304u || !on->v || on->qo < 0) {
+        ok = 0; break;
+      }
+      inp[c] = b->arena + g->bufs[r0->a].off + r0->aoff;
+      msg[c] = b->arena + g->bufs[r1->a].off + r1->aoff;
+      cq[c] = b->arena + g->bufs[rq->b].off + rq->boff;
+      qwd[c] = b->d[i + 9u + c].w0; qsd[c] = b->d[i + 9u + c].w1;
+      h[c] = b->arena + g->bufs[od->b].off + od->boff;
+      qwf[c] = b->d[i + 13u + 3u * c].w0; qsf[c] = b->d[i + 13u + 3u * c].w1;
+      tmp[c] = b->arena + g->bufs[ol->b].off + ol->boff;
+      nw[c] = b->d[i + 21u + c].w0;
+      ny[c] = (on->dead_b && deadb_on()) ? NULL : (b->arena + g->bufs[on->b].off + on->boff);
+      nq[c] = b->arena + g->bufs[on->qo].off;
+      is[c] = g->bufs[r0->a].stride; ms[c] = g->bufs[r1->a].stride;
+      if (c == 0u) {
+        cqs = g->bufs[rq->b].stride; hs = g->bufs[od->b].stride; ts = g->bufs[ol->b].stride;
+        ys = g->bufs[on->b].stride; qso = g->bufs[on->qo].stride;
+      } else if (g->bufs[rq->b].stride != cqs || g->bufs[od->b].stride != hs ||
+                 g->bufs[ol->b].stride != ts || g->bufs[on->b].stride != ys ||
+                 g->bufs[on->qo].stride != qso) {
+        ok = 0; break;
+      }
+      if (((uintptr_t)inp[c] & 15u) != 0u || ((uintptr_t)msg[c] & 15u) != 0u ||
+          ((uintptr_t)tmp[c] & 15u) != 0u || ((uintptr_t)nw[c] & 15u) != 0u ||
+          (ny[c] && ((uintptr_t)ny[c] & 15u) != 0u)) { ok = 0; break; }
+    }
+    if (ok) {
+      u32 ng = ink_h17_ng(), dim = 2304u, nb_dn = 144u, rank = 64u, TT = T;
+      u32 shared = (inp[0] == inp[1] && inp[0] == inp[2] && (T == 1u || (is[0] == is[1] && is[0] == is[2]))) ? 1u : 0u;
+      float eps = m->eps;
+      uint64_t bt = 0ull, kt = 0ull;
+      if (!b->ink_h17_probed) {
+        u32 pflags = 4u;
+        void *pa[] = {
+            &inp[0], &msg[0], &cq[0], &qwd[0], &qsd[0], &h[0], &qwf[0], &qsf[0], &tmp[0], &nw[0], &ny[0], &nq[0],
+            &inp[1], &msg[1], &cq[1], &qwd[1], &qsd[1], &h[1], &qwf[1], &qsf[1], &tmp[1], &nw[1], &ny[1], &nq[1],
+            &inp[2], &msg[2], &cq[2], &qwd[2], &qsd[2], &h[2], &qwf[2], &qsf[2], &tmp[2], &nw[2], &ny[2], &nq[2],
+            &b->ink_sp_sync, &ng, &dim, &nb_dn, &rank, &TT, &pflags, &eps,
+            &is[0], &is[1], &is[2], &ms[0], &ms[1], &ms[2], &cqs, &hs, &ts, &ys, &qso, &bt, &kt};
+        launch(b, k_lc_attn, ng, pa);
+        HIP(H.StreamSynchronize(cur_stream));
+        u32 pf = 0u;
+        HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
+        b->ink_h17_probed = 1;
+        if (pf != 0u) {
+          b->ink_sp_poisoned = 1;
+          fprintf(stderr, "gpu: H17 attn persistent co-residency probe FAILED (flag=%u) -> latching off\n", pf);
+        }
+      }
+      if (!b->ink_sp_poisoned) {
+        void *fa[] = {
+            &inp[0], &msg[0], &cq[0], &qwd[0], &qsd[0], &h[0], &qwf[0], &qsf[0], &tmp[0], &nw[0], &ny[0], &nq[0],
+            &inp[1], &msg[1], &cq[1], &qwd[1], &qsd[1], &h[1], &qwf[1], &qsf[1], &tmp[1], &nw[1], &ny[1], &nq[1],
+            &inp[2], &msg[2], &cq[2], &qwd[2], &qsd[2], &h[2], &qwf[2], &qsf[2], &tmp[2], &nw[2], &ny[2], &nq[2],
+            &b->ink_sp_sync, &ng, &dim, &nb_dn, &rank, &TT, &shared, &eps,
+            &is[0], &is[1], &is[2], &ms[0], &ms[1], &ms[2], &cqs, &hs, &ts, &ys, &qso, &bt, &kt};
+        b->ink_sp_used = 1;
+        tr_span(g, i, 24u);
+        launch(b, k_lc_attn, ng, fa);
+        return 24u;
+      }
+    }
+  }
+
+  /* R7 Fusion E2 bit 67 / R75 H12 bit 151: non-loop [OP_ATTN_RES(K=1..3, n=2304), K x OP_RMSNORM[+Q8]] */
+  if (k0 == OP_ATTN_RES && !mk.rec &&
+      (b->k[K_INK_ATTN_RES_NORM_Q8_R7] || (T >= 17u && ink_pf_polish_r13_want() && b->k[K_INK_ATTN_RES_NORM_Q8_PF_R13])) &&
       o0->n == 2304u && o0->nh >= 1u && o0->nh <= 32u && o0->qstr >= 1u && o0->qstr <= 3u &&
       o0->b >= 0 && i + o0->qstr < i1 && g->bufs[o0->b].last <= i + o0->qstr) {
     const u32 K = o0->qstr, M = o0->nh, n = 2304u;
@@ -7511,7 +9155,8 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
                       &M_u, &K_u, &n_u, &eps,
                       &as, &cs, &ys[0], &qs[0], &ys[1], &qs[1], &ys[2], &qs[2], &has_c};
         tr_span(g, i, 1u + K);
-        launch_t(b, K_INK_ATTN_RES_NORM_Q8_R7, 1u, T, fa);
+        launch_t(b, (T >= 17u && ink_pf_polish_r13_want() && b->k[K_INK_ATTN_RES_NORM_Q8_PF_R13])
+                        ? K_INK_ATTN_RES_NORM_Q8_PF_R13 : K_INK_ATTN_RES_NORM_Q8_R7, 1u, T, fa);
         return 1u + K;
       }
     }
@@ -7764,54 +9409,80 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Fusion C1 bit 61: T=1..16 [sconv(k), vclip(k), sconv(v), vclip(v), kv_store] (+ inline sc_hist/ring) */
-  const int sc_tree = b->tr_on && b->ink_tree_split > 0u && b->ink_tree_split < T;
-  if (k0 == OP_SCONV && !sc_tree && !mk.rec && !ctx_on && T >= 1u && T <= 16u && !b->kvq8 && !b->kvq4 &&
+  /* R7 Fusion C1 bit 61 (f16), R68 tree bit 131 (f16 T<=8), & R65 C1-GLOB-Q4 bit 163 (q4rot T<=8): [sconv(k), vclip(k), sconv(v), vclip(v), kv_store] */
+  const int sc_tree = b->tr_on && b->ink_tree_nonlin;
+  if (k0 == OP_SCONV && !mk.rec && !ctx_on && T >= 1u && T <= 16u && !b->kvq8 && !b->kvq4 &&
       m->n_kv == 8u && m->hd == 128u && o0->n == 1024u &&
-      b->k[K_INK_KV_SCONV_VCLIP_STORE_R7] && i + 4u < i1) {
+      (b->k[K_INK_KV_SCONV_VCLIP_STORE_R7] || b->k[K_INK_KV_SCONV_VCLIP_STORE_TREE_R12] ||
+       b->k[K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16]) && i + 4u < i1) {
     const op *okc = &g->ops[i + 1u], *ov = &g->ops[i + 2u], *ovc = &g->ops[i + 3u], *okv = &g->ops[i + 4u];
     if (okc->kind == OP_VCLIP && ov->kind == OP_SCONV && ovc->kind == OP_VCLIP && okv->kind == OP_KV &&
         okc->a == o0->b && okc->aoff == 0u && ov->n == 1024u && ovc->a == ov->b && ovc->aoff == 0u &&
         okv->a == okc->b && okv->b == ovc->b && o0->escale == ov->escale &&
         okc->clamp > 0.0f && !okc->v && !okc->norope && !ovc->v && ovc->clamp == 0.0f &&
-        g->kv_len[okv->kvi] > 0u && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx)) {
-      void *ka = b->arena + g->bufs[o0->a].off + o0->aoff;
-      void *vk = b->d[i].w0;
-      void *ck = o0->c >= 0 ? (b->arena + g->bufs[o0->c].off + o0->coff) : NULL;
-      float *ring_k = b->sc_ring + (size_t)o0->scoff * 4u;
-      float *hist_k = (T > 1u && b->sc_defer) ? (b->sc_hist + (size_t)o0->scoff) : NULL;
-      void *va = b->arena + g->bufs[ov->a].off + ov->aoff;
-      void *vv = b->d[i + 2u].w0;
-      void *cv = ov->c >= 0 ? (b->arena + g->bufs[ov->c].off + ov->coff) : NULL;
-      float *ring_v = b->sc_ring + (size_t)ov->scoff * 4u;
-      float *hist_v = (T > 1u && b->sc_defer) ? (b->sc_hist + (size_t)ov->scoff) : NULL;
-      void *kc0 = kv_ptr(b, 0, okv->kvi, 0), *vc0 = kv_ptr(b, 1, okv->kvi, 0);
-      u32 kas = g->bufs[o0->a].stride, cks = o0->c >= 0 ? g->bufs[o0->c].stride : 0u;
-      u32 vas = g->bufs[ov->a].stride, cvs = ov->c >= 0 ? g->bufs[ov->c].stride : 0u;
-      u32 hrs = hist_k ? b->sc_hist_stride : 0u;
-      if (((uintptr_t)ka & 15u) == 0u && ((uintptr_t)vk & 15u) == 0u && ((uintptr_t)ring_k & 15u) == 0u &&
-          ((uintptr_t)va & 15u) == 0u && ((uintptr_t)vv & 15u) == 0u && ((uintptr_t)ring_v & 15u) == 0u &&
-          ((uintptr_t)kc0 & 15u) == 0u && ((uintptr_t)vc0 & 15u) == 0u &&
-          (!ck || ((uintptr_t)ck & 15u) == 0u) && (!cv || ((uintptr_t)cv & 15u) == 0u) &&
-          (!hist_k || (((uintptr_t)hist_k & 15u) == 0u && ((uintptr_t)hist_v & 15u) == 0u && (hrs & 3u) == 0u)) &&
-          (T == 1u || ((kas | vas | (ck ? cks : 0u) | (cv ? cvs : 0u)) & 15u) == 0u)) {
-        float sc_esc = o0->escale, k_clamp = okc->clamp, v_eps = ovc->escale;
-        u32 kvlen = g->kv_len[okv->kvi], TT = T;
-        void *fa[] = {&ka, &vk, &ck, &ring_k, &hist_k, &va, &vv, &cv, &ring_v, &hist_v,
-                      &kc0, &vc0, &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen,
-                      &kas, &cks, &vas, &cvs, &hrs};
-        tr_span(g, i, 5u);
-        launch(b, K_INK_KV_SCONV_VCLIP_STORE_R7, 1u, fa);
-        return 5u;
+        g->kv_len[okv->kvi] > 0u) {
+      const int is_gq4 = (b->ink_glob_kv_mode == 2 && g->kv_len[okv->kvi] >= g->n_ctx);
+      const int can_gq4 = is_gq4 && T <= 8u && b->k[K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16] != NULL;
+      const int can_f16_tr = sc_tree && !is_gq4 && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx) &&
+                             T <= 8u && b->k[K_INK_KV_SCONV_VCLIP_STORE_TREE_R12] != NULL;
+      const int can_f16 = !sc_tree && !is_gq4 && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx) &&
+                          b->k[K_INK_KV_SCONV_VCLIP_STORE_R7] != NULL;
+      if (can_gq4 || can_f16_tr || can_f16) {
+        void *ka = b->arena + g->bufs[o0->a].off + o0->aoff;
+        void *vk = b->d[i].w0;
+        void *ck = o0->c >= 0 ? (b->arena + g->bufs[o0->c].off + o0->coff) : NULL;
+        float *ring_k = b->sc_ring + (size_t)o0->scoff * 4u;
+        float *hist_k = (T > 1u && b->sc_defer) ? (b->sc_hist + (size_t)o0->scoff) : NULL;
+        void *va = b->arena + g->bufs[ov->a].off + ov->aoff;
+        void *vv = b->d[i + 2u].w0;
+        void *cv = ov->c >= 0 ? (b->arena + g->bufs[ov->c].off + ov->coff) : NULL;
+        float *ring_v = b->sc_ring + (size_t)ov->scoff * 4u;
+        float *hist_v = (T > 1u && b->sc_defer) ? (b->sc_hist + (size_t)ov->scoff) : NULL;
+        void *kc0 = kv_ptr(b, 0, okv->kvi, 0), *vc0 = kv_ptr(b, 1, okv->kvi, 0);
+        u32 kas = g->bufs[o0->a].stride, cks = o0->c >= 0 ? g->bufs[o0->c].stride : 0u;
+        u32 vas = g->bufs[ov->a].stride, cvs = ov->c >= 0 ? g->bufs[ov->c].stride : 0u;
+        u32 hrs = hist_k ? b->sc_hist_stride : 0u;
+        const uintptr_t kv_am = can_gq4 ? 7u : 15u;
+        if (((uintptr_t)ka & 15u) == 0u && ((uintptr_t)vk & 15u) == 0u && ((uintptr_t)ring_k & 15u) == 0u &&
+            ((uintptr_t)va & 15u) == 0u && ((uintptr_t)vv & 15u) == 0u && ((uintptr_t)ring_v & 15u) == 0u &&
+            ((uintptr_t)kc0 & kv_am) == 0u && ((uintptr_t)vc0 & kv_am) == 0u &&
+            (!ck || ((uintptr_t)ck & 15u) == 0u) && (!cv || ((uintptr_t)cv & 15u) == 0u) &&
+            (!hist_k || (((uintptr_t)hist_k & 15u) == 0u && ((uintptr_t)hist_v & 15u) == 0u && (hrs & 3u) == 0u)) &&
+            (T == 1u || ((kas | vas | (ck ? cks : 0u) | (cv ? cvs : 0u)) & 15u) == 0u)) {
+          float sc_esc = o0->escale, k_clamp = okc->clamp, v_eps = ovc->escale;
+          u32 kvlen = g->kv_len[okv->kvi], TT = T;
+          u32 tpar = sc_tree ? b->ink_tree_par_pack : 0x65432100u;
+          tr_span(g, i, 5u);
+          if (can_gq4) {
+            u32 rot = b->ink_glob_kv_rot;
+            void *fa[] = {&ka, &vk, &ck, &ring_k, &hist_k, &va, &vv, &cv, &ring_v, &hist_v,
+                          &kc0, &vc0, &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen,
+                          &kas, &cks, &vas, &cvs, &hrs, &tpar, &rot};
+            launch(b, K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16, 1u, fa);
+          } else if (can_f16_tr) {
+            void *fa[] = {&ka, &vk, &ck, &ring_k, &hist_k, &va, &vv, &cv, &ring_v, &hist_v,
+                          &kc0, &vc0, &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen,
+                          &kas, &cks, &vas, &cvs, &hrs, &tpar};
+            launch(b, K_INK_KV_SCONV_VCLIP_STORE_TREE_R12, 1u, fa);
+          } else {
+            void *fa[] = {&ka, &vk, &ck, &ring_k, &hist_k, &va, &vv, &cv, &ring_v, &hist_v,
+                          &kc0, &vc0, &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen,
+                          &kas, &cks, &vas, &cvs, &hrs};
+            launch(b, K_INK_KV_SCONV_VCLIP_STORE_R7, 1u, fa);
+          }
+          return 5u;
+        }
       }
     }
   }
 
-  /* g12 bits 25/26 & R8 bit 75: 5-op KV pipeline [sconv(k), vclip(k), (opt v_dyn), sconv(v), vclip(v), kv_store] (T>1 prefill or graph ctx) */
+  /* g12 bits 25/26 & R8 bit 75 & R75 H12 bit 151: 5-op KV pipeline [sconv(k), vclip(k), (opt v_dyn), sconv(v), vclip(v), kv_store] (T>1 prefill or graph ctx) */
   if (k0 == OP_SCONV && !sc_tree && !mk.rec && (T > 1u || ctx_on || (t1f & 4u)) && !b->kvq8 && !b->kvq4 && m->n_kv == 8u && m->hd == 128u && o0->n == 1024u) {
-    const int use_r8_kv = T >= 17u && !ctx_on && !b->sc_defer &&
+    const int use_r13_kv = T >= 17u && !ctx_on && !b->sc_defer && ink_pf_polish_r13_want() &&
+                           b->k[K_INK_KV_SCONV_VCLIP_STORE_PF_R13] != NULL && b->ink_sconv_rcnt != NULL;
+    const int use_r8_kv = !use_r13_kv && T >= 17u && !ctx_on && !b->sc_defer &&
                           b->k[K_INK_KV_SCONV_VCLIP_STORE_PF_R8] != NULL && b->ink_sconv_rcnt != NULL;
-    const int have_kv = use_r8_kv ||
+    const int have_kv = use_r13_kv || use_r8_kv ||
                         (ctx_on ? (b->k[K_INK_KV_SCONV_VCLIP_STORE_CTX_R2] != NULL)
                                 : (b->k[K_INK_KV_SCONV_VCLIP_STORE_R2] != NULL &&
                                    (T == 1u || b->k[K_INK_KV_RING_STORE_R2] != NULL)));
@@ -7860,11 +9531,12 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           float sc_esc = o0->escale, k_clamp = okc->clamp, v_eps = ovc->escale;
           u32 kvlen = g->kv_len[okv->kvi], TT = T;
           tr_span(g, i, n_span);
-          if (use_r8_kv) {
+          if (use_r13_kv || use_r8_kv) {
             void *fa[] = {&ka, &vk, &ck, &ring_k, &va, &vv, &cv, &ring_v, &kc0, &vc0,
                           &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen, &kas, &cks, &vas, &cvs,
                           &b->ink_sconv_rcnt};
-            launch_t(b, K_INK_KV_SCONV_VCLIP_STORE_PF_R8, 1u, (T + 31u) / 32u, fa);
+            if (use_r13_kv) launch_t(b, K_INK_KV_SCONV_VCLIP_STORE_PF_R13, 1u, (T + 3u) / 4u, fa);
+            else launch_t(b, K_INK_KV_SCONV_VCLIP_STORE_PF_R8, 1u, (T + 31u) / 32u, fa);
           } else if (ctx_on) {
             void *ca[] = {&ka, &vk, &ck, &ring_k, &va, &vv, &cv, &ring_v, &kc0, &vc0,
                           &sc_esc, &k_clamp, &v_eps, &b->ink_ctx_dev, &kvlen};
@@ -7894,18 +9566,23 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Fusion B2 bit 63 / R10 bit 106 NT: 4-op [OP_GEMV_EXP(IQ4_NL), OP_MOE_SUM, OP_SCONV(c=-1), OP_ADD] */
-  if (k0 == OP_GEMV_EXP && !sc_tree && !mk.rec && !ctx_on && T >= 1u && T <= 16u && i + 3u < i1 &&
+  /* R7 Fusion B2 bit 63 / R10 bit 106 NT / R68 tree bit 131 / R72 H36a bit 144: 4-op [OP_GEMV_EXP(IQ4_NL), OP_MOE_SUM, OP_SCONV(c=-1), OP_ADD] */
+  if (k0 == OP_GEMV_EXP && !mk.rec && !ctx_on && T >= 1u && T <= 16u && i + 3u < i1 &&
       o0->w->kind == MAT_IQ4NL && o0->boff == 0u && b->ink_moe_rcount &&
-      ((T == 1u && (b->k[K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10] || b->k[K_INK_EXP_DOWN_TAIL_T1_R7])) ||
-       (T >= 2u && b->k[K_INK_EXP_DOWN_TAIL_VER_R7]))) {
+      ((b->ink_iq4_wave &&
+        ((!sc_tree && T == 1u && b->k[K_INK_GEXP_IQ4NL_WAVE_TAIL_T1_R13]) ||
+         (T >= 2u && (!sc_tree || T <= 8u) && b->k[K_INK_GEXP_IQ4NL_WAVE_VER_R13]))) ||
+       (!b->ink_iq4_wave &&
+        ((!sc_tree && T == 1u && (b->k[K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10] || b->k[K_INK_EXP_DOWN_TAIL_T1_R7])) ||
+         (!sc_tree && T >= 2u && b->k[K_INK_EXP_DOWN_TAIL_VER_R7]) ||
+         (sc_tree && T >= 2u && T <= 8u && b->k[K_INK_EXP_DOWN_TAIL_VER_TREE_R12]))))) {
     /* IE_INK_MOE_TAIL_MODE: 0=hybrid (B1 on T==1, B2 on T=2..16), 1=B1 all, 2=B2 all */
     static int moe_tail_mode = -1;
     if (moe_tail_mode < 0) {
       const char *e = getenv("IE_INK_MOE_TAIL_MODE");
       moe_tail_mode = e ? atoi(e) : 0;
     }
-    const int adap_nob2 = (T >= 2u && !b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1);
+    const int adap_nob2 = (T >= 2u && !b->ink_iq3_flute && !b->ink_iq4_wave && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1);
     const int allow_b2 = !adap_nob2 && ((moe_tail_mode == 2) || (moe_tail_mode == 0 && T >= 2u));
     const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u], *o3 = &g->ops[i + 3u];
     const u32 rows = o0->w->rows, nb = o0->w->nb, K = o0->nh;
@@ -7936,13 +9613,15 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           u32 astr = o0->astr, bstr = o0->bstr;
           void *fa[] = {&qw, &qs, &xq, &yd, &r_u, &nb_u, &rt, &K_u, &qwn, &qsn, &astr, &bstr,
                         &v, &ring, &res, &out, &esc, &pos, &b->ink_moe_rcount};
-          const int kb2 = b->k[K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10]
-                              ? K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10 : K_INK_EXP_DOWN_TAIL_T1_R7;
+          const int kb2 = b->ink_iq4_wave
+                              ? K_INK_GEXP_IQ4NL_WAVE_TAIL_T1_R13
+                              : (b->k[K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10]
+                                     ? K_INK_GEXP_IQ4NL_TAIL_T1_NT_R10 : K_INK_EXP_DOWN_TAIL_T1_R7);
           tr_span(g, i, 4u);
           launch_t(b, kb2, (rows + 31u) / 32u, K, fa);
           return 4u;
         } else {
-          const int skip_sort = T <= ink_moe_slot_max(b) && b->ink_moe_all_slot && !b->ink_iq3_flute &&
+          const int skip_sort = T <= ink_moe_slot_max(b) && b->ink_moe_all_slot && !b->ink_iq3_flute && !b->ink_iq4_wave &&
                                 b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
           const u32 mp_a = T * K, mp_b = m->n_exp + (T * K) / 4u;
           const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
@@ -7957,13 +9636,23 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
               (!hist || (((uintptr_t)hist & 15u) == 0u && (hrs & 3u) == 0u))) {
             u32 xs = o0->astr ? o0->astr : at, ys_u = ys, xdiv = o0->astr ? 1u : K;
             u32 TT = T, rts_u = rts, yts_u = yts, rs_u = rs, os_u = os;
-            void *fa[] = {&qw, &qs, &xq, &yd, &r_u, &nb_u,
-                          &b->ms_list, &b->ms_packs, &b->ms_npacks,
-                          &qwn, &qsn, &xs, &ys_u, &xdiv,
-                          &rt, &K_u, &rts_u, &v, &ring, &res, &out, &hist,
-                          &esc, &pos, &TT, &yts_u, &rs_u, &os_u, &hrs, &b->ink_moe_rcount};
             tr_span(g, i, 4u);
-            launch_t(b, K_INK_EXP_DOWN_TAIL_VER_R7, (rows + 31u) / 32u, max_packs, fa);
+            if (b->ink_iq4_wave || sc_tree) {
+              u32 tpar = sc_tree ? b->ink_tree_par_pack : 0xFFFFFFFFu;
+              void *fa[] = {&qw, &qs, &xq, &yd, &r_u, &nb_u,
+                            &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                            &qwn, &qsn, &xs, &ys_u, &xdiv,
+                            &rt, &K_u, &rts_u, &v, &ring, &res, &out, &hist,
+                            &esc, &pos, &TT, &yts_u, &rs_u, &os_u, &hrs, &b->ink_moe_rcount, &tpar};
+              launch_t(b, b->ink_iq4_wave ? K_INK_GEXP_IQ4NL_WAVE_VER_R13 : K_INK_EXP_DOWN_TAIL_VER_TREE_R12, (rows + 31u) / 32u, max_packs, fa);
+            } else {
+              void *fa[] = {&qw, &qs, &xq, &yd, &r_u, &nb_u,
+                            &b->ms_list, &b->ms_packs, &b->ms_npacks,
+                            &qwn, &qsn, &xs, &ys_u, &xdiv,
+                            &rt, &K_u, &rts_u, &v, &ring, &res, &out, &hist,
+                            &esc, &pos, &TT, &yts_u, &rs_u, &os_u, &hrs, &b->ink_moe_rcount};
+              launch_t(b, K_INK_EXP_DOWN_TAIL_VER_R7, (rows + 31u) / 32u, max_packs, fa);
+            }
             return 4u;
           }
         }
@@ -8037,16 +9726,17 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7/R9 Fusion E3 (bit 68 r7 / bit 98 r9): T=1..16 [OP_GEMV_Q8(wo), OP_SCONV(c=-1), OP_ADD | OP_COPY] (+ inline sc_hist/ring) */
+  /* R7/R9/R64 Fusion E3 (bit 68 r7 / bit 98 r9 / bit 124 H18 r11): T=1..16 [OP_GEMV_Q8(wo), OP_SCONV(c=-1), OP_ADD | OP_COPY] (+ inline sc_hist/ring) */
   if (k0 == OP_GEMV_Q8 && !sc_tree && !mk.rec && !ctx_on && T >= 1u && T <= 16u && i + 2u < i1 &&
-      ((T == 1u && b->k[K_INK_WO_SCONV_POST_T1_R9]) || (T >= 2u && b->k[K_INK_WO_SCONV_POST_T8_R9]) || b->k[K_INK_WO_SCONV_POST_R7]) &&
+      ((T == 1u && b->k[K_INK_WO_SCONV_POST_T1_R9]) || (T >= 2u && (b->k[K_INK_WO_SCONV_POST_T8_R11] || b->k[K_INK_WO_SCONV_POST_T8_R9])) || b->k[K_INK_WO_SCONV_POST_R7]) &&
       !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
       o0->w->rows > 0u && o0->w->nb >= 8u && (o0->w->nb & 7u) == 0u) {
     static int wo_r9_mode = -1;
     if (wo_r9_mode < 0) wo_r9_mode = getenv("IE_INK_WO_R9_MODE") ? atoi(getenv("IE_INK_WO_R9_MODE")) : 1; /* 1=T1 only, 2=T2..16 only, 3=both */
+    const int use_r11_t8 = (T >= 2u && b->k[K_INK_WO_SCONV_POST_T8_R11] != NULL);
     const int use_r9_t1 = (T == 1u && b->k[K_INK_WO_SCONV_POST_T1_R9] && (wo_r9_mode & 1));
-    const int use_r9_t8 = (T >= 2u && b->k[K_INK_WO_SCONV_POST_T8_R9] && (wo_r9_mode & 2));
-    if (use_r9_t1 || use_r9_t8 || b->k[K_INK_WO_SCONV_POST_R7]) {
+    const int use_r9_t8 = (!use_r11_t8 && T >= 2u && b->k[K_INK_WO_SCONV_POST_T8_R9] && (wo_r9_mode & 2));
+    if (use_r11_t8 || use_r9_t1 || use_r9_t8 || b->k[K_INK_WO_SCONV_POST_R7]) {
     const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u];
     if (o1->kind == OP_SCONV && o1->c < 0 && o1->a == o0->b && o1->aoff == 0u && o1->n == o0->w->rows &&
         g->bufs[o0->b].last <= i + 2u) {
@@ -8074,13 +9764,21 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           u32 bds = is_cpy ? g->bufs[o2->b].stride : 0u;
           u32 hrs = hist ? b->sc_hist_stride : 0u;
           if (((uintptr_t)v & 15u) == 0u && ((uintptr_t)ring & 15u) == 0u) {
-            void *fa[] = {&qw, &qs, &xq, &v, &ring, &res, &out, &blk_dst, &hist,
-                          &dim, &nb, &esc, &pos, &TT, &xs, &rs, &os, &bds, &hrs};
-            const int kw = use_r9_t1 ? K_INK_WO_SCONV_POST_T1_R9 : (use_r9_t8 ? K_INK_WO_SCONV_POST_T8_R9 : K_INK_WO_SCONV_POST_R7);
-            u32 gx = (kw == K_INK_WO_SCONV_POST_T8_R9) ? ((dim + 15u) / 16u) : ((dim + 31u) / 32u);
-            if (gx >= 253u && gx <= 256u) gx = 257u;
             tr_span(g, i, 3u);
-            launch(b, kw, gx, fa);
+            if (use_r11_t8) {
+              u32 flags = 0u;
+              u32 gx = ink_h18_ng(dim);
+              void *fa[] = {&qw, &qs, &xq, &v, &ring, &res, &out, &blk_dst, &hist,
+                            &dim, &nb, &esc, &pos, &TT, &xs, &rs, &os, &bds, &hrs, &flags};
+              launch(b, K_INK_WO_SCONV_POST_T8_R11, gx, fa);
+            } else {
+              void *fa[] = {&qw, &qs, &xq, &v, &ring, &res, &out, &blk_dst, &hist,
+                            &dim, &nb, &esc, &pos, &TT, &xs, &rs, &os, &bds, &hrs};
+              const int kw = use_r9_t1 ? K_INK_WO_SCONV_POST_T1_R9 : (use_r9_t8 ? K_INK_WO_SCONV_POST_T8_R9 : K_INK_WO_SCONV_POST_R7);
+              u32 gx = (kw == K_INK_WO_SCONV_POST_T8_R9) ? ((dim + 15u) / 16u) : ((dim + 31u) / 32u);
+              if (gx >= 253u && gx <= 256u) gx = 257u;
+              launch(b, kw, gx, fa);
+            }
             return 3u;
           }
         }
@@ -8089,9 +9787,9 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R7 Fusion C2 bit 62: T=1..16 [OP_SCONV(c=-1), OP_ADD | OP_COPY] (+ inline sc_hist/ring) -> ie_inkling_sconv_post_r7 */
-  if (k0 == OP_SCONV && !sc_tree && !mk.rec && !ctx_on && T >= 1u && T <= 16u && o0->c < 0 && (o0->n & 3u) == 0u &&
-      i + 1u < i1 && b->k[K_INK_SCONV_POST_R7]) {
+  /* R7 Fusion C2 bit 62 & R68 tree bit 131: T=1..16 [OP_SCONV(c=-1), OP_ADD | OP_COPY] (+ inline sc_hist/ring) */
+  if (k0 == OP_SCONV && !mk.rec && !ctx_on && T >= 1u && T <= 16u && o0->c < 0 && (o0->n & 3u) == 0u &&
+      i + 1u < i1 && ((!sc_tree && b->k[K_INK_SCONV_POST_R7]) || (sc_tree && T <= 8u && b->k[K_INK_SCONV_POST_TREE_R12]))) {
     const op *o1 = &g->ops[i + 1u];
     const int is_add = o1->kind == OP_ADD && o1->n == o0->n && (o1->a == o0->b || o1->b == o0->b) &&
                        (T == 1u || buf_disjoint(g, o0->a, o1->c));
@@ -8120,18 +9818,24 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           (!blk_dst || ((uintptr_t)blk_dst & 15u) == 0u) &&
           (!hist || (((uintptr_t)hist & 15u) == 0u && (hrs & 3u) == 0u)) &&
           (T == 1u || ((as | rs | os | (blk_dst ? bds : 0u)) & 15u) == 0u)) {
-        void *fa[] = {&A, &v, &ring, &res, &out, &blk_dst, &hist, &n, &esc, &pos, &TT, &as, &rs, &os, &bds, &hrs};
         tr_span(g, i, 2u);
-        launch(b, K_INK_SCONV_POST_R7, ((n >> 2u) + 255u) / 256u, fa);
+        if (sc_tree) {
+          u32 tpar = b->ink_tree_par_pack;
+          void *fa[] = {&A, &v, &ring, &res, &out, &blk_dst, &hist, &n, &esc, &pos, &TT, &as, &rs, &os, &bds, &hrs, &tpar};
+          launch(b, K_INK_SCONV_POST_TREE_R12, ((n >> 2u) + 255u) / 256u, fa);
+        } else {
+          void *fa[] = {&A, &v, &ring, &res, &out, &blk_dst, &hist, &n, &esc, &pos, &TT, &as, &rs, &os, &bds, &hrs};
+          launch(b, K_INK_SCONV_POST_R7, ((n >> 2u) + 255u) / 256u, fa);
+        }
         return 2u;
       }
     }
   }
 
-  /* R8 Wave 3 bit 75: T >= 17 prefill [OP_SCONV(c=-1), OP_ADD | OP_COPY] + race-free ring commit -> ie_inkling_sconv_post_pf_r8 */
+  /* R8 Wave 3 bit 75 / R75 H12 bit 151: T >= 17 prefill [OP_SCONV(c=-1), OP_ADD | OP_COPY] + race-free ring commit */
   if (k0 == OP_SCONV && !mk.rec && !ctx_on && !b->sc_defer && T >= 17u && o0->c < 0 && (o0->n & 3u) == 0u &&
-      i + 1u < i1 && b->k[K_INK_SCONV_POST_PF_R8] && b->ink_sconv_rcnt &&
-      (((o0->n >> 2u) + 255u) / 256u) <= 16u) {
+      i + 1u < i1 && ((ink_pf_polish_r13_want() && b->k[K_INK_SCONV_POST_PF_R13]) || b->k[K_INK_SCONV_POST_PF_R8]) &&
+      b->ink_sconv_rcnt && (((o0->n >> 2u) + 255u) / 256u) <= 16u) {
     const op *o1 = &g->ops[i + 1u];
     const int is_add = o1->kind == OP_ADD && o1->n == o0->n && (o1->a == o0->b || o1->b == o0->b) &&
                        buf_disjoint(g, o0->a, o1->c);
@@ -8158,7 +9862,10 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           ((as | rs | os | (blk_dst ? bds : 0u)) & 15u) == 0u) {
         void *fa[] = {&A, &v, &ring, &res, &out, &blk_dst, &n, &esc, &pos, &TT, &as, &rs, &os, &bds, &b->ink_sconv_rcnt};
         tr_span(g, i, 2u);
-        launch_t(b, K_INK_SCONV_POST_PF_R8, ((n >> 2u) + 255u) / 256u, (T + 31u) / 32u, fa);
+        if (ink_pf_polish_r13_want() && b->k[K_INK_SCONV_POST_PF_R13])
+          launch_t(b, K_INK_SCONV_POST_PF_R13, ((n >> 2u) + 255u) / 256u, (T + 7u) / 8u, fa);
+        else
+          launch_t(b, K_INK_SCONV_POST_PF_R8, ((n >> 2u) + 255u) / 256u, (T + 31u) / 32u, fa);
         return 2u;
       }
     }
@@ -8211,7 +9918,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
   }
 
   /* R10 Wave 10 H02b bit 113: T >= 17 [OP_GEMV_EXP(MAT_IQ4NL), OP_MOE_SUM(res=-1)] -> atomic scatter into ysum */
-  if (k0 == OP_GEMV_EXP && !mk.rec && T >= 17u && i + 1u < i1 &&
+  if (k0 == OP_GEMV_EXP && !mk.rec && !b->ink_iq4_wave && T >= 17u && i + 1u < i1 &&
       b->k[K_INK_GEMM_IQ4NL_SCATTER_R10] && o0->w->kind == MAT_IQ4NL && o0->boff == 0u &&
       gx_wmma(b, T, o0->w->nb, (u32)o0->w->kind) && !getenv("IE_GEMM_KX_NOE") &&
       b->ms_list && b->ms_offs) {
@@ -8241,9 +9948,9 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R10 bit 104 FLUTE / R9 bit 102 / R7 bit 70 / R6 bit 57: T >= 17 [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
+  /* R17 bit 170 / R10 bit 104 FLUTE / R9 bit 102 / R7 bit 70 / R6 bit 57: T >= 17 [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
   if (k0 == OP_GEMV_EXP && !mk.rec && T >= 17u && i + 1u < i1 &&
-      ((b->ink_iq3_flute && b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10]) ||
+      ((b->ink_iq3_flute && (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10])) ||
        (!b->ink_iq3_flute && (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R6]))) &&
       !getenv("IE_GEMM_RQ_EXP_NO") &&
       o0->w->kind == MAT_RAWQ && o0->w->sub == 18u) {
@@ -8265,12 +9972,25 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       const u32 mt_a = T * o0->nh, mt_b = m->n_exp + (T * o0->nh) / 64u;
       const u32 max_tiles = mt_a < mt_b ? mt_a : mt_b;
       if (b->ink_iq3_flute) {
+        if (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17] && ink_r17_flute_pf64_mode() == 2 &&
+            b->ms_list && b->ms_offs && m->n_exp > 0u && m->n_exp <= 256u) {
+          void *nt_nul = NULL;
+          void *args[] = {&qw, &X, &Qout, &eff, &nb, &b->ms_list, &b->ms_offs, &nt_nul, &q_bytes, &xs, &qstr, &xdiv, &beta, &lbeta};
+          tr_span(g, i, 2u);
+          launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17, (eff + 63u) / 64u, m->n_exp, args);
+          return 2u;
+        }
         if (!b->k[K_INK_MOE_PF_WORKLIST_R7] || !b->ms_packs || !b->ms_npacks ||
             m->n_exp > 256u || T * o0->nh > 8192u || max_tiles > 512u)
           ie_die("FLUTE IQ3_XXS prefill preconditions failed (T=%u, max_tiles=%u)", T, max_tiles);
         void *args[] = {&qw, &X, &Qout, &eff, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks, &q_bytes, &xs, &qstr, &xdiv, &beta, &lbeta};
+        const int kfl = b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17]
+                            ? K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17
+                            : (b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13]
+                                   ? K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_L0LUT_R13
+                                   : K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10);
         tr_span(g, i, 2u);
-        launch_t(b, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_SITU_R10, (eff + 63u) / 64u, max_tiles, args);
+        launch_t(b, kfl, (eff + 63u) / 64u, max_tiles, args);
         return 2u;
       } else if ((b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R9] || b->k[K_INK_GEMM_RQ_EXP_IQ3XXS_SITU_R7]) &&
           b->k[K_INK_MOE_PF_WORKLIST_R7] &&
@@ -8289,9 +10009,9 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R10 FLUTE / R7 Fusion E1 bit 66 / R8 Adaptive MoE bit 86: T=2..16 compact [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
+  /* R17 bit 167 / R10 FLUTE / R7 Fusion E1 bit 66 / R8 Adaptive MoE bit 86: T=2..16 compact [OP_GEMV_EXP(IQ3_XXS egu), OP_SITU(Q8)] */
   if (k0 == OP_GEMV_EXP && !mk.rec && T >= 2u && T <= 16u && i + 1u < i1 &&
-      ((b->ink_iq3_flute && (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7])) ||
+      ((b->ink_iq3_flute && (b->k[K_INK_FLUTE_SITU_VER_T8_R17] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10] || b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7])) ||
        (!b->ink_iq3_flute && ((b->k[K_INK_GEXP_IQ3XXS_SITU_NJ1_R8] && b->k[K_INK_GEXP_IQ3XXS_SITU_NJM_R8]) || b->k[K_INK_GEXP_IQ3XXS_SITU_COMPACT_R7]))) &&
       o0->w->kind == MAT_RAWQ && o0->w->sub == 18u) {
     const op *o1 = &g->ops[i + 1u];
@@ -8325,9 +10045,11 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       if (b->ink_iq3_flute) {
         void *fa[] = {&qw, &X, &bout, &qout, &eff, &nb, &b->ms_list, &b->ms_packs, &b->ms_npacks,
                       &q_bytes, &xs, &bstr, &qstr, &xdiv, &beta, &lbeta};
-        const int kf = b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10]
-                           ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10
-                           : K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7;
+        const int kf = b->k[K_INK_FLUTE_SITU_VER_T8_R17]
+                           ? K_INK_FLUTE_SITU_VER_T8_R17
+                           : (b->k[K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10]
+                                  ? K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_NT_R10
+                                  : K_INK_GEXP_IQ3XXS_FLUTE_SITU_COMPACT_R7);
         launch_t(b, kf, eff / 32u, max_packs, fa);
       } else if (use_adap) {
         const u32 mp1 = sep_packs ? (T * K < m->n_exp ? T * K : m->n_exp) : max_packs;
@@ -8700,6 +10422,158 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
+  /* R74 H07 (IE_INK_Q8_MULTI3=1, bit 148, opt-in OFF): T >= 17 multi-projection Q8_0 prefill WMMA */
+  if (k0 == OP_GEMV_Q8 && !mk.rec && !ctx_on && !gdump_on() && T >= 17u &&
+      ink_q8_multi3_want() && b->k[K_INK_GEMM_Q8_MULTI3_R13] &&
+      !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
+      o0->w->nb >= 4u && (o0->w->nb & 3u) == 0u && o0->w->rows > 0u) {
+    const u32 nb = o0->w->nb;
+    /* Pattern 1 (4 ops): [wrel, r_clip(d_rel=16), wsink, wagt] sharing xq -> 1 launch */
+    if (i + 3u < i1 && m->n_head > 0u && o0->w->rows == m->n_head * 16u) {
+      const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u], *o3 = &g->ops[i + 3u];
+      if (o1->kind == OP_VCLIP && o1->a == o0->b && o1->aoff == 0u && o1->n == m->n_head * 16u &&
+          o1->nh == m->n_head && o1->qstr == 16u && g->bufs[o0->b].last <= i + 1u &&
+          o2->kind == OP_GEMV_Q8 && o2->a == o0->a && o2->aoff == o0->aoff &&
+          !o2->v && o2->res < 0 && !o2->nv && o2->w->nb == nb && o2->w->rows > 0u &&
+          o3->kind == OP_GEMV_Q8 && o3->a == o0->a && o3->aoff == o0->aoff &&
+          !o3->v && o3->res < 0 && !o3->nv && o3->w->nb == nb && o3->w->rows > 0u &&
+          buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->a, o2->b) && buf_disjoint(g, o0->a, o3->b) &&
+          buf_disjoint(g, o1->b, o2->b) && buf_disjoint(g, o1->b, o3->b) && buf_disjoint(g, o2->b, o3->b)) {
+        void *xq = b->arena + g->bufs[o0->a].off + o0->aoff;
+        void *qwA = b->d[i].w0, *qsA = b->d[i].w1, *yA = b->arena + g->bufs[o1->b].off + o1->boff;
+        void *qwB = b->d[i + 2u].w0, *qsB = b->d[i + 2u].w1, *yB = b->arena + g->bufs[o2->b].off + o2->boff;
+        void *qwC = b->d[i + 3u].w0, *qsC = b->d[i + 3u].w1, *yC = b->arena + g->bufs[o3->b].off + o3->boff;
+        void *av_v = b->d[i + 1u].w0;
+        u32 nb_u = nb, TT = T, xs = g->bufs[o0->a].stride;
+        u32 rowsA = o0->w->rows, ysA = g->bufs[o1->b].stride / 4u;
+        u32 rowsB = o2->w->rows, ysB = g->bufs[o2->b].stride / 4u;
+        u32 rowsC = o3->w->rows, ysC = g->bufs[o3->b].stride / 4u;
+        u32 vhd = 16u, vnr = o1->norope, vwin = o1->win, vpos0 = pos;
+        float vcl = o1->clamp, vesc = o1->escale;
+        const u32 nrt = ((rowsA + 63u) / 64u) + ((rowsB + 63u) / 64u) + ((rowsC + 63u) / 64u);
+        void *ma[] = {&xq, &nb_u, &TT, &xs,
+                      &qwA, &qsA, &yA, &rowsA, &ysA,
+                      &qwB, &qsB, &yB, &rowsB, &ysB,
+                      &qwC, &qsC, &yC, &rowsC, &ysC,
+                      &av_v, &vhd, &vcl, &vnr, &vesc, &vwin, &vpos0};
+        tr_span(g, i, 4u);
+        launch(b, K_INK_GEMM_Q8_MULTI3_R13, nrt * ((T + 63u) / 64u), ma);
+        return 4u;
+      }
+    }
+    /* Pattern 2 (3 ops): [wq, wk, wv] sharing xq -> 1 launch */
+    if (i + 2u < i1) {
+      const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u];
+      if (o1->kind == OP_GEMV_Q8 && o2->kind == OP_GEMV_Q8 &&
+          o1->a == o0->a && o1->aoff == o0->aoff && o2->a == o0->a && o2->aoff == o0->aoff &&
+          !o1->v && o1->res < 0 && !o1->nv && o1->w->nb == nb && o1->w->rows > 0u &&
+          !o2->v && o2->res < 0 && !o2->nv && o2->w->nb == nb && o2->w->rows > 0u &&
+          buf_disjoint(g, o0->a, o0->b) && buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->a, o2->b) &&
+          buf_disjoint(g, o0->b, o1->b) && buf_disjoint(g, o0->b, o2->b) && buf_disjoint(g, o1->b, o2->b)) {
+        void *xq = b->arena + g->bufs[o0->a].off + o0->aoff;
+        void *qwA = b->d[i].w0, *qsA = b->d[i].w1, *yA = b->arena + g->bufs[o0->b].off + o0->boff;
+        void *qwB = b->d[i + 1u].w0, *qsB = b->d[i + 1u].w1, *yB = b->arena + g->bufs[o1->b].off + o1->boff;
+        void *qwC = b->d[i + 2u].w0, *qsC = b->d[i + 2u].w1, *yC = b->arena + g->bufs[o2->b].off + o2->boff;
+        void *av_v = NULL;
+        u32 nb_u = nb, TT = T, xs = g->bufs[o0->a].stride;
+        u32 rowsA = o0->w->rows, ysA = g->bufs[o0->b].stride / 4u;
+        u32 rowsB = o1->w->rows, ysB = g->bufs[o1->b].stride / 4u;
+        u32 rowsC = o2->w->rows, ysC = g->bufs[o2->b].stride / 4u;
+        u32 vhd = 0u, vnr = 0u, vwin = 0u, vpos0 = 0u;
+        float vcl = 0.0f, vesc = 0.0f;
+        const u32 nrt = ((rowsA + 63u) / 64u) + ((rowsB + 63u) / 64u) + ((rowsC + 63u) / 64u);
+        void *ma[] = {&xq, &nb_u, &TT, &xs,
+                      &qwA, &qsA, &yA, &rowsA, &ysA,
+                      &qwB, &qsB, &yB, &rowsB, &ysB,
+                      &qwC, &qsC, &yC, &rowsC, &ysC,
+                      &av_v, &vhd, &vcl, &vnr, &vesc, &vwin, &vpos0};
+        tr_span(g, i, 3u);
+        launch(b, K_INK_GEMM_Q8_MULTI3_R13, nrt * ((T + 63u) / 64u), ma);
+        return 3u;
+      }
+    }
+  }
+
+  /* R63 (H16 bit 123): 1-launch persistent MonoMoE for T==1 core resident MoE layers (8 ops -> 1 launch) */
+  if (k0 == OP_GEMV_F32 && !ctx_on && !mk.rec && !b->ink_sp_poisoned && T == 1u && i + 7u < i1 &&
+      b->k[K_INK_MONOMOE_T1_R11] && b->ink_sp_sync &&
+      (!b->moe_c_on || !b->moe_c || o0->layer < 0 || (u32)o0->layer >= m->n_layer || !b->moe_c[o0->layer].active) &&
+      !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
+      o0->w->rows > 0u && o0->w->rows <= 256u && o0->w->cols > 0u && (o0->w->cols & 31u) == 0u) {
+    const op *o1 = &g->ops[i + 1u], *o2 = &g->ops[i + 2u], *o3 = &g->ops[i + 3u];
+    const op *o4 = &g->ops[i + 4u], *o5 = &g->ops[i + 5u], *o6 = &g->ops[i + 6u], *o7 = &g->ops[i + 7u];
+    if (o1->kind == OP_MOE_ROUTE && o2->kind == OP_GEMV_EXP && o3->kind == OP_SITU &&
+        o4->kind == OP_GEMV_EXP && o5->kind == OP_MOE_SUM && o6->kind == OP_SCONV && o7->kind == OP_ADD &&
+        o1->a == o0->b && o1->aoff == 0u && o1->n == o0->w->rows && o1->nh > 0u && o1->nh <= 32u &&
+        o2->w->kind == MAT_RAWQ && o2->w->sub == 18u && o2->c == o1->b && o2->boff == 0u &&
+        o2->nh == o1->nh && o2->w->nb >= 8u && (o2->w->nb & 7u) == 0u &&
+        o3->a == o2->b && o3->aoff == 0u && o3->nh == o1->nh && o3->n > 0u && (o3->n & 31u) == 0u &&
+        o2->w->rows == 2u * o3->n && o3->b < 0 && o3->qo >= 0 &&
+        o4->w->kind == MAT_IQ4NL && o4->a == o3->qo && o4->c == o1->b && o4->nh == o1->nh &&
+        o4->w->rows == o0->w->cols && o4->w->cols == o3->n &&
+        o5->res < 0 && o5->a == o4->b && o5->c == o1->b && o5->n == o0->w->cols && o5->nh == o1->nh &&
+        o6->c < 0 && o6->a == o5->b && o6->aoff == 0u && o6->n == o0->w->cols &&
+        o7->n == o0->w->cols && (o7->a == o6->b || o7->b == o6->b)) {
+      const int rb = (o7->a == o6->b) ? o7->b : o7->a;
+      const u32 roff = (o7->a == o6->b) ? o7->boff : o7->aoff;
+      void *w_rtr = b->d[i].w0;
+      void *ffn_in = b->arena + g->bufs[o0->a].off + o0->aoff;
+      void *logits = b->arena + g->bufs[o0->b].off + o0->boff;
+      void *ebias = b->d[i + 1u].w0;
+      void *route = b->arena + g->bufs[o1->b].off + o1->boff;
+      float r_scale = m->escale;
+      void *qw_gu = b->d[i + 2u].w1;
+      void *ffn_in_q8 = b->arena + g->bufs[o2->a].off + o2->aoff;
+      void *exp_mid_q8 = b->arena + g->bufs[o3->qo].off;
+      u32 q_bytes_gu = (u32)ie_rawq_bytes(o2->w), qstr_mid = o3->bstr;
+      float beta = o3->clamp, lbeta = o3->lam;
+      void *qw_dn = b->d[i + 4u].w0, *qs_dn = b->d[i + 4u].w1;
+      void *yd = b->arena + g->bufs[o4->b].off + o4->boff;
+      u32 qwn_dn = (u32)mat_qw_words(o4->w->kind, o4->w->rows, o4->w->cols);
+      u32 qsn_dn = (u32)mat_qs_n(o4->w->kind, o4->w->rows, o4->w->cols);
+      void *v_conv = b->d[i + 6u].w0;
+      float *ring = b->sc_ring + (size_t)o6->scoff * 4u;
+      void *res = b->arena + g->bufs[rb].off + roff;
+      void *out = b->arena + g->bufs[o7->c].off + o7->coff;
+      float escale = o6->escale;
+      u32 dim = o0->w->cols, eff = o3->n, n_exp = o0->w->rows, K = o1->nh;
+      u32 ng = ink_h16_ng(), flags = b->ink_iq3_flute ? 1u : 0u;
+      uint64_t bt = 0ull, kt = 0ull;
+      if (((uintptr_t)yd & 15u) == 0u && ((uintptr_t)v_conv & 15u) == 0u &&
+          ((uintptr_t)ring & 15u) == 0u && ((uintptr_t)res & 15u) == 0u && ((uintptr_t)out & 15u) == 0u) {
+        if (!b->ink_h16_probed) {
+          u32 pflags = flags | 2u;
+          void *pa[] = {&w_rtr, &ffn_in, &logits, &ebias, &route, &r_scale,
+                        &qw_gu, &ffn_in_q8, &exp_mid_q8, &q_bytes_gu, &qstr_mid, &beta, &lbeta,
+                        &qw_dn, &qs_dn, &yd, &qwn_dn, &qsn_dn,
+                        &v_conv, &ring, &res, &out, &escale, &pos,
+                        &dim, &eff, &n_exp, &K, &ng, &pflags, &b->ink_sp_sync, &bt, &kt};
+          launch(b, K_INK_MONOMOE_T1_R11, ng, pa);
+          HIP(H.StreamSynchronize(cur_stream));
+          u32 pf = 0u;
+          HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
+          b->ink_h16_probed = 1;
+          if (pf != 0u) {
+            b->ink_sp_poisoned = 1;
+            fprintf(stderr, "gpu: H16 MonoMoE co-residency probe FAILED (flag=%u) -> latching off\n", pf);
+          }
+        }
+        if (!b->ink_sp_poisoned) {
+          void *fa[] = {&w_rtr, &ffn_in, &logits, &ebias, &route, &r_scale,
+                        &qw_gu, &ffn_in_q8, &exp_mid_q8, &q_bytes_gu, &qstr_mid, &beta, &lbeta,
+                        &qw_dn, &qs_dn, &yd, &qwn_dn, &qsn_dn,
+                        &v_conv, &ring, &res, &out, &escale, &pos,
+                        &dim, &eff, &n_exp, &K, &ng, &flags, &b->ink_sp_sync, &bt, &kt};
+          b->ink_sp_used = 1;
+          tr_span(g, i, 8u);
+          launch(b, K_INK_MONOMOE_T1_R11, ng, fa);
+          if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, route, g->bufs[o1->b].stride, 1u);
+          return 8u;
+        }
+      }
+    }
+  }
+
   /* R7 Fusion A bit 59: T==1 exact [OP_GEMV_F32(router), OP_MOE_ROUTE] -> ie_inkling_router_route_exact_t1_r7 */
   if (k0 == OP_GEMV_F32 && !mk.rec && T == 1u && i + 1u < i1 && b->k[K_INK_ROUTER_ROUTE_EXACT_T1_R7] &&
       !o0->v && o0->res < 0 && !o0->nv && o0->w->rows > 0u && o0->w->rows <= 256u && o0->w->cols > 0u &&
@@ -8726,7 +10600,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
 
   /* R7 Fusion A bit 60: T=2..16 exact [OP_GEMV_F32(router), OP_MOE_ROUTE (+ compact sort)] -> ie_inkling_router_route_sort_ver_r7 */
   if (k0 == OP_GEMV_F32 && !mk.rec && T >= 2u && T <= 16u && i + 1u < i1 && b->k[K_INK_ROUTER_ROUTE_SORT_VER_R7] &&
-      !(!b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1) &&
+      !(!b->ink_iq3_flute && !b->ink_iq4_wave && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 1) &&
       !o0->v && o0->res < 0 && !o0->nv && o0->w->rows > 0u && o0->w->rows <= 256u && o0->w->cols > 0u &&
       b->gm_count) {
     const op *o1 = &g->ops[i + 1u];
@@ -8735,7 +10609,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         buf_disjoint(g, o0->a, o0->b) && buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->b, o1->b)) {
       const u32 K = o1->nh, ne = m->n_exp;
       const u32 slot_max = ink_moe_slot_max(b);
-      const int skip_sort = T <= slot_max && b->ink_moe_all_slot && !b->ink_iq3_flute &&
+      const int skip_sort = T <= slot_max && b->ink_moe_all_slot && !b->ink_iq3_flute && !b->ink_iq4_wave &&
                             b->k[K_INK_GEXP_RAW_IQ3XXS_SLOT_R6] && b->k[K_INK_GEXP_IQ4NL_SLOT_R6];
       const u32 mp_a = T * K, mp_b = ne + (T * K) / 4u;
       const u32 max_packs = mp_a < mp_b ? mp_a : mp_b;
@@ -8760,7 +10634,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         tr_span(g, i, 2u);
         launch(b, K_INK_ROUTER_ROUTE_SORT_VER_R7, (rows + 3u) / 4u, args);
         if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, rt, rst, T);
-        if (need_compact && !b->ink_iq3_flute && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 2 &&
+        if (need_compact && !b->ink_iq3_flute && !b->ink_iq4_wave && b->k[K_INK_MOE_SORT_ADAP_R8] && ink_moe_adap_mode() == 2 &&
             b->ms_packs1 && b->ms_npacks1 && b->ms_packsM && b->ms_npacksM) {
           u32 ne_u = ne;
           void *sa[] = {&rt, &rst, &TT, &KK, &ne_u, &b->ms_offs, &b->ms_list,
@@ -8772,16 +10646,27 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* R10 bit 117 (H08) / R7 bit 74: T >= 17 [OP_GEMV_F32(router), OP_MOE_ROUTE] -> bf16_r10 or pf_r7 (+ worklist/sort) */
+  /* R49 bit 151 / R10 bit 117 (H08) / R7 bit 74: T >= 17 [OP_GEMV_F32(router), OP_MOE_ROUTE] (+ worklist/sort) */
   if (k0 == OP_GEMV_F32 && !mk.rec && T >= 17u && i + 1u < i1 &&
-      (b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] || b->k[K_INK_ROUTER_ROUTE_PF_R7]) &&
+      ((ink_router_r13_mode() == 1 && b->k[K_INK_GEMM_F32_ROUTER_BF16_R13]) ||
+       (ink_router_r13_mode() == 2 && b->k[K_INK_GEMM_F32_ROUTER_EXACT_R13]) ||
+       b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] || b->k[K_INK_ROUTER_ROUTE_PF_R7]) &&
       !o0->v && o0->res < 0 && !o0->nv && o0->w->rows > 0u && o0->w->rows <= 256u &&
       o0->w->cols > 0u && (o0->w->cols & 3u) == 0u && b->at_count) {
-    const int use_bf16 = b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] && o0->w->cols >= 16u && (o0->w->cols & 15u) == 0u &&
+    const int r13_m = ink_router_r13_mode();
+    const int use_r13_bf16 = (r13_m == 1) && b->k[K_INK_GEMM_F32_ROUTER_BF16_R13] &&
+                             o0->w->cols >= 16u && (o0->w->cols & 15u) == 0u &&
+                             ((T + 31u) / 32u) <= m->n_head * b->at_tmax;
+    const int use_r13_exact = !use_r13_bf16 && (r13_m == 2) && b->k[K_INK_GEMM_F32_ROUTER_EXACT_R13] &&
+                              o0->w->cols >= 16u && (o0->w->cols & 15u) == 0u &&
+                              ((T + 31u) / 32u) <= m->n_head * b->at_tmax;
+    const int use_bf16 = !use_r13_bf16 && !use_r13_exact && b->k[K_INK_GEMM_F32_ROUTER_BF16_R10] &&
+                         o0->w->cols >= 16u && (o0->w->cols & 15u) == 0u &&
                          ((T + 15u) / 16u) <= m->n_head * b->at_tmax;
-    const int use_r7 = !use_bf16 && b->k[K_INK_ROUTER_ROUTE_PF_R7] && ((T + 63u) / 64u) <= m->n_head * b->at_tmax;
+    const int use_r7 = !use_r13_bf16 && !use_r13_exact && !use_bf16 &&
+                       b->k[K_INK_ROUTER_ROUTE_PF_R7] && ((T + 63u) / 64u) <= m->n_head * b->at_tmax;
     const op *o1 = &g->ops[i + 1u];
-    if ((use_bf16 || use_r7) && o1->kind == OP_MOE_ROUTE && o1->a == o0->b && o1->aoff == 0u && o0->boff == 0u &&
+    if ((use_r13_bf16 || use_r13_exact || use_bf16 || use_r7) && o1->kind == OP_MOE_ROUTE && o1->a == o0->b && o1->aoff == 0u && o0->boff == 0u &&
         o1->n == o0->w->rows && o1->nh > 0u && o1->nh <= 32u &&
         buf_disjoint(g, o0->a, o0->b) && buf_disjoint(g, o0->a, o1->b) && buf_disjoint(g, o0->b, o1->b)) {
       void *w = b->d[i].w0;
@@ -8797,7 +10682,9 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
         void *fa[] = {&w, &x, &lg, &rows, &cols, &nul, &nul, &xs, &ys, &rs, &TT,
                       &K, &eb, &sc, &rt, &ost, &b->at_count};
         tr_span(g, i, 2u);
-        if (use_bf16) launch_t(b, K_INK_GEMM_F32_ROUTER_BF16_R10, (rows + 31u) / 32u, (T + 15u) / 16u, fa);
+        if (use_r13_bf16) launch_t(b, K_INK_GEMM_F32_ROUTER_BF16_R13, (rows + 31u) / 32u, (T + 31u) / 32u, fa);
+        else if (use_r13_exact) launch_t(b, K_INK_GEMM_F32_ROUTER_EXACT_R13, (rows + 31u) / 32u, (T + 31u) / 32u, fa);
+        else if (use_bf16) launch_t(b, K_INK_GEMM_F32_ROUTER_BF16_R10, (rows + 31u) / 32u, (T + 15u) / 16u, fa);
         else launch_t(b, K_INK_ROUTER_ROUTE_PF_R7, (rows + 31u) / 32u, (T + 63u) / 64u, fa);
         if (__builtin_expect(b->route_stats != NULL, 0)) route_stats_record(b, o1, rt, ost, T);
         u32 ne = m->n_exp;
@@ -9477,6 +11364,20 @@ static double ds_now_ms(void) {
 static void ds_gemv(gpu_backend *b, int kind, void *w0, void *w1, void *X, void *Y, u32 rows, u32 nb,
                     void *bias, void *R, u32 T, u32 xs, u32 ys, u32 rs, float eps) {
   void *nul = NULL;
+  if (kind == MAT_Q4K && b->ink_q4k_wave && w0 == b->ink_q4k_w0) {
+    if (T >= 17u) ie_die("dspark: IE_INKLING_Q4K_REPACK=1 does not support T=%u >= 17 ds_gemv", T);
+    const u32 gr = (rows + 31u) / 32u;
+    u32 unpad0 = 0u;
+    float cap0 = 0.0f;
+    for (u32 t0 = 0u; t0 < T; t0 += 8u) {
+      u32 tn = T - t0 < 8u ? T - t0 : 8u;
+      void *Xb = (char *)X + (size_t)t0 * xs, *Yb = (char *)Y + (size_t)t0 * ys * 4u;
+      void *Rb = R ? (void *)((char *)R + (size_t)t0 * rs * 4u) : NULL;
+      void *qa[] = {&w0, &w1, &Xb, &Yb, &rows, &nb, &bias, &Rb, &tn, &xs, &ys, &rs, &unpad0, &cap0};
+      launch(b, K_INK_Q4K_HEAD_WAVE_R13, gr >= 253u && gr <= 256u ? 257u : gr, qa);
+    }
+    return;
+  }
   if (T == 1u) {
     void *a[] = {&w0, &w1, &X, &Y, &rows, &nb, &bias, &R, &nul, &nul, &nul, &eps, &b->gm_count};
     const int k = kind == MAT_Q4K ? K_GEMV_Q4K : kind == MAT_Q6K ? K_GEMV_Q6K : kind == MAT_Q4 ? K_GEMV_Q4 : K_GEMV_Q8;
@@ -9617,28 +11518,64 @@ static void ds_split_setup(gpu_backend *b) {
           hrows, r, use_q8 ? "Q8_0" : "Q4_0", (wb + sb) / 1e6, ds_now_ms() - t0);
 }
 
-/* R30: MicroSpec dynamic prompt union + online miss-rate fallback certificate for 60K+4K DSpark shortlist. */
+/* R30/R70 (H27): MicroSpec dynamic prompt union + 2-tier (28K+4K -> 60K+4K -> 200K) online miss-rate certificate. */
 static void gpu_ds_set_shortlist(backend *bk, const uint32_t *prompt, uint32_t n_prompt) {
   gpu_backend *b = (gpu_backend *)bk;
   if (!b->ds.id_map_dev || !b->m->ds) return;
   const u32 unpad = b->m->ds->vocab_unpadded;
   const size_t bmb = (b->m->vocab + 7u) / 8u;
+  int upload_core = 0;
+  if (b->ds.id_core_t1_host) {
+    if (b->ds.sl_tier != 0) upload_core = 1;
+    b->ds.sl_tier = 0;
+    b->ds.n_core = b->ds.n_core_t0;
+    memcpy(b->ds.core_bm, b->ds.core_t0_bm, bmb);
+  }
   memset(b->ds.dyn_bm, 0, bmb);
   b->ds.sl_bypass = 0;
   b->ds.sl_miss_ema = 0.0f;
-  u32 nd = 0u;
+  u32 nd = 0u, ovf = 0u;
   u32 cap = (b->ds.n_core < 65536u) ? (65536u - b->ds.n_core) : 0u;
   if (cap > 4096u) cap = 4096u;
-  for (u32 i = 0; i < n_prompt && nd < cap; i++) {
+  for (u32 i = 0; i < n_prompt; i++) {
     const u32 t = prompt[i];
     if (t >= unpad) continue;
     if ((b->ds.core_bm[t >> 3] >> (t & 7u)) & 1u) continue;
     if ((b->ds.dyn_bm[t >> 3] >> (t & 7u)) & 1u) continue;
-    b->ds.dyn_bm[t >> 3] |= (uint8_t)(1u << (t & 7u));
-    b->ds.id_dyn_pin[nd++] = t;
+    if (nd < cap) {
+      b->ds.dyn_bm[t >> 3] |= (uint8_t)(1u << (t & 7u));
+      b->ds.id_dyn_pin[nd++] = t;
+    } else {
+      ovf++;
+      if (!b->ds.id_core_t1_host) break;
+      if (ovf > 64u) break;
+    }
+  }
+  /* H27 proactive escalation: if prompt overflows 4096 dynamic slots at Tier 0, start directly in Tier 1 (60K+4K). */
+  if (b->ds.id_core_t1_host && b->ds.sl_tier == 0 && ovf > 64u) {
+    b->ds.sl_tier = 1;
+    b->ds.n_core = b->ds.n_core_t1;
+    memcpy(b->ds.core_bm, b->ds.core_t1_bm, bmb);
+    memset(b->ds.dyn_bm, 0, bmb);
+    nd = 0u;
+    cap = (b->ds.n_core < 65536u) ? (65536u - b->ds.n_core) : 0u;
+    if (cap > 4096u) cap = 4096u;
+    for (u32 i = 0; i < n_prompt && nd < cap; i++) {
+      const u32 t = prompt[i];
+      if (t >= unpad) continue;
+      if ((b->ds.core_bm[t >> 3] >> (t & 7u)) & 1u) continue;
+      if ((b->ds.dyn_bm[t >> 3] >> (t & 7u)) & 1u) continue;
+      b->ds.dyn_bm[t >> 3] |= (uint8_t)(1u << (t & 7u));
+      b->ds.id_dyn_pin[nd++] = t;
+    }
+    upload_core = 1;
   }
   b->ds.n_dyn = nd;
   b->ds.n_act = b->ds.n_core + nd;
+  if (upload_core) {
+    const u32 *src = (b->ds.sl_tier == 1 && b->ds.id_core_t1_host) ? b->ds.id_core_t1_host : b->ds.id_core_host;
+    HIP(H.MemcpyAsync(b->ds.id_map_dev, src, (size_t)b->ds.n_core * 4u, hipMemcpyHostToDevice, cur_stream));
+  }
   if (nd > 0u)
     HIP(H.MemcpyAsync(b->ds.id_map_dev + b->ds.n_core, b->ds.id_dyn_pin, (size_t)nd * 4u,
                       hipMemcpyHostToDevice, cur_stream));
@@ -9648,11 +11585,12 @@ static void gpu_ds_note_tokens(backend *bk, const uint32_t *toks, uint32_t n_tok
   gpu_backend *b = (gpu_backend *)bk;
   if (!b->ds.id_map_dev || !b->m->ds) return;
   const u32 unpad = b->m->ds->vocab_unpadded;
-  u32 cap = (b->ds.n_core < 65536u) ? (65536u - b->ds.n_core) : 0u;
-  if (cap > 4096u) cap = 4096u;
+  const size_t bmb = (b->m->vocab + 7u) / 8u;
   for (u32 i = 0; i < n_toks; i++) {
     const u32 t = toks[i];
     if (t >= unpad) continue;
+    u32 cap = (b->ds.n_core < 65536u) ? (65536u - b->ds.n_core) : 0u;
+    if (cap > 4096u) cap = 4096u;
     const int in_sl = (((b->ds.core_bm[t >> 3] >> (t & 7u)) | (b->ds.dyn_bm[t >> 3] >> (t & 7u))) & 1u) != 0u;
     b->ds.sl_miss_ema = 0.90f * b->ds.sl_miss_ema + (in_sl ? 0.0f : 0.10f);
     if (!in_sl && b->ds.n_dyn < cap) {
@@ -9663,8 +11601,48 @@ static void gpu_ds_note_tokens(backend *bk, const uint32_t *toks, uint32_t n_tok
       HIP(H.MemcpyAsync(b->ds.id_map_dev + b->ds.n_core + idx, b->ds.id_dyn_pin + idx, 4u,
                         hipMemcpyHostToDevice, cur_stream));
     }
-    if (b->ds.sl_miss_ema > 0.12f) b->ds.sl_bypass = 1;
+    if (b->ds.sl_tier == 0 && b->ds.id_core_t1_host && b->ds.sl_miss_ema > 0.06f) {
+      /* H27 instant <20 us escalation: Tier 0 (28K+4K) -> Tier 1 (60K+4K) */
+      b->ds.sl_tier = 1;
+      b->ds.n_core = b->ds.n_core_t1;
+      memcpy(b->ds.core_bm, b->ds.core_t1_bm, bmb);
+      memset(b->ds.dyn_bm, 0, bmb);
+      b->ds.n_dyn = 0u;
+      b->ds.n_act = b->ds.n_core;
+      b->ds.sl_miss_ema = 0.03f;
+      HIP(H.MemcpyAsync(b->ds.id_map_dev, b->ds.id_core_t1_host, (size_t)b->ds.n_core * 4u,
+                        hipMemcpyHostToDevice, cur_stream));
+    } else if (b->ds.sl_miss_ema > 0.12f) {
+      b->ds.sl_tier = 2;
+      b->ds.sl_bypass = 1;
+    }
   }
+}
+
+static const char *ds_find_manifest_path(const char *rel_def, const char *hsaco, char *cand, size_t csz) {
+  const char *pfx[4] = {"", "../", "../../", "../../../"};
+  for (int k = 0; k < 4; k++) {
+    snprintf(cand, csz, "%s%s", pfx[k], rel_def);
+    FILE *fp = fopen(cand, "rb");
+    if (fp) { fclose(fp); return cand; }
+  }
+  if (hsaco) {
+    const char *sl1 = strrchr(hsaco, '/'), *sl2 = strrchr(hsaco, '\\');
+    const char *sl = sl1 && sl2 ? (sl1 > sl2 ? sl1 : sl2) : (sl1 ? sl1 : sl2);
+    if (sl) {
+      const size_t dlen = (size_t)(sl - hsaco) + 1u;
+      if (dlen + 128u < csz) {
+        const char *hpfx[2] = {"../../", "../../../"};
+        for (int k = 0; k < 2; k++) {
+          memcpy(cand, hsaco, dlen);
+          snprintf(cand + dlen, csz - dlen, "%s%s", hpfx[k], rel_def);
+          FILE *fp = fopen(cand, "rb");
+          if (fp) { fclose(fp); return cand; }
+        }
+      }
+    }
+  }
+  return NULL;
 }
 
 static void ds_shortlist_setup(gpu_backend *b, const char *hsaco) {
@@ -9673,31 +11651,17 @@ static void ds_shortlist_setup(gpu_backend *b, const char *hsaco) {
       !b->k[K_INK_DS_CAP_SAMPLE_IDMAP_ZSYNC_R7]) return;
   const char *e = getenv("IE_DS_SHORTLIST");
   if (e && e[0] == '0' && e[1] == '\0') return;
-  static const char *rel_def = "data/inkling2-shortlist/inkling2-frspec-61440.manifest.json";
-  char cand[1024];
+  const char *t2e = getenv("IE_DS_SHORTLIST_TIER2");
+  const int tier2_req = !(t2e && t2e[0] == '0') && (!e || !e[0] || strcmp(e, "1") == 0); /* R70 (H27): promoted default 1 (28K+4K -> 60K+4K) */
+  static const char *rel_t0 = "data/inkling2-shortlist/inkling2-frspec-28672.manifest.json";
+  static const char *rel_t1 = "data/inkling2-shortlist/inkling2-frspec-61440.manifest.json";
+  char cand[1024], cand_t1[1024];
   const char *mpath = NULL;
   if (e && e[0] && strcmp(e, "1") != 0 && strcmp(e, "60k") != 0) {
     mpath = e;
   } else {
-    const char *pfx[4] = {"", "../", "../../", "../../../"};
-    for (int k = 0; k < 4 && !mpath; k++) {
-      snprintf(cand, sizeof cand, "%s%s", pfx[k], rel_def);
-      FILE *fp = fopen(cand, "rb");
-      if (fp) { fclose(fp); mpath = cand; }
-    }
-    if (!mpath && hsaco) {
-      const char *sl1 = strrchr(hsaco, '/'), *sl2 = strrchr(hsaco, '\\');
-      const char *sl = sl1 && sl2 ? (sl1 > sl2 ? sl1 : sl2) : (sl1 ? sl1 : sl2);
-      if (sl) {
-        const size_t dlen = (size_t)(sl - hsaco) + 1u;
-        if (dlen + 128u < sizeof cand) {
-          memcpy(cand, hsaco, dlen);
-          snprintf(cand + dlen, sizeof cand - dlen, "../../../%s", rel_def);
-          FILE *fp = fopen(cand, "rb");
-          if (fp) { fclose(fp); mpath = cand; }
-        }
-      }
-    }
+    mpath = ds_find_manifest_path(tier2_req ? rel_t0 : rel_t1, hsaco, cand, sizeof cand);
+    if (!mpath && tier2_req) mpath = ds_find_manifest_path(rel_t1, hsaco, cand, sizeof cand);
   }
   if (!mpath) {
     fprintf(stderr, "gpu: dspark shortlist manifest not found; keeping full vocab\n");
@@ -9724,6 +11688,30 @@ static void ds_shortlist_setup(gpu_backend *b, const char *hsaco) {
   b->ds.dyn_bm = (uint8_t *)calloc(bmb, 1u);
   if (!b->ds.core_bm || !b->ds.dyn_bm) ie_die("out of memory (dspark shortlist bitmap)");
   for (u32 i = 0; i < n_core; i++) b->ds.core_bm[ids[i] >> 3] |= (uint8_t)(1u << (ids[i] & 7u));
+  b->ds.n_core_t0 = n_core;
+  b->ds.sl_tier = 0;
+  if (tier2_req && n_core <= 32768u) {
+    const char *mpath_t1 = ds_find_manifest_path(rel_t1, hsaco, cand_t1, sizeof cand_t1);
+    u32 n_t1 = 0u;
+    u32 *ids_t1 = mpath_t1 ? ie_load_vocab_shortlist(mpath_t1, b->m->vocab, &n_t1, err, sizeof err) : NULL;
+    if (ids_t1 && n_t1 > n_core && n_t1 <= 61440u) {
+      int ok1 = 1;
+      for (u32 i = 0; ok1 && i < n_t1; i++) if (ids_t1[i] >= unpad) ok1 = 0;
+      if (ok1) {
+        b->ds.id_core_t1_host = ids_t1;
+        b->ds.n_core_t1 = n_t1;
+        b->ds.core_t0_bm = (uint8_t *)calloc(bmb, 1u);
+        b->ds.core_t1_bm = (uint8_t *)calloc(bmb, 1u);
+        if (!b->ds.core_t0_bm || !b->ds.core_t1_bm) ie_die("out of memory (dspark tier2 bitmap)");
+        memcpy(b->ds.core_t0_bm, b->ds.core_bm, bmb);
+        for (u32 i = 0; i < n_t1; i++) b->ds.core_t1_bm[ids_t1[i] >> 3] |= (uint8_t)(1u << (ids_t1[i] & 7u));
+      } else {
+        free(ids_t1);
+      }
+    } else if (ids_t1) {
+      free(ids_t1);
+    }
+  }
   HIP(H.Malloc((void **)&b->ds.id_map_dev, 65536u * 4u));
   HIP(H.Memcpy(b->ds.id_map_dev, ids, (size_t)n_core * 4u, hipMemcpyHostToDevice));
   if (H.HostMalloc((void **)&b->ds.id_dyn_pin, 4096u * 4u, 0) == 0 && b->ds.id_dyn_pin) {
@@ -9739,16 +11727,18 @@ static void ds_shortlist_setup(gpu_backend *b, const char *hsaco) {
   b->ds.sl_miss_ema = 0.0f;
   b->base.ds_set_shortlist = gpu_ds_set_shortlist;
   b->base.ds_note_tokens = gpu_ds_note_tokens;
-  fprintf(stderr, "gpu: dspark shortlist %u core + %u dynamic tail (+0.256 MiB VRAM, 0 MB weight copy)\n",
-          n_core, 65536u - n_core);
+  if (b->ds.id_core_t1_host)
+    fprintf(stderr, "gpu: dspark 2-tier shortlist T0=%u -> T1=%u + 4096 dynamic tail (+0.256 MiB VRAM, 0 MB extra VRAM)\n",
+            n_core, b->ds.n_core_t1);
+  else
+    fprintf(stderr, "gpu: dspark shortlist %u core + %u dynamic tail (+0.256 MiB VRAM, 0 MB weight copy)\n",
+            n_core, (n_core < 65536u && 65536u - n_core < 4096u) ? (65536u - n_core) : 4096u);
 }
 
-/* R33: Multi-stream ds_ctx drain & factored KV / frnn helpers. */
+/* R33/R69: Multi-stream (ctx_pending==1) & same-stream Saguaro (ctx_pending==2) ds_ctx drain. */
 static void ds_ctx_drain(gpu_backend *b) {
-  if (b->ds.ctx_pending) {
-    HIP(H.EventSynchronize(b->ds.ev_ctx_done));
-    b->ds.ctx_pending = 0;
-  }
+  if (b->ds.ctx_pending == 1) HIP(H.EventSynchronize(b->ds.ev_ctx_done));
+  b->ds.ctx_pending = 0;
 }
 
 static void ds_ctx_kv_launch(gpu_backend *b, u32 pos, u32 T, int dsprof, double *tp1, double *tp2, double *tp3, double *tp0) {
@@ -9854,6 +11844,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
     return;
   }
   if (sec >= 2) { /* DFlash / DSpark: 2 the context ops, 3 the block / draft ops */
+    if (__builtin_expect(b->kv_h2d_piped || b->kv_async_active, 0)) gpu_kv_io_sync(&b->base);
     if (g->ds_feat >= 0 && b->ds.ready) {
       const dspark *d = b->m->ds;
       const u32 dim = d->dim, qd = d->n_head * d->hd, kvd = d->n_kv * d->hd, r = d->markov_rank;
@@ -9864,14 +11855,14 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
         tr_run("ds_ctx", pos, T);
         b->live_snap = -1;
         if (b->ds.ctx_pending && pos == b->ds.ctx_pos && T <= b->ds.ctx_T) {
-          /* R33: KV rows [pos .. pos + T - 1] were already computed concurrently on ctx_stream; GPU-only wait + 1-WG frnn! */
-          HIP(H.StreamWaitEvent(cur_stream, b->ds.ev_ctx_done, 0));
+          /* R33/R69: KV rows [pos .. pos + T - 1] were already computed on ctx_stream (1) or cur_stream (2). */
+          if (b->ds.ctx_pending == 1) HIP(H.StreamWaitEvent(cur_stream, b->ds.ev_ctx_done, 0));
           b->ds.ctx_pending = 0;
           ds_ctx_frnn_finish(b, pos, T, last_only == 2);
           return;
         }
         if (b->ds.ctx_pending) {
-          HIP(H.StreamWaitEvent(cur_stream, b->ds.ev_ctx_done, 0));
+          if (b->ds.ctx_pending == 1) HIP(H.StreamWaitEvent(cur_stream, b->ds.ev_ctx_done, 0));
           b->ds.ctx_pending = 0;
         }
         static int dsprof_ctx = -1;
@@ -9905,14 +11896,18 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
         if (split_all_env < 0) split_all_env = getenv("IE_DS_SPLIT_ALL") && getenv("IE_DS_SPLIT_ALL")[0] == '1';
         const int split = b->ds.p_w1 != NULL;
         const int use_split_now = split && (nd >= 4u || split_all_env);
+        const int ds_gtree_on = b->base.ds_samp && b->base.ds_samp->on == 2;
         const int ds_samp_on = b->base.ds_samp && b->base.ds_samp->on && b->base.ds_samp->temp > 0.0f;
+        const int head_q4k_wave = (b->ink_q4k_wave && b->ds.head_w0 == b->ink_q4k_w0);
         const int use_sl = use_split_now && b->ds.id_map_dev && !b->ds.sl_bypass &&
                            b->ds.n_act > 0u && b->ds.n_act <= 65536u &&
                            b->ds.head_kind == MAT_Q4K && b->ds.p_kind == MAT_Q4 && nd <= 8u &&
-                           b->k[K_INK_DS_BASE_Q4K_IDMAP_R7] && b->k[K_INK_DS_GEMV_P_Q4_IDMAP_ZSYNC_R7] &&
+                           (head_q4k_wave ? b->k[K_INK_DS_BASE_Q4K_WAVE_IDMAP_R13] : b->k[K_INK_DS_BASE_Q4K_IDMAP_R7]) &&
+                           b->k[K_INK_DS_GEMV_P_Q4_IDMAP_ZSYNC_R7] &&
                            b->k[K_INK_DS_CAP_SAMPLE_IDMAP_ZSYNC_R7];
         const int fused_ds_p = !use_sl && use_split_now && b->ds.p_kind == MAT_Q4 && b->k[K_DS_GEMV_P_CAP_SAMPLE_ZSYNC_R8];
         const int zsync_base = zsync_env && !dsprof && !b->m->ds_head.rows && nd <= 16u && b->ds.zbuf &&
+                               (!head_q4k_wave || use_split_now) &&
                                b->k[K_DS_BLOCK_INIT_ZSYNC_R5] && b->k[K_DS_CONCAT_Q8_ZSYNC_R5] &&
                                b->k[K_DS_RNN_STEP_ZSYNC_R5] && b->k[K_DS_ADD_Q8_ZSYNC_R5] &&
                                b->k[K_DS_GEMV_Q8_ZSYNC_R5] && b->k[K_DS_GEMV_Q4K_ZSYNC_R5] && b->k[K_DS_GEMV_Q6K_ZSYNC_R5] &&
@@ -9940,25 +11935,75 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
           void *rfa[] = {&b->ds.rope_inv_freq, &b->ds.rcos, &b->ds.rsin, &p0, &B_r, &h2_r};
           launch(b, K_INK_DS_ROPE_FILL_R14, (B * h2 + 255u) / 256u, rfa);
         }
+        static int h24a_en = -1, h24b_en = -1, h25a_en = -1, h25b_en = -1, h25c_en = -1, rnn_ng_env = -1;
+        if (h24a_en < 0) {
+          h24a_en = !(getenv("IE_DS_H24A") && getenv("IE_DS_H24A")[0] == '0');
+          h24b_en = !(getenv("IE_DS_H24B") && getenv("IE_DS_H24B")[0] == '0');
+          h25a_en = (getenv("IE_DS_H25A") && getenv("IE_DS_H25A")[0] == '1'); /* R66: opt-in off (QKV kernel corrupts acc 95.7%->18.2%) */
+          h25b_en = !(getenv("IE_DS_H25B") && getenv("IE_DS_H25B")[0] == '0');
+          h25c_en = !(getenv("IE_DS_H25C") && getenv("IE_DS_H25C")[0] == '0');
+          rnn_ng_env = getenv("IE_DS_RNN_NG") ? atoi(getenv("IE_DS_RNN_NG")) : 96;
+          if (rnn_ng_env < 1) rnn_ng_env = 1; else if (rnn_ng_env > 96) rnn_ng_env = 96;
+        }
+        const int use_h25a_r17 = b->k[K_INK_DS_QKV_ROPE_Q4K_R17] != NULL;
+        const int use_h25a_g = use_h25a_r17 || (h25a_en && b->k[K_DS_QKV_ROPE_Q4K_R12] != NULL);
+        const int use_h25b_g = h25b_en && b->k[K_DS_ATTN_WMMA_Q8_R12] != NULL;
+        const int use_h25c_g = h25c_en && b->k[K_DS_PROJ_RES_NORM_Q8_Q4K_R12] != NULL &&
+                               b->at_part != NULL && b->at_count != NULL &&
+                               (dim & 31u) == 0u && B > 0u &&
+                               ((B + 3u) / 4u) <= b->m->n_head * b->at_tmax &&
+                               (size_t)B * ((dim + 31u) / 32u) <= b->at_part_floats;
+        int xq_ready = 0, hidden_ready = 0;
         for (u32 il = 0; il < d->n_layer; il++) {
-          /* pre-attn RMSNorm + Q8 */
-          void *na[] = {&b->ds.h, &b->ds.attn_norm[il], &b->ds.xn, (void *)&dim, &eps, &b->ds.xq, &hs, &hs, &xqs};
-          launch_t(b, b->k[K_INK_RMSNORM_MT] ? K_INK_RMSNORM_MT : K_RMSNORM_T, 1u, B, na);
-          /* Q, K, V projections */
-          ds_gemv(b, d->l[il].wq.kind, b->ds.wq0[il], b->ds.wq1[il], b->ds.xq, b->ds.q, qd, nb_dim, NULL, NULL, BB, xqs, q_ys, rs0, eps);
-          ds_gemv(b, d->l[il].wk.kind, b->ds.wk0[il], b->ds.wk1[il], b->ds.xq, b->ds.k, kvd, nb_dim, NULL, NULL, BB, xqs, kv_ys, rs0, eps);
-          ds_gemv(b, d->l[il].wv.kind, b->ds.wv0[il], b->ds.wv1[il], b->ds.xq, b->ds.v, kvd, nb_dim, NULL, NULL, BB, xqs, kv_ys, rs0, eps);
-          /* per-head Q/K RMSNorm + NeoX RoPE in-place (pos .. pos + B - 1) */
+          /* pre-attn RMSNorm + Q8 (skipped when previous layer's H25c fused it) */
+          if (!xq_ready) {
+            void *na[] = {&b->ds.h, &b->ds.attn_norm[il], &b->ds.xn, (void *)&dim, &eps, &b->ds.xq, &hs, &hs, &xqs};
+            launch_t(b, b->k[K_INK_RMSNORM_MT] ? K_INK_RMSNORM_MT : K_RMSNORM_T, 1u, B, na);
+          }
+          xq_ready = 0;
+          /* Q, K, V projections + per-head Q/K RMSNorm + NeoX RoPE */
           const size_t roff = b->ds.rope_otf ? 0u : (size_t)pos * h2;
           float *cs = b->ds.rcos + roff, *sn = b->ds.rsin + roff;
-          u32 nkv0 = 0u, nrot = hd, qstr = hd;
-          void *rqa[] = {&b->ds.q, &b->ds.q, &nul, &nul, &b->ds.q_norm[il], &nul, &cs, &sn, (void *)&nh, &nkv0, (void *)&hd, &nrot, &eps, &qs, &qs, &qstr};
-          void *rka[] = {&b->ds.k, &b->ds.k, &nul, &nul, &b->ds.k_norm[il], &nul, &cs, &sn, (void *)&nkv, &nkv0, (void *)&hd, &nrot, &eps, &kvs, &kvs, &qstr};
-          launch_t(b, K_QKN_ROPE_KV, nh, B, rqa);
-          launch_t(b, K_QKN_ROPE_KV, nkv, B, rka);
-          /* bidirectional block attention over context KV [0..pos-1] + block KV [0..B-1] */
+          u32 nrot = hd;
+          if (use_h25a_g && d->l[il].wq.kind == MAT_Q4K && d->l[il].wk.kind == MAT_Q4K &&
+              d->l[il].wv.kind == MAT_Q4K && hd == 128u && (nb_dim & 7u) == 0u &&
+              b->ds.q_norm[il] && b->ds.k_norm[il]) {
+            void *qka[] = {&b->ds.wq0[il], &b->ds.wq1[il], &b->ds.wk0[il], &b->ds.wk1[il],
+                           &b->ds.wv0[il], &b->ds.wv1[il], &b->ds.xq, &b->ds.q_norm[il], &b->ds.k_norm[il],
+                           &cs, &sn, &b->ds.q, &b->ds.k, &b->ds.v,
+                           (void *)&nh, (void *)&nkv, (void *)&hd, &nrot, &nb_dim, &BB, &xqs, &qs, &kvs, &eps};
+            launch_t(b, use_h25a_r17 ? K_INK_DS_QKV_ROPE_Q4K_R17 : K_DS_QKV_ROPE_Q4K_R12, nh + 2u * nkv, (B + 3u) / 4u, qka);
+          } else {
+            ds_gemv(b, d->l[il].wq.kind, b->ds.wq0[il], b->ds.wq1[il], b->ds.xq, b->ds.q, qd, nb_dim, NULL, NULL, BB, xqs, q_ys, rs0, eps);
+            ds_gemv(b, d->l[il].wk.kind, b->ds.wk0[il], b->ds.wk1[il], b->ds.xq, b->ds.k, kvd, nb_dim, NULL, NULL, BB, xqs, kv_ys, rs0, eps);
+            ds_gemv(b, d->l[il].wv.kind, b->ds.wv0[il], b->ds.wv1[il], b->ds.xq, b->ds.v, kvd, nb_dim, NULL, NULL, BB, xqs, kv_ys, rs0, eps);
+            u32 nkv0 = 0u, qstr = hd;
+            void *rqa[] = {&b->ds.q, &b->ds.q, &nul, &nul, &b->ds.q_norm[il], &nul, &cs, &sn, (void *)&nh, &nkv0, (void *)&hd, &nrot, &eps, &qs, &qs, &qstr};
+            void *rka[] = {&b->ds.k, &b->ds.k, &nul, &nul, &b->ds.k_norm[il], &nul, &cs, &sn, (void *)&nkv, &nkv0, (void *)&hd, &nrot, &eps, &kvs, &kvs, &qstr};
+            launch_t(b, K_QKN_ROPE_KV, nh, B, rqa);
+            launch_t(b, K_QKN_ROPE_KV, nkv, B, rka);
+          }
+          /* bidirectional block attention over context KV [0..pos-1] + block KV [0..B-1] (+ optional inline Q8 -> aq) */
           u32 ctx_len = pos, cap = b->ds.kv_cap[il], win = b->ds.kv_win[il];
-          if (b->k[K_DS_ATTN_LONG_R7] && hd == 128u && nkv > 0u && nh == nkv * 3u && B > 0u && ((qs | kvs) & 15u) == 0u) {
+          int aq_ready = 0;
+          if (use_h25b_g && hd == 128u && nkv > 0u && nh == nkv * 3u && B > 0u && ((qs | kvs) & 15u) == 0u) {
+            const u32 ctx_start = (win > 0u && ctx_len > win) ? (ctx_len - win) : 0u;
+            const u32 ctx_n = (cap > 0u && ctx_len > ctx_start) ? (ctx_len - ctx_start) : 0u;
+            u32 nsp = (ctx_n >= 256u && b->at_part && b->at_count) ? (ctx_n + 255u) / 256u : 1u;
+            if (nsp > 32u) nsp = 32u;
+            const u32 btiles = (B + 7u) >> 3u;
+            if (!b->at_count || btiles * nkv > b->m->n_head * b->at_tmax) nsp = 1u;
+            while (nsp > 1u && (size_t)B * nh * nsp * 130u > b->at_part_floats) nsp >>= 1u;
+            void *part_p = nsp > 1u ? (void *)b->at_part : NULL;
+            void *cnt_p = nsp > 1u ? (void *)b->at_count : NULL;
+            void *out_nul = NULL;
+            u32 os0 = 0u;
+            void *aa12[] = {&b->ds.q, &b->ds.kc[il], &b->ds.vc[il], &b->ds.k, &b->ds.v, &out_nul, &b->ds.aq,
+                            &ctx_len, &cap, &win, &BB, (void *)&nh, (void *)&nkv, (void *)&hd,
+                            &qs, &kvs, &os0, &aqs, &nsp, &part_p, &cnt_p};
+            launch_t(b, K_DS_ATTN_WMMA_Q8_R12, nkv * nsp, btiles, aa12);
+            aq_ready = 1;
+          } else if (b->k[K_DS_ATTN_LONG_R7] && hd == 128u && nkv > 0u && nh == nkv * 3u && B > 0u && ((qs | kvs) & 15u) == 0u) {
             const u32 ctx_start = (win > 0u && ctx_len > win) ? (ctx_len - win) : 0u;
             const u32 ctx_n = (cap > 0u && ctx_len > ctx_start) ? (ctx_len - ctx_start) : 0u;
             u32 nsp = (ctx_n >= 256u && b->at_part && b->at_count) ? (ctx_n + 255u) / 256u : 1u;
@@ -9977,13 +12022,23 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
                           &ctx_len, &cap, &win, &BB, (void *)&nh, (void *)&nkv, (void *)&hd, &qs, &kvs, &qs};
             launch_t(b, K_DS_ATTN_R4, nh, B, aa);
           }
-          /* quantize att -> aq, o_proj + residual h */
-          void *qaa[] = {&b->ds.att, &b->ds.aq, &nb_qd, &qs, &aqs};
-          launch_t(b, K_QUANT, (nb_qd + 7u) / 8u, B, qaa);
-          ds_gemv(b, d->l[il].wo.kind, b->ds.wo0[il], b->ds.wo1[il], b->ds.aq, b->ds.h, dim, nb_qd, NULL, b->ds.h, BB, aqs, h_ys, h_ys, eps);
-          /* pre-FFN RMSNorm + Q8 */
-          void *fna[] = {&b->ds.h, &b->ds.ffn_norm[il], &b->ds.xn, (void *)&dim, &eps, &b->ds.xq, &hs, &hs, &xqs};
-          launch_t(b, b->k[K_INK_RMSNORM_MT] ? K_INK_RMSNORM_MT : K_RMSNORM_T, 1u, B, fna);
+          if (!aq_ready) {
+            void *qaa[] = {&b->ds.att, &b->ds.aq, &nb_qd, &qs, &aqs};
+            launch_t(b, K_QUANT, (nb_qd + 7u) / 8u, B, qaa);
+          }
+          /* o_proj + residual h + pre-FFN RMSNorm + Q8 */
+          if (use_h25c_g && d->l[il].wo.kind == MAT_Q4K && (nb_qd & 7u) == 0u) {
+            void *ny_nul = NULL;
+            u32 nys0 = 0u;
+            void *pa[] = {&b->ds.wo0[il], &b->ds.wo1[il], &b->ds.aq, &b->ds.h, &b->ds.h,
+                          &b->ds.ffn_norm[il], &ny_nul, &b->ds.xq, &b->at_part, &b->at_count,
+                          (void *)&dim, &nb_qd, &BB, &aqs, &hs, &hs, &nys0, &xqs, &eps};
+            launch_t(b, K_DS_PROJ_RES_NORM_Q8_Q4K_R12, (dim + 31u) / 32u, (B + 3u) / 4u, pa);
+          } else {
+            ds_gemv(b, d->l[il].wo.kind, b->ds.wo0[il], b->ds.wo1[il], b->ds.aq, b->ds.h, dim, nb_qd, NULL, b->ds.h, BB, aqs, h_ys, h_ys, eps);
+            void *fna[] = {&b->ds.h, &b->ds.ffn_norm[il], &b->ds.xn, (void *)&dim, &eps, &b->ds.xq, &hs, &hs, &xqs};
+            launch_t(b, b->k[K_INK_RMSNORM_MT] ? K_INK_RMSNORM_MT : K_RMSNORM_T, 1u, B, fna);
+          }
           /* gate+up -> SwiGLU + Q8 -> down + residual h (fused Q4_K SwiGLU when available) */
           u32 gu_rows = 2u * d->ffn, ffn_n = d->ffn;
           if (d->l[il].wgu.kind == MAT_Q4K && b->has_q4k_swiglu && q4k_swiglu_on() && BB <= 16u && (ffn_n % 32u) == 0u) {
@@ -10001,11 +12056,33 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
             void *swa[] = {&b->ds.gu, &gu_up, &ffn_n, &b->ds.gq, &gus, &gqs, &cl0};
             launch_t(b, K_SWIGLU, (ffn_n + 255u) / 256u, B, swa);
           }
-          ds_gemv(b, d->l[il].wdown.kind, b->ds.wd0[il], b->ds.wd1[il], b->ds.gq, b->ds.h, dim, nb_ffn, NULL, b->ds.h, BB, gqs, h_ys, h_ys, eps);
+          if (use_h25c_g && d->l[il].wdown.kind == MAT_Q4K && (nb_ffn & 7u) == 0u) {
+            if (il + 1u < d->n_layer) {
+              void *ny_nul = NULL;
+              u32 nys0 = 0u;
+              void *pa[] = {&b->ds.wd0[il], &b->ds.wd1[il], &b->ds.gq, &b->ds.h, &b->ds.h,
+                            &b->ds.attn_norm[il + 1u], &ny_nul, &b->ds.xq, &b->at_part, &b->at_count,
+                            (void *)&dim, &nb_ffn, &BB, &gqs, &hs, &hs, &nys0, &xqs, &eps};
+              launch_t(b, K_DS_PROJ_RES_NORM_Q8_Q4K_R12, (dim + 31u) / 32u, (B + 3u) / 4u, pa);
+              xq_ready = 1;
+            } else {
+              void *nq_nul = NULL;
+              u32 nqs0 = 0u;
+              void *pa[] = {&b->ds.wd0[il], &b->ds.wd1[il], &b->ds.gq, &b->ds.h, &b->ds.h,
+                            &b->ds.out_norm, &b->ds.hidden, &nq_nul, &b->at_part, &b->at_count,
+                            (void *)&dim, &nb_ffn, &BB, &gqs, &hs, &hs, &hs, &nqs0, &eps};
+              launch_t(b, K_DS_PROJ_RES_NORM_Q8_Q4K_R12, (dim + 31u) / 32u, (B + 3u) / 4u, pa);
+              hidden_ready = 1;
+            }
+          } else {
+            ds_gemv(b, d->l[il].wdown.kind, b->ds.wd0[il], b->ds.wd1[il], b->ds.gq, b->ds.h, dim, nb_ffn, NULL, b->ds.h, BB, gqs, h_ys, h_ys, eps);
+          }
         }
         /* final output_norm -> b->ds.hidden [B, dim] */
-        void *ona[] = {&b->ds.h, &b->ds.out_norm, &b->ds.hidden, (void *)&dim, &eps, &nul, &hs, &hs, &rs0};
-        launch_t(b, b->k[K_INK_RMSNORM_MT] ? K_INK_RMSNORM_MT : K_RMSNORM_T, 1u, B, ona);
+        if (!hidden_ready) {
+          void *ona[] = {&b->ds.h, &b->ds.out_norm, &b->ds.hidden, (void *)&dim, &eps, &nul, &hs, &hs, &rs0};
+          launch_t(b, b->k[K_INK_RMSNORM_MT] ? K_INK_RMSNORM_MT : K_RMSNORM_T, 1u, B, ona);
+        }
         if (dsprof) { HIP(H.DeviceSynchronize()); td_blk = ds_now_ms() - td0; td0 = ds_now_ms(); }
         const float pmin = prob ? prob[0] : 0.0f;
         const u32 rnn_rows = 3u * r, rnn_nb = (2u * r + 2u * dim) / 32u, r_nb = r / 32u;
@@ -10029,37 +12106,66 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
           _Static_assert(sizeof(ds_zsamp_hdr) <= 8192u, "ds_zsamp_hdr fits in 8 KiB zpin");
           void *draft_ids = zb + 16u, *draft_probs = zb + 80u;
           void *part_max = zb + 256u, *part_id = zb + 768u, *part_sum = zb + 1280u;
-          if (zsync_samp) {
+          if (zsync_samp && !ds_gtree_on) {
             *(uint64_t *)b->ds.zpin = b->base.ds_samp->rng;
             HIP(H.MemcpyAsync(zb + offsetof(ds_zsamp_hdr, rng_state), b->ds.zpin, 8u, hipMemcpyHostToDevice, cur_stream));
           }
           if (use_split_now) {
             /* Single-pass base = output.weight * q8(hidden_j + bias) for all nd drafts (no 2-pass mispredicts). */
-            for (u32 j = 0; j < nd; j++) {
-              float *hj = (float *)((char *)b->ds.hidden + (size_t)(j + 1u) * hs);
-              uint8_t *qo = b->ds.hq + (size_t)j * xqs;
-              void *aba[] = {&hj, &b->ds.zero, &b->ds.mk_hidden_bias, &qo, (void *)&dim};
-              launch(b, K_DS_ADD_Q8_R4, (dim + 255u) / 256u, aba);
+            if (h24a_en && b->k[K_DS_ADD_Q8_BATCH_R12] && (dim & 31u) == 0u && nd > 0u) {
+              float *h1 = (float *)((char *)b->ds.hidden + (size_t)hs);
+              u32 nd_u = nd, ds0 = 0u;
+              void *aba[] = {&h1, &b->ds.zero, &b->ds.mk_hidden_bias, &b->ds.hq, (void *)&dim, &nd_u, &hs, &ds0, &xqs};
+              launch_t(b, K_DS_ADD_Q8_BATCH_R12, (dim + 255u) / 256u, nd, aba);
+            } else {
+              for (u32 j = 0; j < nd; j++) {
+                float *hj = (float *)((char *)b->ds.hidden + (size_t)(j + 1u) * hs);
+                uint8_t *qo = b->ds.hq + (size_t)j * xqs;
+                void *aba[] = {&hj, &b->ds.zero, &b->ds.mk_hidden_bias, &qo, (void *)&dim};
+                launch(b, K_DS_ADD_Q8_R4, (dim + 255u) / 256u, aba);
+              }
             }
             if (use_sl) {
               u32 n_act = b->ds.n_act, nd_u = nd, ys_f32 = hrows;
               void *ba7[] = {&b->ds.head_w0, &b->ds.head_w1, &b->ds.hq, &b->ds.id_map_dev, &b->ds.base,
                              (void *)&hrows, &n_act, &nb_dim, &nd_u, &xqs, &ys_f32};
-              launch(b, K_INK_DS_BASE_Q4K_IDMAP_R7, (n_act + 31u) / 32u, ba7);
+              launch(b, head_q4k_wave ? K_INK_DS_BASE_Q4K_WAVE_IDMAP_R13 : K_INK_DS_BASE_Q4K_IDMAP_R7, (n_act + 31u) / 32u, ba7);
             } else {
               ds_gemv(b, b->ds.head_kind, b->ds.head_w0, b->ds.head_w1, b->ds.hq, b->ds.base, hrows, nb_dim,
                       NULL, NULL, nd, xqs, hrows, 0u, eps);
             }
           }
+          const int use_h24b = h24b_en && b->k[K_DS_RNN_FUSED_ZSYNC_R12] != NULL &&
+                               d->mk_w1.kind == MAT_Q8 && d->mk_rnn_proj.kind == MAT_Q4K &&
+                               (r & 31u) == 0u && (dim & 31u) == 0u && (2u * r + 2u * dim) <= 5120u &&
+                               b->am_count != NULL;
+          /* R69 (H30): promoted lossless T_draft sharpening for sampled speculation (default 0.75; =1.0 opts out) */
+          static float ds_tscale = -1.0f;
+          if (ds_tscale < 0.0f) {
+            const char *te = getenv("IE_DS_DRAFT_TEMP_SCALE");
+            ds_tscale = (te && *te) ? (float)atof(te) : 0.75f;
+            if (ds_tscale < 0.25f) ds_tscale = 0.25f; else if (ds_tscale > 1.5f) ds_tscale = 1.5f;
+          }
           for (u32 i = 0; i < nd; i++) {
             float *hi = (float *)((char *)b->ds.hidden + (size_t)(i + 1u) * hs);
-            void *ca[] = {&b->ds.state, &b->ds.mk_w1_w0, &b->ds.mk_w1_w1, &hi, &b->ds.frnn, &b->ds.cat_q8,
-                          &ds_ctrl, (void *)&r, (void *)&dim};
-            launch(b, K_DS_CONCAT_Q8_ZSYNC_R5, (2u * r + 2u * dim + 255u) / 256u, ca);
-            ds_gemv_zsync(b, d->mk_rnn_proj.kind, b->ds.mk_rnn_w0, b->ds.mk_rnn_w1, b->ds.cat_q8, b->ds.raw768,
-                          rnn_rows, rnn_nb, b->ds.mk_rnn_bias, NULL, ds_ctrl);
-            void *sa[] = {&b->ds.raw768, &b->ds.state, &nul, &b->ds.lat_q8, &ds_ctrl, (void *)&r};
-            launch(b, K_DS_RNN_STEP_ZSYNC_R5, 1u, sa);
+            if (use_h24b) {
+              u32 ng_r = (u32)rnn_ng_env, nt_r = (rnn_rows + 7u) / 8u;
+              if (ng_r > nt_r) ng_r = nt_r;
+              if (!ng_r) ng_r = 1u;
+              void *ra[] = {&b->ds.state, &b->ds.mk_w1_w0, &b->ds.mk_w1_w1, &hi, &b->ds.frnn,
+                            &b->ds.mk_rnn_w0, &b->ds.mk_rnn_w1, &b->ds.mk_rnn_bias,
+                            &b->ds.raw768, &nul, &b->ds.lat_q8, &ds_ctrl, &b->am_count,
+                            (void *)&r, (void *)&dim, (void *)&rnn_rows};
+              launch(b, K_DS_RNN_FUSED_ZSYNC_R12, ng_r, ra);
+            } else {
+              void *ca[] = {&b->ds.state, &b->ds.mk_w1_w0, &b->ds.mk_w1_w1, &hi, &b->ds.frnn, &b->ds.cat_q8,
+                            &ds_ctrl, (void *)&r, (void *)&dim};
+              launch(b, K_DS_CONCAT_Q8_ZSYNC_R5, (2u * r + 2u * dim + 255u) / 256u, ca);
+              ds_gemv_zsync(b, d->mk_rnn_proj.kind, b->ds.mk_rnn_w0, b->ds.mk_rnn_w1, b->ds.cat_q8, b->ds.raw768,
+                            rnn_rows, rnn_nb, b->ds.mk_rnn_bias, NULL, ds_ctrl);
+              void *sa[] = {&b->ds.raw768, &b->ds.state, &nul, &b->ds.lat_q8, &ds_ctrl, (void *)&r};
+              launch(b, K_DS_RNN_STEP_ZSYNC_R5, 1u, sa);
+            }
             u32 sidx = i;
             if (use_sl) {
               float *brow = b->ds.base + (size_t)i * hrows;
@@ -10075,12 +12181,12 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
                 ds_sb_sl = getenv("IE_DS_SURV_B") ? (float)atof(getenv("IE_DS_SURV_B")) : 0.30f;
               }
               u32 ng_s = 64u, K_d = ds ? (ds->top_k ? (ds->top_k <= 32u ? ds->top_k : 32u) : 20u) : 1u, K_str = 32u;
-              float temp_v = ds ? ds->temp : 0.0f, topp_v = ds ? ds->top_p : 1.0f;
-              float pmin_v = ds ? (ds->fs_on ? ds->surv_pmin : ds_spmin_sl) : pmin;
-              float surv_a = ds ? (ds->fs_on ? ds->surv_a : ds_sa_sl) : 0.0f;
-              float surv_b = ds ? (ds->fs_on ? ds->surv_b : ds_sb_sl) : 0.0f;
+              float temp_v = ds ? (ds_gtree_on ? ds->temp : (ds->temp * ds_tscale)) : 0.0f, topp_v = ds ? ds->top_p : 1.0f;
+              float pmin_v = (ds && !ds_gtree_on) ? (ds->fs_on ? ds->surv_pmin : ds_spmin_sl) : pmin;
+              float surv_a = (ds && !ds_gtree_on) ? (ds->fs_on ? ds->surv_a : ds_sa_sl) : 0.0f;
+              float surv_b = (ds && !ds_gtree_on) ? (ds->fs_on ? ds->surv_b : ds_sb_sl) : 0.0f;
               void *pv = zb + 8192u, *pi = zb + 16384u, *ps = zb + 24576u;
-              void *rs = ds ? (zb + offsetof(ds_zsamp_hdr, rng_state)) : NULL;
+              void *rs = (ds && !ds_gtree_on) ? (zb + offsetof(ds_zsamp_hdr, rng_state)) : NULL;
               void *de = ds ? (zb + offsetof(ds_zsamp_hdr, draft_entropy)) : NULL;
               void *qn = ds ? (zb + offsetof(ds_zsamp_hdr, q_n)) : NULL;
               void *qi = ds ? (zb + offsetof(ds_zsamp_hdr, q_ids)) : NULL;
@@ -10101,12 +12207,12 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
               }
               ie_ds_samp *ds = zsync_samp ? b->base.ds_samp : NULL;
               u32 ng_s = 64u, K_d = ds ? (ds->top_k ? (ds->top_k <= 32u ? ds->top_k : 32u) : 20u) : 1u, K_str = 32u;
-              float temp_v = ds ? ds->temp : 0.0f, topp_v = ds ? ds->top_p : 1.0f;
-              float pmin_v = ds ? (ds->fs_on ? ds->surv_pmin : ds_spmin8) : pmin;
-              float surv_a = ds ? (ds->fs_on ? ds->surv_a : ds_sa8) : 0.0f;
-              float surv_b = ds ? (ds->fs_on ? ds->surv_b : ds_sb8) : 0.0f;
+              float temp_v = ds ? (ds_gtree_on ? ds->temp : (ds->temp * ds_tscale)) : 0.0f, topp_v = ds ? ds->top_p : 1.0f;
+              float pmin_v = (ds && !ds_gtree_on) ? (ds->fs_on ? ds->surv_pmin : ds_spmin8) : pmin;
+              float surv_a = (ds && !ds_gtree_on) ? (ds->fs_on ? ds->surv_a : ds_sa8) : 0.0f;
+              float surv_b = (ds && !ds_gtree_on) ? (ds->fs_on ? ds->surv_b : ds_sb8) : 0.0f;
               void *pv = zb + 8192u, *pi = zb + 16384u, *ps = zb + 24576u;
-              void *rs = ds ? (zb + offsetof(ds_zsamp_hdr, rng_state)) : NULL;
+              void *rs = (ds && !ds_gtree_on) ? (zb + offsetof(ds_zsamp_hdr, rng_state)) : NULL;
               void *de = ds ? (zb + offsetof(ds_zsamp_hdr, draft_entropy)) : NULL;
               void *qn = ds ? (zb + offsetof(ds_zsamp_hdr, q_n)) : NULL;
               void *qi = ds ? (zb + offsetof(ds_zsamp_hdr, q_ids)) : NULL;
@@ -10145,12 +12251,12 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
                 ds_sb = getenv("IE_DS_SURV_B") ? (float)atof(getenv("IE_DS_SURV_B")) : 0.30f;
               }
               u32 ng_s = 64u, K_d = ds->top_k ? (ds->top_k <= 32u ? ds->top_k : 32u) : 20u, K_str = 32u;
-              float temp_v = ds->temp, topp_v = ds->top_p;
-              float pmin_v = ds->fs_on ? ds->surv_pmin : ds_spmin;
-              float surv_a = ds->fs_on ? ds->surv_a : ds_sa;
-              float surv_b = ds->fs_on ? ds->surv_b : ds_sb;
+              float temp_v = ds_gtree_on ? ds->temp : (ds->temp * ds_tscale), topp_v = ds->top_p;
+              float pmin_v = ds_gtree_on ? pmin : (ds->fs_on ? ds->surv_pmin : ds_spmin);
+              float surv_a = ds_gtree_on ? 0.0f : (ds->fs_on ? ds->surv_a : ds_sa);
+              float surv_b = ds_gtree_on ? 0.0f : (ds->fs_on ? ds->surv_b : ds_sb);
               void *pv = zb + 8192u, *pi = zb + 16384u, *ps = zb + 24576u;
-              void *rs = zb + offsetof(ds_zsamp_hdr, rng_state);
+              void *rs = ds_gtree_on ? NULL : (zb + offsetof(ds_zsamp_hdr, rng_state));
               void *de = zb + offsetof(ds_zsamp_hdr, draft_entropy);
               void *qn = zb + offsetof(ds_zsamp_hdr, q_n);
               void *qi = zb + offsetof(ds_zsamp_hdr, q_ids);
@@ -10174,10 +12280,10 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
             const ds_zsamp_hdr *zh = (const ds_zsamp_hdr *)b->ds.zpin;
             ie_ds_samp *ds = b->base.ds_samp;
             ds->used = 1;
-            ds->rng = zh->rng_state;
+            if (!ds_gtree_on) ds->rng = zh->rng_state;
             static float ds_drop0_h = -1.0f;
             if (ds_drop0_h < 0.0f) ds_drop0_h = getenv("IE_DS_DROP0_H") ? (float)atof(getenv("IE_DS_DROP0_H")) : 1.65f;
-            const float drop0 = ds->fs_on ? ds->drop0_h : ds_drop0_h;
+            const float drop0 = ds_gtree_on ? 0.0f : (ds->fs_on ? ds->drop0_h : ds_drop0_h);
             u32 got = zh->ctrl[2] < nd ? zh->ctrl[2] : nd;
             if (got > 0u && drop0 > 0.0f && zh->draft_entropy[0] > drop0) got = 0u;
             for (u32 i = 0; i < got; i++) {
@@ -10346,7 +12452,10 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
                       !b->prof && !mk.rec && b->k[K_SALUKI_TOPK_R11] && topk_fits(T, nv_tok, 1u);
   const int fused_q4k_head =
       !sec && !last_only && !b->base.all_logits && !prob && !b->prof && !mk.rec &&
-      T >= 1u && T <= 8u && b->k[K_INK_Q4K_HEAD_CAP_TOPK_R7] &&
+      T >= 1u && T <= 8u &&
+      ((b->ink_q4k_wave && g->i_head < g->n_ops && b->d[g->i_head].w0 == b->ink_q4k_w0)
+           ? (b->k[K_INK_Q4K_HEAD_WAVE_CAP_TOPK_R13] != NULL)
+           : (b->k[K_INK_Q4K_HEAD_CAP_TOPK_R7] != NULL)) &&
       (fold ? (b->base.sample_k >= 1u && b->base.sample_k <= 32u) : (out != NULL)) &&
       g->i_head + 1u < g->n_main &&
       g->ops[g->i_head].kind == OP_GEMV_Q4K && !g->ops[g->i_head].nv &&
@@ -10382,9 +12491,11 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   b->sc_defer = defer_sc;
   if (defer_sc) b->sc_ver_pos = pos, b->sc_ver_T = T;
   if (!sec && pos == 0u) ds_ctx_drain(b);
-  const int do_ds_ov = !sec && b->ds.ov_mode && b->ds.ctx_stream && b->ds.ready && !last_only &&
+  const int do_ds_ov = !sec && (b->ds.ov_mode == 1 || b->ds.ov_mode == 2) && b->ds.ctx_stream && b->ds.ready && !last_only &&
                        T >= 2u && !tree && !b->prof && !gdump_on() && !mk.rec && !fused_q4k_head &&
                        g->ds_feat >= 0 && g->i_head + 1u < i1;
+  const int do_ss_ctx = (b->ds.ov_mode == 3 && !sec && !last_only && T >= 2u && !tree && !b->prof && !gdump_on() &&
+                         !mk.rec && b->ds.ready && g->ds_feat >= 0 && b->ds.ev_head_ready != NULL);
   const int prev_ver = b->in_verify;
   b->in_verify = (!sec && !last_only && T >= 2u && T <= 16u);
   fl_cnt = 0;
@@ -10421,7 +12532,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   mk.rec = 0;
   mk_flush();
   if (fused_q4k_head) {
-    ink_fused_q4k_head_run(b, T, fold, out);
+    ink_fused_q4k_head_run(b, T, pos, fold, do_ss_ctx, out);
     mk_check(pos);
     return;
   }
@@ -10804,6 +12915,7 @@ static void snap_async_shutdown(gpu_backend *b) { (void)b; }
 #endif
 static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
   gpu_backend *b = (gpu_backend *)bk;
+  gpu_kv_io_sync(bk);
   ds_ctx_drain(b);
   snap_async_join(b);
   const model *m = b->m;
@@ -10965,6 +13077,7 @@ static void gpu_snap(backend *bk, int save, int k, int hbuf, uint32_t pos) {
  * kv_io then moves the full-length layers (including DSpark's global layers). Other models with rings (flint) are off. */
 static size_t gpu_snap_io(backend *bk, int k, int out, void *buf, uint32_t pos) {
   gpu_backend *b = (gpu_backend *)bk;
+  gpu_kv_io_sync(bk);
   ds_ctx_drain(b);
   snap_async_join(b);
   const model *m = b->m;
@@ -11044,6 +13157,7 @@ static void gpu_host_free(backend *bk, void *p) {
 }
 static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf) {
   gpu_backend *b = (gpu_backend *)bk;
+  gpu_kv_io_sync(bk);
   ds_ctx_drain(b);
   snap_async_join(b);
   if (!n) {
@@ -11086,6 +13200,448 @@ static void gpu_kv_io(backend *bk, int out, uint32_t p0, uint32_t n, void *buf) 
     }
   }
   if (async_io) HIP(H.StreamSynchronize(b->snap_cs));
+}
+
+/* Wave 15 (R78-R80): async/pipelined KV I/O, GPU byte-plane unshuffler, and fast pinned ephemeral stash. */
+static void gpu_kv_io_sync(backend *bk) {
+  gpu_backend *b = (gpu_backend *)bk;
+  if (!b->kv_async_active && !b->kv_h2d_piped) return;
+  if (b->snap_cs) HIP(H.StreamSynchronize(b->snap_cs));
+  memset(b->kv_h2d_ev_valid, 0, sizeof(b->kv_h2d_ev_valid));
+  b->kv_h2d_piped = 0;
+  b->kv_async_active = 0;
+}
+
+static void gpu_kv_io_async(backend *bk, int out, uint32_t p0, uint32_t n, void *buf, int layer_pipe) {
+  gpu_backend *b = (gpu_backend *)bk;
+  ds_ctx_drain(b);
+  snap_async_join(b);
+  if (!n) {
+    if (!out && !buf && p0) {
+      kv_ensure(b, p0);
+      if (b->ds.ready) ds_kv_ensure(b, p0);
+    }
+    return;
+  }
+  if (!out) {
+    b->live_snap = -1;
+    kv_ensure(b, p0 + n);
+    if (b->ds.ready) ds_kv_ensure(b, p0 + n);
+  }
+  snap_stream_ensure(b);
+  if (!b->kv_async_active) HIP(H.StreamSynchronize(cur_stream));
+  const int kind = out ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice;
+  const int use_pipe = (!out && layer_pipe != 0);
+  const size_t len = (size_t)n * b->kv_glob_rowb;
+  char *p = (char *)buf;
+  for (uint32_t i = 0; i < b->m->n_kvl; i++) {
+    if (b->g->kv_len[i] < b->g->n_ctx) continue;
+    for (int v = 0; v < 2; v++, p += len) {
+      char *rows = kv_ptr(b, v, i, p0);
+      HIP(H.MemcpyAsync(out ? (void *)p : rows, out ? (void *)rows : (void *)p, len, kind, b->snap_cs));
+    }
+    if (use_pipe && i < 64u) {
+      if (!b->kv_h2d_ev[i]) HIP(ie_event_create_notiming(&b->kv_h2d_ev[i]));
+      HIP(H.EventRecord(b->kv_h2d_ev[i], b->snap_cs));
+      b->kv_h2d_ev_valid[i] = 1u;
+    }
+  }
+  if (b->ds.ready && b->m->ds) {
+    const size_t dlen = (size_t)n * b->ds.kv_rowb;
+    for (u32 il = 0; il < b->m->ds->n_layer; il++) {
+      if (ds_is_ring(b, il)) continue;
+      for (int v = 0; v < 2; v++, p += dlen) {
+        char *rows = (char *)(v ? b->ds.vc[il] : b->ds.kc[il]) + (size_t)p0 * b->ds.kv_rowb;
+        HIP(H.MemcpyAsync(out ? (void *)p : rows, out ? (void *)rows : (void *)p, dlen, kind, b->snap_cs));
+      }
+    }
+  }
+  b->kv_async_active = 1;
+  if (use_pipe) b->kv_h2d_piped = 1;
+}
+
+static void kv_unshuf_f16_slice(gpu_backend *b, const char *src, char *dst, size_t len) {
+  const size_t n_elems = len / 2u;
+  if (!n_elems) return;
+  if (len <= b->dc_stage_bytes) {
+    HIP(H.MemcpyAsync(b->dc_stage_dev, src, len, hipMemcpyHostToDevice, b->snap_cs));
+    void *lo_p = b->dc_stage_dev;
+    void *hi_p = (char *)b->dc_stage_dev + n_elems;
+    void *dst_p = dst;
+    unsigned long long ne_u = (unsigned long long)n_elems;
+    const u32 gx = (u32)((ne_u + 2047ull) >> 11u);
+    void *ua[] = {&lo_p, &hi_p, &dst_p, &ne_u};
+    hip_launch_raw(b, K_INK_DCACHE_UNSHUF_F16_R16, gx, 1u, 1u, 256u, 1u, 1u, 0u, b->snap_cs, ua);
+    return;
+  }
+  const size_t max_el = b->dc_stage_bytes / 2u;
+  for (size_t e0 = 0u; e0 < n_elems; e0 += max_el) {
+    const size_t m_el = (n_elems - e0 < max_el) ? (n_elems - e0) : max_el;
+    void *lo_p = b->dc_stage_dev;
+    void *hi_p = (char *)b->dc_stage_dev + m_el;
+    void *dst_p = dst + e0 * 2u;
+    HIP(H.MemcpyAsync(lo_p, src + e0, m_el, hipMemcpyHostToDevice, b->snap_cs));
+    HIP(H.MemcpyAsync(hi_p, src + n_elems + e0, m_el, hipMemcpyHostToDevice, b->snap_cs));
+    unsigned long long ne_u = (unsigned long long)m_el;
+    const u32 gx = (u32)((ne_u + 2047ull) >> 11u);
+    void *ua[] = {&lo_p, &hi_p, &dst_p, &ne_u};
+    hip_launch_raw(b, K_INK_DCACHE_UNSHUF_F16_R16, gx, 1u, 1u, 256u, 1u, 1u, 0u, b->snap_cs, ua);
+  }
+}
+
+static void kv_unshuf_q4_slice(gpu_backend *b, const char *src, char *dst, size_t len, uint32_t fmt) {
+  const size_t n_rec = len / 72u; /* 72 B/head record: 64 B nibbles + 8 B (4x f16) scales */
+  if (!n_rec) return;
+  const int split_scl = (fmt == 1u);
+  if (len <= b->dc_stage_bytes) {
+    HIP(H.MemcpyAsync(b->dc_stage_dev, src, len, hipMemcpyHostToDevice, b->snap_cs));
+    void *nib_p = b->dc_stage_dev;
+    void *slo_p = (char *)b->dc_stage_dev + n_rec * 64u;
+    void *shi_p = split_scl ? ((char *)b->dc_stage_dev + n_rec * 68u) : NULL;
+    void *dst_p = dst;
+    unsigned long long nr_u = (unsigned long long)n_rec;
+    const u32 gx = (u32)((nr_u + 63ull) >> 6u);
+    void *ua[] = {&nib_p, &slo_p, &shi_p, &dst_p, &nr_u};
+    hip_launch_raw(b, K_INK_DCACHE_UNSHUF_Q4_R16, gx, 1u, 1u, 256u, 1u, 1u, 0u, b->snap_cs, ua);
+    return;
+  }
+  const size_t max_rec = b->dc_stage_bytes / 72u;
+  for (size_t r0 = 0u; r0 < n_rec; r0 += max_rec) {
+    const size_t m_rec = (n_rec - r0 < max_rec) ? (n_rec - r0) : max_rec;
+    void *nib_p = b->dc_stage_dev;
+    void *slo_p = (char *)b->dc_stage_dev + m_rec * 64u;
+    void *shi_p = split_scl ? ((char *)b->dc_stage_dev + m_rec * 68u) : NULL;
+    void *dst_p = dst + r0 * 72u;
+    HIP(H.MemcpyAsync(nib_p, src + r0 * 64u, m_rec * 64u, hipMemcpyHostToDevice, b->snap_cs));
+    if (split_scl) {
+      HIP(H.MemcpyAsync(slo_p, src + n_rec * 64u + r0 * 4u, m_rec * 4u, hipMemcpyHostToDevice, b->snap_cs));
+      HIP(H.MemcpyAsync(shi_p, src + n_rec * 68u + r0 * 4u, m_rec * 4u, hipMemcpyHostToDevice, b->snap_cs));
+    } else {
+      HIP(H.MemcpyAsync(slo_p, src + n_rec * 64u + r0 * 8u, m_rec * 8u, hipMemcpyHostToDevice, b->snap_cs));
+    }
+    unsigned long long nr_u = (unsigned long long)m_rec;
+    const u32 gx = (u32)((nr_u + 63ull) >> 6u);
+    void *ua[] = {&nib_p, &slo_p, &shi_p, &dst_p, &nr_u};
+    hip_launch_raw(b, K_INK_DCACHE_UNSHUF_Q4_R16, gx, 1u, 1u, 256u, 1u, 1u, 0u, b->snap_cs, ua);
+  }
+}
+
+static int gpu_kv_io_unshuf(backend *bk, uint32_t p0, uint32_t n, const void *buf, uint32_t fmt, int async_pipe) {
+  gpu_backend *b = (gpu_backend *)bk;
+  if (!n || !buf) return 0;
+  int has_ds_glob = 0;
+  if (b->ds.ready && b->m->ds) {
+    for (u32 il = 0u; il < b->m->ds->n_layer; il++)
+      if (!ds_is_ring(b, il)) { has_ds_glob = 1; break; }
+  }
+  if (fmt == 1u || fmt == 2u) {
+    if (b->ink_glob_kv_mode != 2 || b->kv_glob_rowb != 576u || !b->k[K_INK_DCACHE_UNSHUF_Q4_R16]) return 0;
+    if (has_ds_glob && (!b->k[K_INK_DCACHE_UNSHUF_F16_R16] || (b->ds.kv_rowb & 1u) != 0u)) return 0;
+  } else if (fmt == 0u) {
+    if (b->ink_glob_kv_mode != 0 || (b->kv_glob_rowb & 1u) != 0u || !b->k[K_INK_DCACHE_UNSHUF_F16_R16]) return 0;
+    if (has_ds_glob && (b->ds.kv_rowb & 1u) != 0u) return 0;
+  } else {
+    return 0;
+  }
+  ds_ctx_drain(b);
+  snap_async_join(b);
+  b->live_snap = -1;
+  kv_ensure(b, p0 + n);
+  if (b->ds.ready) ds_kv_ensure(b, p0 + n);
+  snap_stream_ensure(b);
+  if (!b->kv_async_active) HIP(H.StreamSynchronize(cur_stream));
+  const size_t len = (size_t)n * b->kv_glob_rowb;
+  const size_t dlen = has_ds_glob ? ((size_t)n * b->ds.kv_rowb) : 0u;
+  const size_t need_st = len > dlen ? len : dlen;
+  const size_t cap_max = 16u << 20;
+  const size_t want_st = need_st < cap_max ? need_st : cap_max;
+  if (want_st > b->dc_stage_bytes) {
+    if (b->dc_stage_dev) {
+      HIP(H.StreamSynchronize(b->snap_cs));
+      H.Free(b->dc_stage_dev);
+      b->dc_stage_dev = NULL;
+      b->dc_stage_bytes = 0u;
+    }
+    if (H.Malloc(&b->dc_stage_dev, want_st) != 0 || !b->dc_stage_dev) return 0;
+    b->dc_stage_bytes = want_st;
+  }
+  const char *p = (const char *)buf;
+  for (uint32_t i = 0u; i < b->m->n_kvl; i++) {
+    if (b->g->kv_len[i] < b->g->n_ctx) continue;
+    for (int v = 0; v < 2; v++, p += len) {
+      char *rows = kv_ptr(b, v, i, p0);
+      if (fmt == 0u) kv_unshuf_f16_slice(b, p, rows, len);
+      else kv_unshuf_q4_slice(b, p, rows, len, fmt);
+    }
+    if (async_pipe && i < 64u) {
+      if (!b->kv_h2d_ev[i]) HIP(ie_event_create_notiming(&b->kv_h2d_ev[i]));
+      HIP(H.EventRecord(b->kv_h2d_ev[i], b->snap_cs));
+      b->kv_h2d_ev_valid[i] = 1u;
+    }
+  }
+  if (has_ds_glob) {
+    for (u32 il = 0u; il < b->m->ds->n_layer; il++) {
+      if (ds_is_ring(b, il)) continue;
+      for (int v = 0; v < 2; v++, p += dlen) {
+        char *rows = (char *)(v ? b->ds.vc[il] : b->ds.kc[il]) + (size_t)p0 * b->ds.kv_rowb;
+        kv_unshuf_f16_slice(b, p, rows, dlen);
+      }
+    }
+  }
+  if (async_pipe) {
+    b->kv_async_active = 1;
+    b->kv_h2d_piped = 1;
+  } else {
+    HIP(H.StreamSynchronize(b->snap_cs));
+    memset(b->kv_h2d_ev_valid, 0, sizeof(b->kv_h2d_ev_valid));
+    b->kv_h2d_piped = 0;
+    b->kv_async_active = 0;
+  }
+  return 1;
+}
+
+static void tree_alloc(gpu_backend *b);
+
+static int gpu_kv_ephem_copy(backend *bk, int save, uint32_t pos) {
+  gpu_backend *b = (gpu_backend *)bk;
+  if (!ink_ephem_fast_want()) return 0;
+  if (!pos) {
+    if (save) { b->ephem_pos_saved = 0u; return 1; }
+    return (b->ephem_pos_saved == 0u) ? 1 : 0;
+  }
+  gpu_kv_io_sync(bk);
+  ds_ctx_drain(b);
+  snap_async_join(b);
+  const size_t len = (size_t)pos * b->kv_glob_rowb;
+  const size_t dlen = (b->ds.ready && b->m->ds) ? ((size_t)pos * b->ds.kv_rowb) : 0u;
+  size_t tot = 0u, max_sl = 0u;
+  u32 n_ops = 0u;
+  for (uint32_t i = 0u; i < b->m->n_kvl; i++) {
+    if (b->g->kv_len[i] < b->g->n_ctx) continue;
+    tot += 2u * len;
+    n_ops += 2u;
+    if (len > max_sl) max_sl = len;
+  }
+  if (b->ds.ready && b->m->ds) {
+    for (u32 il = 0u; il < b->m->ds->n_layer; il++) {
+      if (ds_is_ring(b, il)) continue;
+      tot += 2u * dlen;
+      n_ops += 2u;
+      if (dlen > max_sl) max_sl = dlen;
+    }
+  }
+  if (!tot || !n_ops) {
+    if (save) b->ephem_pos_saved = pos;
+    return 1;
+  }
+  if (!save) {
+    if (!b->ephem_pin || b->ephem_pos_saved != pos || tot > b->ephem_pin_cap) return 0;
+    b->live_snap = -1;
+    kv_ensure(b, pos);
+    if (b->ds.ready) ds_kv_ensure(b, pos);
+  } else if (tot > b->ephem_pin_cap) {
+    if (b->ephem_pin) { H.HostFree(b->ephem_pin); b->ephem_pin = NULL; b->ephem_pin_cap = 0u; }
+    if (H.HostMalloc(&b->ephem_pin, tot, 0) != 0 || !b->ephem_pin) {
+      b->ephem_pin = NULL;
+      b->ephem_pin_cap = 0u;
+      b->ephem_pos_saved = 0u;
+      return 0;
+    }
+    b->ephem_pin_cap = tot;
+  }
+  snap_stream_ensure(b);
+  HIP(H.StreamSynchronize(cur_stream));
+  /* Tier A: pack/scatter all global KV slices into contiguous b->cl_scr in 1 launch + 1 pinned DMA. */
+  if ((b->k[K_INK_KV_COPY_LIST_R16] || b->has_cl) && (size_t)n_ops * 24u <= 65536u) {
+    if (!b->cl_dev) tree_alloc(b);
+    if (b->cl_dev && b->cl_scr && tot <= b->cl_scr_bytes) {
+      const size_t desc_b = (size_t)n_ops * 24u;
+      unsigned long long *l = b->cl_pin
+                                  ? (unsigned long long *)((char *)b->cl_pin + (size_t)(b->cl_ring++ % 16u) * 65536u)
+                                  : (unsigned long long *)malloc(desc_b);
+      if (l) {
+        size_t off = 0u;
+        u32 idx = 0u;
+        for (uint32_t i = 0u; i < b->m->n_kvl; i++) {
+          if (b->g->kv_len[i] < b->g->n_ctx) continue;
+          for (int v = 0; v < 2; v++) {
+            char *kvp = kv_ptr(b, v, i, 0);
+            char *scp = (char *)b->cl_scr + off;
+            l[3u * idx] = (unsigned long long)(uintptr_t)(save ? kvp : scp);
+            l[3u * idx + 1u] = (unsigned long long)(uintptr_t)(save ? scp : kvp);
+            l[3u * idx + 2u] = (unsigned long long)len;
+            off += len;
+            idx++;
+          }
+        }
+        if (b->ds.ready && b->m->ds) {
+          for (u32 il = 0u; il < b->m->ds->n_layer; il++) {
+            if (ds_is_ring(b, il)) continue;
+            for (int v = 0; v < 2; v++) {
+              char *kvp = (char *)(v ? b->ds.vc[il] : b->ds.kc[il]);
+              char *scp = (char *)b->cl_scr + off;
+              l[3u * idx] = (unsigned long long)(uintptr_t)(save ? kvp : scp);
+              l[3u * idx + 1u] = (unsigned long long)(uintptr_t)(save ? scp : kvp);
+              l[3u * idx + 2u] = (unsigned long long)dlen;
+              off += dlen;
+              idx++;
+            }
+          }
+        }
+        if (b->cl_pin) {
+          HIP(H.MemcpyAsync(b->cl_dev, l, desc_b, hipMemcpyHostToDevice, b->snap_cs));
+        } else {
+          HIP(H.Memcpy(b->cl_dev, l, desc_b, hipMemcpyHostToDevice));
+          free(l);
+        }
+        if (!save) HIP(H.MemcpyAsync(b->cl_scr, b->ephem_pin, tot, hipMemcpyHostToDevice, b->snap_cs));
+        if (b->k[K_INK_KV_COPY_LIST_R16]) {
+          u32 n_u = n_ops;
+          u32 wpo = (max_sl >= 65536u) ? 4u : 1u;
+          void *ca[] = {&b->cl_dev, &n_u, &wpo};
+          hip_launch_raw(b, K_INK_KV_COPY_LIST_R16, n_u, wpo, 1u, 256u, 1u, 1u, 0u, b->snap_cs, ca);
+        } else {
+          u32 n_u = n_ops;
+          void *ca[] = {&b->cl_dev, &n_u};
+          hip_launch_raw(b, K_COPY_LIST, n_u, 1u, 1u, 256u, 1u, 1u, 0u, b->snap_cs, ca);
+        }
+        if (save) HIP(H.MemcpyAsync(b->ephem_pin, b->cl_scr, tot, hipMemcpyDeviceToHost, b->snap_cs));
+        HIP(H.StreamSynchronize(b->snap_cs));
+        if (save) b->ephem_pos_saved = pos;
+        return 1;
+      }
+    }
+  }
+  /* Tier B: async pinned multi-slice DMA on b->snap_cs + single StreamSynchronize. */
+  const int kind = save ? hipMemcpyDeviceToHost : hipMemcpyHostToDevice;
+  char *p = (char *)b->ephem_pin;
+  for (uint32_t i = 0u; i < b->m->n_kvl; i++) {
+    if (b->g->kv_len[i] < b->g->n_ctx) continue;
+    for (int v = 0; v < 2; v++, p += len) {
+      char *rows = kv_ptr(b, v, i, 0);
+      HIP(H.MemcpyAsync(save ? (void *)p : rows, save ? (void *)rows : (void *)p, len, kind, b->snap_cs));
+    }
+  }
+  if (b->ds.ready && b->m->ds) {
+    for (u32 il = 0u; il < b->m->ds->n_layer; il++) {
+      if (ds_is_ring(b, il)) continue;
+      for (int v = 0; v < 2; v++, p += dlen) {
+        char *rows = (char *)(v ? b->ds.vc[il] : b->ds.kc[il]);
+        HIP(H.MemcpyAsync(save ? (void *)p : rows, save ? (void *)rows : (void *)p, dlen, kind, b->snap_cs));
+      }
+    }
+  }
+  HIP(H.StreamSynchronize(b->snap_cs));
+  if (save) b->ephem_pos_saved = pos;
+  return 1;
+}
+
+static void gpu_synth_kv_seed(backend *bk, uint32_t synth_pos) {
+  gpu_backend *b = (gpu_backend *)bk;
+  const graph *g = b->g;
+  const model *m = b->m;
+  if (!synth_pos) return;
+  if (m->arch != ARCH_INKLING2) ie_die("IE_KV_SYNTH_POS: supported for inkling2 only");
+  if (synth_pos >= g->n_ctx) ie_die("IE_KV_SYNTH_POS=%u must be < --ctx %u", synth_pos, g->n_ctx);
+  const double t0 = ds_now_ms();
+  gpu_kv_io_sync(bk);
+  ds_ctx_drain(b);
+  snap_async_join(b);
+  u32 need = synth_pos + 1024u;
+  if (need > g->n_ctx) need = g->n_ctx;
+  kv_ensure(b, need);
+  if (b->ds.ready && m->ds) {
+    u32 ds_need = synth_pos + 1024u;
+    if (ds_need > g->n_ctx + 16u) ds_need = g->n_ctx + 16u;
+    ds_kv_ensure(b, ds_need);
+  }
+  /* Fill byte 0x2C (fallback) or ie_inkling_kv_synth_fill_r15 (bit 157):
+   * valid finite non-zero values for both FP16 and 72-B Q4_0, 0 NaNs/Infs. */
+  const int fill_byte = 0x2C;
+  const int use_synth_k = b->k[K_INK_KV_SYNTH_FILL_R15] != NULL;
+  size_t glob_b = 0, swa_b = 0, ds_b = 0;
+  if (b->kv_grow) {
+    for (u32 i = 0; i < m->n_kvl; i++) {
+      const int is_glob = (g->kv_len[i] >= g->n_ctx);
+      const size_t rows = is_glob ? (size_t)(synth_pos < b->kv_cap ? synth_pos : b->kv_cap) : (size_t)g->kv_len[i];
+      const size_t len = rows * kv_layer_rowb(b, i);
+      if (len) {
+        if (use_synth_k) {
+          uint64_t nb = (uint64_t)len;
+          u32 mode = (is_glob && b->ink_glob_kv_mode == 2) ? 0u : 1u;
+          u32 wg = (u32)((nb + 8191ull) / 8192ull);
+          u32 sd0 = i * 2u + 1u, sd1 = i * 2u + 2u;
+          void *dk = b->kcl[i], *dv = b->vcl[i];
+          void *ak[] = {&dk, &nb, &mode, &sd0};
+          void *av[] = {&dv, &nb, &mode, &sd1};
+          launch(b, K_INK_KV_SYNTH_FILL_R15, wg, ak);
+          launch(b, K_INK_KV_SYNTH_FILL_R15, wg, av);
+        } else {
+          HIP(H.MemsetAsync(b->kcl[i], fill_byte, len, cur_stream));
+          HIP(H.MemsetAsync(b->vcl[i], fill_byte, len, cur_stream));
+        }
+        if (is_glob) glob_b += 2u * len;
+        else swa_b += 2u * len;
+      }
+    }
+  } else {
+    const size_t len = (size_t)g->kv_total * b->kvrowb;
+    if (use_synth_k) {
+      uint64_t nb = (uint64_t)len;
+      u32 mode = 1u, wg = (u32)((nb + 8191ull) / 8192ull);
+      u32 sd0 = 101u, sd1 = 102u;
+      void *dk = b->kc, *dv = b->vc;
+      void *ak[] = {&dk, &nb, &mode, &sd0};
+      void *av[] = {&dv, &nb, &mode, &sd1};
+      launch(b, K_INK_KV_SYNTH_FILL_R15, wg, ak);
+      launch(b, K_INK_KV_SYNTH_FILL_R15, wg, av);
+    } else {
+      HIP(H.MemsetAsync(b->kc, fill_byte, len, cur_stream));
+      HIP(H.MemsetAsync(b->vc, fill_byte, len, cur_stream));
+    }
+    glob_b += 2u * len;
+  }
+  if (b->sc_ring && b->sc_ring_bytes) HIP(H.MemsetAsync(b->sc_ring, 0, b->sc_ring_bytes, cur_stream));
+  if (b->ds.ready && m->ds) {
+    for (u32 il = 0; il < m->ds->n_layer; il++) {
+      const size_t rows = b->ds.kv_vm[il]
+                              ? (size_t)(synth_pos < b->ds.kv_rows ? synth_pos : b->ds.kv_rows)
+                              : (size_t)b->ds.kv_cap[il];
+      const size_t len = rows * b->ds.kv_rowb;
+      if (len) {
+        if (use_synth_k) {
+          uint64_t nb = (uint64_t)len;
+          u32 mode = 1u, wg = (u32)((nb + 8191ull) / 8192ull);
+          u32 sd0 = 200u + il * 2u, sd1 = 201u + il * 2u;
+          void *dk = b->ds.kc[il], *dv = b->ds.vc[il];
+          void *ak[] = {&dk, &nb, &mode, &sd0};
+          void *av[] = {&dv, &nb, &mode, &sd1};
+          launch(b, K_INK_KV_SYNTH_FILL_R15, wg, ak);
+          launch(b, K_INK_KV_SYNTH_FILL_R15, wg, av);
+        } else {
+          HIP(H.MemsetAsync(b->ds.kc[il], fill_byte, len, cur_stream));
+          HIP(H.MemsetAsync(b->ds.vc[il], fill_byte, len, cur_stream));
+        }
+        ds_b += 2u * len;
+      }
+    }
+    if (b->ds.frnn && m->ds->dim)
+      HIP(H.MemsetAsync(b->ds.frnn, 0, (size_t)m->ds->dim * 4u, cur_stream));
+  }
+  HIP(H.StreamSynchronize(cur_stream));
+  vram_trace("synthkv", glob_b);
+  uint64_t dxgi_b = 0, dxgi_u = 0;
+  if (dxgi_local_mem(&dxgi_b, &dxgi_u) && dxgi_b > 0ULL) {
+    fprintf(stderr, "gpu: IE_KV_SYNTH_POS=%u seeded (glob=%.1f MiB, swa=%.1f MiB, ds=%.1f MiB, DXGI=%.2f/%.2f GiB, headroom=%.0f MiB) in %.1f ms\n",
+            synth_pos, glob_b / 1048576.0, swa_b / 1048576.0, ds_b / 1048576.0,
+            dxgi_u / 1073741824.0, dxgi_b / 1073741824.0,
+            (dxgi_b > dxgi_u ? (double)(dxgi_b - dxgi_u) : 0.0) / 1048576.0,
+            ds_now_ms() - t0);
+  } else {
+    fprintf(stderr, "gpu: IE_KV_SYNTH_POS=%u seeded (glob=%.1f MiB, swa=%.1f MiB, ds=%.1f MiB) in %.1f ms\n",
+            synth_pos, glob_b / 1048576.0, swa_b / 1048576.0, ds_b / 1048576.0,
+            ds_now_ms() - t0);
+  }
 }
 
 /* Debug: IE_GDN_HASH=1 prints a hash of the linear attention state (the current slot of every layer) after each
@@ -11198,8 +13754,11 @@ static int gpu_tree_ok(backend *bk, uint32_t pos, uint32_t T) {
   static int on = -1; /* IE_TREE=0: no tree verify */
   if (on < 0) on = !(getenv("IE_TREE") && getenv("IE_TREE")[0] == '0');
   if (b->m->arch == ARCH_INKLING2) {
+    const int glob_ok = !b->ink_glob_kv_mode ||
+                        (b->ink_glob_kv_mode == 2 && b->k[K_INK_REL_ATTN_VER_GLOB_Q4_TREE_R16] != NULL &&
+                         b->k[K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16] != NULL);
     const int ink2 = b->k[K_INK_REL_ATTN_VER_TREE_R8] && b->kvb == 2u && !b->kvq8 && !b->kvq4 && !b->kvrot &&
-                     !b->ink_glob_kv_mode &&
+                     glob_ok &&
                      b->sc_hist && b->k[K_INK_SCONV_HIST_R4] && b->k[K_INK_SCONV_COMMIT_R4];
     return on && b->has_cl && ink2 && b->at_part && b->at_count && !mk.on &&
            T >= 2u && T <= 8u && T <= b->vmax && pos + T <= b->g->n_ctx;
@@ -11231,7 +13790,8 @@ static void tree_alloc(gpu_backend *b) {
   HIP(H.Malloc((void **)&b->cl_scr, b->cl_scr_bytes));
   if (H.HostMalloc((void **)&b->tr_pin, (size_t)TR_PIN_RING * 512u, 0) != 0) b->tr_pin = NULL;
   if (H.HostMalloc((void **)&b->cl_pin, (size_t)CL_PIN_RING * 65536u, 0) != 0) b->cl_pin = NULL;
-  b->cl_host = malloc((size_t)16u * (2u * m->n_layer + 4u) * 3u * 8u);
+  const u32 n_cl_l = m->n_kvl > m->n_layer ? m->n_kvl : m->n_layer;
+  b->cl_host = malloc((size_t)16u * (2u * n_cl_l + 4u) * 3u * 8u);
   if (!b->cl_host) ie_die("out of memory");
 }
 static void tr_tab_upload(gpu_backend *b) {
@@ -11279,7 +13839,8 @@ static void tree_begin(gpu_backend *b, u32 pos, u32 T) {
   tree_table(b->tr_tab, b->base.tree_par, T);
   if (m->arch == ARCH_INKLING2) {
     uint64_t tmask = 0ULL;
-    u32 tdep = 0u, split = T;
+    u32 tdep = 0u, tpar = 0u, split = T;
+    int nonlin = 0;
     for (u32 t = 0; t < T; t++) {
       u32 row = 0u, a = t;
       for (;;) {
@@ -11289,11 +13850,15 @@ static void tree_begin(gpu_backend *b, u32 pos, u32 T) {
       }
       tmask |= ((uint64_t)row << (t * 8u));
       tdep |= ((u32)(b->tr_tab[TR_DEP + t] & 0xFu) << (t * 4u));
+      if (t < 8u) tpar |= ((u32)(b->base.tree_par[t] & 0xFu) << (t * 4u));
+      if (t >= 1u && b->base.tree_par[t] != t - 1u) nonlin = 1;
       if (t >= 2u && b->base.tree_par[t] == 0u && split == T) split = t;
     }
     b->ink_tree_mask = tmask;
     b->ink_tree_dep_pack = tdep;
+    b->ink_tree_par_pack = tpar;
     b->ink_tree_split = split;
+    b->ink_tree_nonlin = nonlin;
     b->tr_pos = pos;
     return;
   }
@@ -11354,16 +13919,24 @@ static void gpu_accept_tree(backend *bk, const uint8_t *path, uint32_t k) {
   for (u32 i = 1; i <= k; i++) {
     const u32 f = path[i];
     if (f == i) continue;
-    for (u32 l = 0; l < m->n_layer; l++) {
-      const layer *L = &m->l[l];
-      if (L->rec) {
-        float *r = b->ring + (size_t)L->sti * GDN_RING * m->conv_dim;
-        CL(r + (size_t)((pos + f) & (GDN_RING - 1u)) * m->conv_dim, r + (size_t)((pos + i) & (GDN_RING - 1u)) * m->conv_dim,
-           (unsigned long long)m->conv_dim * 4u);
-      } else {
-        const u32 kl = g->kv_len[L->kvi];
-        const size_t lrb = kv_layer_rowb(b, L->kvi);
-        for (int v = 0; v < 2; v++) CL(kv_ptr(b, v, L->kvi, (pos + f) % kl), kv_ptr(b, v, L->kvi, (pos + i) % kl), lrb);
+    if (m->arch == ARCH_INKLING2) {
+      for (u32 kvi = 0u; kvi < m->n_kvl; kvi++) {
+        const u32 kl = g->kv_len[kvi];
+        const size_t lrb = kv_layer_rowb(b, kvi);
+        for (int v = 0; v < 2; v++) CL(kv_ptr(b, v, kvi, (pos + f) % kl), kv_ptr(b, v, kvi, (pos + i) % kl), (unsigned long long)lrb);
+      }
+    } else {
+      for (u32 l = 0; l < m->n_layer; l++) {
+        const layer *L = &m->l[l];
+        if (L->rec) {
+          float *r = b->ring + (size_t)L->sti * GDN_RING * m->conv_dim;
+          CL(r + (size_t)((pos + f) & (GDN_RING - 1u)) * m->conv_dim, r + (size_t)((pos + i) & (GDN_RING - 1u)) * m->conv_dim,
+             (unsigned long long)m->conv_dim * 4u);
+        } else {
+          const u32 kl = g->kv_len[L->kvi];
+          const size_t lrb = kv_layer_rowb(b, L->kvi);
+          for (int v = 0; v < 2; v++) CL(kv_ptr(b, v, L->kvi, (pos + f) % kl), kv_ptr(b, v, L->kvi, (pos + i) % kl), lrb);
+        }
       }
     }
     const int rb[3] = {g->h_out, g->df_feat, g->ds_feat};
@@ -11551,8 +14124,8 @@ static void topk_prefetch(gpu_backend *b, uint32_t T) {
   if (!topk_fetch(b, (int)id, 0, T, nv, K, tk_pre.res)) ie_die("top K of the verify run: sizes do not fit");
   tk_pre.id = id, tk_pre.n = T, tk_pre.nv = nv, tk_pre.K = K, tk_pre.valid = 1;
 }
-/* R7 bit 84: persistent 1-launch fused Q4_K output head + softcap + Argmax/Top-K (0 g->logits traffic). */
-static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, int fold, uint32_t *out) {
+/* R7 bit 84 + R69 (H31): persistent 1-launch fused Q4_K output head + softcap + Argmax/Top-K (+ optional Saguaro ds_ctx). */
+static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, uint32_t pos, int fold, int do_ss_ctx, uint32_t *out) {
   const graph *g = b->g;
   const u32 ih = g->i_head;
   const op *o0 = &g->ops[ih], *o1 = &g->ops[ih + 1u];
@@ -11577,11 +14150,22 @@ static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, int fold, uint32_
   void *ov_p = fold ? (void *)ov_d : NULL, *oi_p = fold ? (void *)oi_d : NULL;
   void *fa[] = {&qw, &qs, &xq, &bias, &rows, &unpad, &nb, &TT, &xs, &cap, &K, &ng,
                 &part_v, &part_i, &b->am_count, &out_am, &am_stride, &ov_p, &oi_p};
-  launch(b, K_INK_Q4K_HEAD_CAP_TOPK_R7, ng, fa);
+  launch(b, (b->ink_q4k_wave && qw == b->ink_q4k_w0) ? K_INK_Q4K_HEAD_WAVE_CAP_TOPK_R13 : K_INK_Q4K_HEAD_CAP_TOPK_R7, ng, fa);
   if (fold) {
     const size_t bytes = (size_t)TK_ROWS * TK_MAX * 2u * 4u;
     HIP(H.MemcpyAsync(b->tk_pin, ov_d, bytes, hipMemcpyDeviceToHost, cur_stream));
-    HIP(H.StreamSynchronize(cur_stream));
+    if (do_ss_ctx) {
+      HIP(H.EventRecord(b->ds.ev_head_ready, cur_stream));
+      for (u32 il = 0; il < b->m->ds->n_layer; il++)
+        if (b->ds.kv_vm[il]) { ds_kv_ensure(b, pos + T); break; }
+      ds_ctx_kv_launch(b, pos, T, 0, NULL, NULL, NULL, NULL);
+      b->ds.ctx_pending = 2;
+      b->ds.ctx_pos = pos;
+      b->ds.ctx_T = T;
+      HIP(H.EventSynchronize(b->ds.ev_head_ready));
+    } else {
+      HIP(H.StreamSynchronize(cur_stream));
+    }
     memcpy(tk_pre.res, b->tk_pin, bytes);
     const u32 nv = b->m->vocab_unpadded ? b->m->vocab_unpadded : b->m->vocab;
     tk_pre.id = g->logits, tk_pre.n = T, tk_pre.nv = nv, tk_pre.K = K, tk_pre.valid = 1;
@@ -11590,7 +14174,18 @@ static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, int fold, uint32_
     const size_t am_bytes = (size_t)T * amb->stride;
     if (b->am_pin && am_bytes <= 256u) {
       HIP(H.MemcpyAsync(b->am_pin, out_am, am_bytes, hipMemcpyDeviceToHost, cur_stream));
-      HIP(H.StreamSynchronize(cur_stream));
+      if (do_ss_ctx) {
+        HIP(H.EventRecord(b->ds.ev_head_ready, cur_stream));
+        for (u32 il = 0; il < b->m->ds->n_layer; il++)
+          if (b->ds.kv_vm[il]) { ds_kv_ensure(b, pos + T); break; }
+        ds_ctx_kv_launch(b, pos, T, 0, NULL, NULL, NULL, NULL);
+        b->ds.ctx_pending = 2;
+        b->ds.ctx_pos = pos;
+        b->ds.ctx_T = T;
+        HIP(H.EventSynchronize(b->ds.ev_head_ready));
+      } else {
+        HIP(H.StreamSynchronize(cur_stream));
+      }
       for (u32 t = 0; t < T; t++) out[t] = b->am_pin[t * amb->stride / 4u];
     } else {
       u32 *tmp = malloc(am_bytes);
@@ -11853,6 +14448,7 @@ static void gpu_close(backend *bk) {
         fprintf(stderr, "  %-18s %5.1f per launch %9.2f us each %8.3f ms per launch\n", kname[k],
                 (double)mk.pcnt[k] / mk.psteps, mk.pus[k] / mk.pcnt[k], mk.pus[k] / 1e3 / mk.psteps);
   }
+  gpu_kv_io_sync(bk);
   snap_async_shutdown(b);
   HIP(H.DeviceSynchronize());
   if (vis_borrow_base && vis_borrow_base == b->arena) {
@@ -11874,7 +14470,17 @@ static void gpu_close(backend *bk) {
       if (L->slab_dev) H.Free(L->slab_dev);
       if (L->pf_offs_pin) H.HostFree(L->pf_offs_pin);
       if (L->pf_offs_ev) H.EventDestroy(L->pf_offs_ev);
+      if (L->w0_ready) H.EventDestroy(L->w0_ready);
+      if (L->pf_done_ev) H.EventDestroy(L->pf_done_ev);
     }
+    if (b->moe_c_ready[0]) H.EventDestroy(b->moe_c_ready[0]);
+    if (b->moe_c_ready[1]) H.EventDestroy(b->moe_c_ready[1]);
+    if (b->moe_c_done[0]) H.EventDestroy(b->moe_c_done[0]);
+    if (b->moe_c_done[1]) H.EventDestroy(b->moe_c_done[1]);
+    if (b->moe_c_egu_ev) H.EventDestroy(b->moe_c_egu_ev);
+    if (b->moe_c_ed_ev) H.EventDestroy(b->moe_c_ed_ev);
+    if (b->moe_c_cs && H.StreamDestroy) H.StreamDestroy(b->moe_c_cs), b->moe_c_cs = NULL;
+    if (b->moe_c_exec_s && H.StreamDestroy) H.StreamDestroy(b->moe_c_exec_s), b->moe_c_exec_s = NULL;
     free(b->moe_c), b->moe_c = NULL;
     if (b->moe_rt_pin) H.HostFree(b->moe_rt_pin), b->moe_rt_pin = NULL;
     if (b->moe_rt_dev) H.Free(b->moe_rt_dev), b->moe_rt_dev = NULL;
@@ -11910,7 +14516,20 @@ static void gpu_close(backend *bk) {
   }
   slab_free(&b->us);
   slab_free(&sdev);
+  slab_free(&sdev_hot);
+  g_weights_loaded = 0;
   n_sdev = 0, sdev_bytes = 0;
+  if (b->ink_q8p_allocs) {
+    for (u32 k = 0u; k < b->ink_q8p_nalloc; k++)
+      if (b->ink_q8p_allocs[k]) H.Free(b->ink_q8p_allocs[k]);
+    free(b->ink_q8p_allocs), b->ink_q8p_allocs = NULL;
+    b->ink_q8p_nalloc = 0u;
+  }
+  free(b->ink_q8p_op), b->ink_q8p_op = NULL;
+  for (u32 k = 0u; k < 64u; k++)
+    if (b->kv_h2d_ev[k]) H.EventDestroy(b->kv_h2d_ev[k]), b->kv_h2d_ev[k] = NULL;
+  if (b->dc_stage_dev) H.Free(b->dc_stage_dev), b->dc_stage_dev = NULL, b->dc_stage_bytes = 0u;
+  if (b->ephem_pin) H.HostFree(b->ephem_pin), b->ephem_pin = NULL, b->ephem_pin_cap = 0u;
   for (uint32_t i = 0; i < n_shost; i++) H.HostFree(shost[i]);
   n_shost = 0, shost_bytes = 0;
   H.Free(b->arena), H.Free(b->kc), H.Free(b->vc), H.Free(b->ring), H.Free(b->sc_ring), H.Free(b->sc_hist), H.Free(b->st), H.Free(b->rec_buf[0]), H.Free(b->rec_buf[1]);
@@ -11941,9 +14560,10 @@ static void gpu_close(backend *bk) {
       if (b->ds.id_dyn_pinned) H.HostFree(b->ds.id_dyn_pin);
       else free(b->ds.id_dyn_pin);
     }
-    free(b->ds.id_core_host), free(b->ds.core_bm), free(b->ds.dyn_bm);
+    free(b->ds.id_core_host), free(b->ds.id_core_t1_host), free(b->ds.core_bm), free(b->ds.core_t0_bm), free(b->ds.core_t1_bm), free(b->ds.dyn_bm);
     if (b->ds.ev_feat_ready) H.EventDestroy(b->ds.ev_feat_ready);
     if (b->ds.ev_ctx_done) H.EventDestroy(b->ds.ev_ctx_done);
+    if (b->ds.ev_head_ready) H.EventDestroy(b->ds.ev_head_ready);
     if (b->ds.ctx_stream && H.StreamDestroy) H.StreamDestroy(b->ds.ctx_stream);
     if (b->ds.p_w1) H.Free(b->ds.p_w0), H.Free(b->ds.p_w1), H.Free(b->ds.base), H.Free(b->ds.hq);
     if (b->ds.zero) H.Free(b->ds.zero);

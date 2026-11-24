@@ -610,10 +610,13 @@ void graph_build(graph *gr, const model *m, uint32_t n_ctx, uint32_t T, int mtp)
  *   bit 97: ie_inkling_rel_clip_sink_gate_t8_r9 (R25 Wave 5 Single-Pass CT=8 D2, T=1..8)
  *   bit 98: ie_inkling_wo_sconv_post_t1_r9 (R25 Wave 5 Lean 58-VGPR E3, T=1)
  *   bit 102: ie_inkling_gemm_rq_exp_iq3xxs_situ_r9 (R36 Wave 7 Turbo 113-VGPR IQ3_XXS+SITU Prefill WMMA; bit 99 IQ4_NL, bits 100-101 Q8 R9, bit 90 subspan glue opt-in)
- *   bits 81, 103, 104: R42 (H34+H01) 0-VRAM FLUTE SoA IQ3_XXS load-time repack + R7 T=1/verify + R10 110-VGPR prefill WMMA */
-#define IE_INK_DEFAULT_MASK2 ((1ULL << (64u - 64u)) | (1ULL << (65u - 64u)) | (1ULL << (67u - 64u)) | (1ULL << (69u - 64u)) | (1ULL << (70u - 64u)) | (1ULL << (72u - 64u)) | (1ULL << (73u - 64u)) | (1ULL << (76u - 64u)) | (1ULL << (78u - 64u)) | (1ULL << (79u - 64u)) | (1ULL << (80u - 64u)) | (1ULL << (81u - 64u)) | (1ULL << (88u - 64u)) | (1ULL << (92u - 64u)) | (1ULL << (93u - 64u)) | (1ULL << (94u - 64u)) | (1ULL << (95u - 64u)) | (1ULL << (96u - 64u)) | (1ULL << (97u - 64u)) | (1ULL << (98u - 64u)) | (1ULL << (102u - 64u)) | (1ULL << (103u - 64u)) | (1ULL << (104u - 64u)))
-/* R38+ defaults in ink_mask3 (bits 128..191): reserved for Waves 12-15. */
-#define IE_INK_DEFAULT_MASK3 0ULL
+ *   bits 81, 103, 104: R42 (H34+H01) 0-VRAM FLUTE SoA IQ3_XXS load-time repack + R7 T=1/verify + R10 110-VGPR prefill WMMA
+ *   bit 121: R55 (H20) Single-Launch QKV+sconv+KV (-48 L FP16 / -40 L 256K Q4) */
+#define IE_INK_DEFAULT_MASK2 ((1ULL << (64u - 64u)) | (1ULL << (65u - 64u)) | (1ULL << (67u - 64u)) | (1ULL << (69u - 64u)) | (1ULL << (70u - 64u)) | (1ULL << (72u - 64u)) | (1ULL << (73u - 64u)) | (1ULL << (76u - 64u)) | (1ULL << (78u - 64u)) | (1ULL << (79u - 64u)) | (1ULL << (80u - 64u)) | (1ULL << (81u - 64u)) | (1ULL << (88u - 64u)) | (1ULL << (92u - 64u)) | (1ULL << (93u - 64u)) | (1ULL << (94u - 64u)) | (1ULL << (95u - 64u)) | (1ULL << (96u - 64u)) | (1ULL << (97u - 64u)) | (1ULL << (98u - 64u)) | (1ULL << (102u - 64u)) | (1ULL << (103u - 64u)) | (1ULL << (104u - 64u)) | (1ULL << (121u - 64u)))
+/* R66+ defaults in ink_mask3 (bits 128..191):
+ *   bit 128: H24 fused Markov RNN + batched ADD_Q8 (R66 Wave 13, 100% exact SHA)
+ *   bit 129: H25b WMMA L1 ring attn + H25c fused proj+res+norm+Q8 (R66 Wave 13, H25a opt-in off, 100% exact SHA) */
+#define IE_INK_DEFAULT_MASK3 ((1ULL << (128u - 128u)) | (1ULL << (129u - 128u)))
 /* Parse 192-bit Inkling-2 kernel mask from IE_INKLING_KERNEL_MASK (up to 192-bit hex or low 64 bits),
  * IE_INKLING_KERNEL_MASK2 (bits 64..127), and IE_INKLING_KERNEL_MASK3 (bits 128..191),
  * falling back to IE_INK_DEFAULT_MASK/MASK2/MASK3. Any output pointer may be NULL. */

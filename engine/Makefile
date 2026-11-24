@@ -47,7 +47,7 @@ $(B)/chat_render: tools/chat_render.c src/chat.c src/json.c src/chat.h src/json.
 #   make tokcheck LLAMA_CPP=../llama.cpp
 LLAMA_CPP ?= ../llama.cpp
 $(B)/tok_check: tools/tok_check.c src/tok.c src/gguf.c src/common.c src/tok.h src/tok_unicode.h | $(B)
-	$(CC) $(CFLAGS) -o $@ tools/tok_check.c src/tok.c src/gguf.c src/common.c $(LDLIBS)
+	$(CC) $(CFLAGS) -o $@ tools/tok_check.c src/tok.c src/gguf.c src/common.c $(LDLIBS) -lpthread
 # flint (tests/tok-flint.*: llama.cpp's test texts and more, the ids from
 # Hugging Face tokenizers with the model's tokenizer.json):
 #   make tokcheck-flint FLINT=path/to/flint.gguf (the model file, or a vocabulary-only GGUF)

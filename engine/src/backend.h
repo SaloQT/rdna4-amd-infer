@@ -91,6 +91,13 @@ struct backend {
   const float *const *ext_rows;
   /* Override precomputed RoPE cos/sin rows [pos0 .. pos0 + n) (e.g. 3D IMRoPE for images). */
   void (*set_rope)(backend *b, uint32_t pos0, uint32_t n, const float *cos_tab, const float *sin_tab);
+  /* Inkling-2 GPU fast long-context harness (IE_KV_SYNTH_POS=N): map VMM KV up to pos+512 and fill valid finite KV. */
+  void (*synth_kv_seed)(backend *b, uint32_t pos);
+  /* Wave 15 (R78-R80): async/pipelined disk-cache KV I/O, GPU unshuffle, and fast ephemeral stash. */
+  void (*kv_io_async)(backend *b, int out, uint32_t p0, uint32_t n, void *buf, int layer_pipe);
+  void (*kv_io_sync)(backend *b);
+  int (*kv_io_unshuf)(backend *b, uint32_t p0, uint32_t n, const void *buf, uint32_t fmt, int async_pipe);
+  int (*kv_ephem_copy)(backend *b, int save, uint32_t pos);
 };
 
 typedef struct ie_ds_samp {

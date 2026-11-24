@@ -1,8 +1,8 @@
 # <img src="docs/icons/chip.svg" width="24" height="24" align="absmiddle" alt=""/> rdna4-amd-infer: RX 9070 XT LLM Engine
 
-**Fast local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4 / `gfx1201`) built on top of Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c), adding Windows 11 WDDM support (no system ROCm install) and 264 custom AMDGPU kernels (`171` Inkling-2-Mini with `0/0` VGPR spills, `81` Saluki-27B, `12` ViT vision including `6` RDNA4 WMMA).**
+**Fast local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4 / `gfx1201`) built on top of Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c), adding Windows 11 WDDM support (no system ROCm install) and 310 custom AMDGPU kernels (`217` Inkling-2-Mini with `0/0` VGPR spills and `priv=0`, `81` Saluki-27B, `12` ViT vision including `6` RDNA4 WMMA).**
 
-Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c) · Windows WDDM port + 264 custom `gfx1201` kernels + DSpark/shortlist/256K long-context/0-VRAM WMMA vision/dashboard added here · Linux ROCm ready · GGUF v3 · OpenAI-compatible `ie-serve` API.
+Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c) · Windows WDDM port + 310 custom `gfx1201` kernels + DSpark/shortlist/256K long-context/0-VRAM WMMA vision/IoRing+4T-BPE added here · Linux ROCm ready · GGUF v3 · OpenAI-compatible `ie-serve` API.
 
 > **Upstream Credit & License Note:** The base C11 runtime, formally verified core (`engine/core/ie_core.h`), base `gfx1201` kernels, and `ie-serve` architecture come from Han Wang's [`hanw/amd.c`](https://github.com/hanw/amd.c) (and `engine/src/iq3s_grid.h` carries ggml's MIT header). Because upstream `hanw/amd.c` does not currently include a `LICENSE` file, this repository intentionally does **not** apply a separate open-source license over Han's upstream code. All credit for the base engine belongs to Han Wang; if upstream adds a license (or requests changes/removal of upstream files), this repo will follow immediately.
 
@@ -13,7 +13,7 @@ Base C11 engine & verified core by [`hanw/amd.c`](https://github.com/hanw/amd.c)
 </p>
 
 **Exact quants tested above (single 16GB RX 9070 XT, Windows WDDM, streaming):**
-- **Inkling-2-Mini (26B MoE):** `IQ3_XXS` GGUF (`output.weight` `Q4_K`), `Q4_K` DSpark 5x0.6 + 0-VRAM `60K+4K` shortlist, `f16` KV cache (default 96K ctx; up to **256K filled ctx + DSpark** with global `q4rot` KV + outer-layer SLRU MoE cache) + **0-VRAM RDNA4 WMMA ViT vision** (`28.4 - 83.8 ms`)
+- **Inkling-2-Mini (26B MoE):** `IQ3_XXS` GGUF (`output.weight` `Q4_K`), `Q4_K` DSpark + 0-VRAM 2-tier (`28K -> 60K + 4K`) shortlist, `f16` KV cache (default 96K ctx; up to **256K filled ctx + DSpark** with global `q4rot` KV + outer-layer SLRU MoE cache) + **0-VRAM RDNA4 WMMA ViT vision** (`28.4 - 83.8 ms`)
 - **Saluki-27B (`Qwen3.8-27B`):** `IQ2-mix` GGUF, `IQ3_S` MTP7 (65K draft vocab), `q8` KV cache (128K ctx) + 0-VRAM ViT vision
 
 <img src="docs/icons/chart.svg" width="15" height="15" align="absmiddle" alt=""/> **[Open Interactive 52-Round Telemetry Dashboard](https://saloqt.github.io/rdna4-amd-infer/)**: hover tooltips, frontier lines, filterable ledger, and research links for every round (`R00-R52`).
@@ -72,29 +72,38 @@ Unedited 1x screen recording of `Inkling-2-Mini` (`26B IQ3_XXS`, `Q4_K` DSpark, 
 | **Live `ie-serve` Chat** | 118.2 tok/s | 146.7 tok/s | **169.5 tok/s** sampled *(greedy **191.2**)* | **+43.4%** (`+14.7%` greedy) |
 | **Prefix-Hit TTFT** | - | 2,113 ms (`14` tok) | **226 ms** (`8,192` tok cached) | **9.35x faster** |
 | **CPU Sampling + DRY** | ~0.44 ms/step | 0.399 ms/step | **0.005 ms/step** (`0.006` R51) | **80x faster** |
-| **Launches / Step** | 2,222 | 1,574 | **753** | **-66.1%** (`-52.2%` R00) |
-| **SWA Disk Cache** | 357.5 MB (`2.03 s`) | 181.3 MB (`1.11 s`) | **181.3 MB** *(6/6 NaN exact)* | **-49.3% size · -45.4% load** |
+| **Launches / Step** | 2,222 | 1,574 | **585** (`753` R52, `0.453 ms` issue) | **-73.7%** (`-62.8%` R00) |
+| **SWA Disk Cache & Resume (`20K` Q4rot)** | 357.5 MB (`2.03 s`) | 181.3 MB (`1.11 s`) | **`-40.4%` cold / `-61.1%` prewarm** (`275 -> 164 / 107 ms`, `IoRing` + H2D pipe) | **1.68x - 2.57x faster** |
+| **256K Prompt BPE (`261.6K` tok)** | - | `16.93 ms` (1T) | **`3.87 ms`** (4T stack BPE + seg cache, bit-exact) | **4.37x faster** |
 
 </details>
 
-### 1b. Filled 128K & 256K Context + DSpark on 16 GB VRAM (Inkling-2-Mini)
+### 1b. Filled 128K & 256K Context + DSpark on 16 GB VRAM (Inkling-2-Mini, `R53 - R87`)
 
-Inkling-2-Mini (`26B IQ3_XXS`) also supports **filled 128K and 256K context with DSpark active inside 16 GB VRAM** on Windows WDDM without swapping or spilling past DXGI budget:
-- **Global-only `Q4_0 + FWHT-128` KV (`IE_INK_GLOB_KV=q4rot`):** Quantizes only the 8 global KV layers to 72 B/head (`2,304 MiB` exact at 256K, 4K KLD `0.004511`, `98.91%` top-1, ppl `1.2024` vs `1.2015` f16) while all 40 SWA layers stay `f16` and DSpark stays active.
-- **Ringed DSpark Global KV + On-the-Fly RoPE (`IE_DS_GLOB_WIN=8192`, `IE_DS_ROPE_OTF=1`):** Caps DSpark's global KV layer to an `8K` ring (16K physical ring = `64 MiB`) and replaces the `127.5 MiB` `f32` RoPE table with exact FP64 Cody-Waite range reduction (auto-on at `--ctx >= 131072`).
-- **Outer-Layer Host-Backed SLRU MoE Expert Cache (`IE_MOE_CACHE_SLOTS=auto`):** Pins only the outer layers (`blk.0..5, 18..23`) in host RAM with a VRAM SLRU expert cache (`82.2%` hit rate at 256K) while keeping all 12 core looped layers (`blk.6..17`, visited 3x per token) and all 24 dense layers 100% VRAM-resident.
+Inkling-2-Mini (`26B IQ3_XXS`) runs **filled 128K and 256K context with DSpark active inside 16 GB VRAM** on Windows WDDM without swapping or spilling past DXGI budget (`+1,731 - 2,089 MiB` DXGI reserve at 256K, `2.7x - 3.3x` above the `640 MiB` gate):
+- **Global-only `Q4_0 + FWHT-128` KV + SOTA Prefill/Verify (`IE_INK_GLOB_KV=q4rot`):** Quantizes only the 8 global KV layers to 72 B/head (`2,304 MiB` exact at 256K, 4K KLD `0.004511`, `98.91%` top-1, ppl `1.2024` vs `1.2015` f16) while all 40 SWA layers stay `f16`. `R53 - R87` added dedicated `Q4_0` WMMA verify (`R59`), split-KV incremental prefill (`R60`), fast `Q4_0` prefill (`R61`), fused `sconv+vclip+q4_store` (`R65`), and `chunk=1024` guarded by DXGI clamp (`R56`) + async ping-pong H38 prefill (`R57`).
+- **Ringed DSpark Global KV + Auto-16K Window + Persistent 256K SAM (`R66 - R71`):** Caps DSpark's global KV (`IE_DS_GLOB_WIN=auto16k` natively, `8192` via `serve-inkling2.ps1 -Ctx 262144`), computes RoPE on the fly (`IE_DS_ROPE_OTF=1`, `-127.5 MiB`), fuses DSpark Markov/QKV/attn/proj (`R66` + `R73` fixed `H25a`), runs 2-tier shortlist (`28K -> 60K` + `4K` dynamic tail, `R70`), lossless `T_draft=0.75` sharpening (`R69`), and a persistent 2-tier 256K prompt-suffix SAM (`R71`).
+- **Outer-Layer SLRU MoE Cache + Exact-SHA Wave Repacks (`R72 - R76`):** Pins outer layers (`blk.0..5, 18..23`) in host RAM with a VRAM SLRU expert cache while keeping all 12 core looped layers (`blk.6..17`, visited 3x/token) and all 24 dense layers VRAM-resident. `R72 - R76` promoted exact-SHA `H17` loop fusion (`705 -> 585` launches/step), `H36a` zero-VRAM `IQ4_NL` wave repack (`+13.9%` 256K `T=1`) + `BM=64` prefill, `R13` exact router (`+6.5%` 4K prefill) + `R17` `FLUTE` `BM=64` worklist, and `H37` `Q8_0` core wave repack (`+17.5%` 256K `T=1` / `+15.0%` 256K DS5).
+- **Wave 15 Instant Resume & Tokenization (`R78 - R83`):** Promoted Windows `IoRing`/pooled `OVERLAPPED` reader (`IE_DISK_IORING=1`) + async pipelined H2D (`IE_KV_H2D_PIPE=1`, `-40.4%` cold disk restore at `20K` Q4rot: `275 -> 164 ms`), idle background disk-to-RAM pre-warming (`IE_DISK_PREWARM=1`, `-61.1%` restart restore at `20K` Q4rot: `275 -> 107 ms`, `20/20` files from RAM), GPU `K_COPY_LIST` ephemeral stash (`IE_EPHEM_FAST=1`, `3.66x` faster at `20K` Q4rot: `32.2 -> 8.8 ms`), and 4-thread stack BPE + segment cache (`4.37x` faster at `256K`: `16.93 -> 3.87 ms` for `261,619` tokens, 100% bit-exact).
 
-| Filled Context (`IQ3_XXS` · 16 GB WDDM) | Plain Decode | **DSpark 5x0.6** | Gain | `inc256` TTFT | Worst DXGI Reserve | Needle Recall (5%/50%/95%) |
-|---|---:|---:|---:|---:|---:|---:|
-| **128K Filled (`130,500` tok, `ie-serve`)** | 53.7 tok/s | **90.2 tok/s** (`90.1` `ie-run`, `4.38` tok/step) | **+68.0% (`1.68x`)** | `405 ms` | `+1,997 MiB` (`10.76 / 12.71 GiB`) | **3 / 3** |
-| **256K Filled (`261,632` tok, `ie-serve`)** | 38.3 tok/s | **54.5 tok/s** (`46.5` `ie-run`, `2.72` tok/step) | **+42.3% (`1.42x`)** | `600 ms` (`0.70 s` TTFT) | `+870 MiB` (`11.89 / 12.74 GiB`) | **3 / 3** |
+| 256K Filled Context Metric (`IQ3_XXS` · 16 GB WDDM) | `R52` (Wave 9) | **`R71 - R87` Promoted** | Gain / Notes |
+|---|---:|---:|---|
+| **Launches / Step (`T=1`)** | `753` (`1,574` R00) | **`585`** (`0.453 ms` issue) | **`-62.8%`** vs R00 (`-22.3%` vs R52) |
+| **Real 256K (`261,632` tok) Cold Fill** | `227.0 s` | **`106 s`** (`~2,468 tok/s` avg) | **`2.14x` faster** (`chunk=1024` + `Q4` PF + `H38-ASYNC-PF`) |
+| **256K `inc256` TTFT** | `600 - 630 ms` | **`236 ms`** synth / **`306 ms`** live | **`2.67x` faster** (`Q4` split-KV incremental prefill) |
+| **256K Verify `T=6` / `T=8`** | `64.6 / 79.7 ms` | **`23.51 / 25.58 ms`** (`R87`) | **`2.75x - 3.12x` faster** (`Q4` WMMA + `H17` + `H36a` + `H37`) |
+| **Live 256K `ie-serve` DSpark (`261.4K`, 3/3 needles)** | `54.5 tok/s` | **`107.5`** greedy / **`137.0`** sampled (`t=1.0`, R71) | **`1.97x - 2.51x` faster** (+ `H36a +13.9%` / `H37 +15.0%` R74-R76) |
+| **Live 154-Req Multimodal Tool Session (`204K - 212K`)** | - | **`130 - 147 tok/s`** (peak **`219.7`** @ `156K - 180K`) | Live `1365x768` screenshots + tool calls, `3/3` needles |
+| **256K Worst DXGI Reserve** | `+870 MiB` | **`+1,731 - 2,089 MiB`** (`R87`) | **`2.7x - 3.3x`** above `640 MiB` gate (`0` swap) |
+| **Disk Restore (`20K` Q4rot) / Stash (`20K` Q4rot) / 256K BPE** | `275 ms` / `32.2 ms` / `16.93 ms` | **`164 ms`** cold (`107 ms` prewarm) / **`8.8 ms`** / **`3.87 ms`** | **`-40.4%` / `-61.1%`** restore (`20K`) · **`3.66x`** stash (`20K`) · **`4.37x`** BPE (`256K`) |
+| **128K Filled (`130,500` tok, `ie-serve`)** | `53.7` plain | **`90.2 tok/s`** DSpark (`4.38` tok/step, `+1,997 MiB` res) | **`+68.0%` (`1.68x`)**, `405 ms` `inc256`, `3/3` needles |
 
 ```powershell
-# Automatic 256K + DSpark profile (sets -Chunk 512, q4rot global KV, 8K DSpark ring, OTF RoPE, auto MoE SLRU):
-powershell -File serve-inkling2.ps1 -Ctx 262144
+# Automatic 256K + DSpark profile (-Chunk 1024 with DXGI guard, -Draft 7 -DraftPmin 0.45, q4rot global KV, 8K DSpark ring, OTF RoPE, auto MoE SLRU):
+powershell -File engine\serve-inkling2.ps1 -Ctx 262144
 
 # Opt-in 128K + DSpark low-VRAM profile:
-powershell -File serve-inkling2.ps1 -Ctx 131072 -GlobKv q4rot -DsGlobWin 8192 -MoeCacheSlots auto
+powershell -File engine\serve-inkling2.ps1 -Ctx 131072 -GlobKv q4rot -DsGlobWin 8192 -MoeCacheSlots auto
 ```
 
 ### 1c. Zero-Persistent-VRAM RDNA4 WMMA Vision (Inkling-2-Mini `inkling2v`)
@@ -138,12 +147,12 @@ Inkling-2-Mini (`OpenUncensored/Inkling-2-Mini-Uncensored`) supports native mult
 
 ## <img src="docs/icons/bolt.svg" width="20" height="20" align="absmiddle" alt=""/> Why It's Fast on RDNA4
 
-1. **WDDM Launch Collapse (`2,222 -> 753`):** Fusing 4 loop controllers, router+top8+sort, K/V short-conv+vclip+store, MoE tail, `CT=8` QKV/RelClip/Sink/Gate, `W_o+sconv`, and FLUTE `IQ3_XXS` expert paths cut Windows HIP retirement stall from `2.00 ms` to under `0.22 ms`.
-2. **0-VRAM FLUTE SoA `IQ3_XXS` Repack (`R42`):** Load-time SoA transpose of `IQ3_XXS` MoE expert weights eliminates bit-unpack stalls across decode, verify, and prefill (`+3.5%` decode, `-48` launches/step, zero extra VRAM).
-3. **`chunk=1024` RDNA4 WMMA Prefill (`6,135 tok/s`):** Largest-first `16/32/48/64` MoE tile worklist + `113-VGPR` zero-bank-conflict `IQ3_XXS+SITU` fused epilogue + `chunk=1024` lift guarded by `gpu_chunk_clamp()` (`5.49x` vs our `v0` impl).
-4. **16K-256K Attention & Outer-Layer SLRU Cache:** `T<=8` single-pass fp16 WMMA global attention (`-17.9%` 16K verify), global-only `Q4_0 + FWHT-128` KV (`2,304 MiB` at 256K), and host-backed outer-layer SLRU expert cache (`82.2%` hit rate) keep 128K (`90.2 tok/s`) and 256K (`54.5 tok/s`) DSpark inside 16 GB VRAM.
-5. **0-VRAM `60K+4K` Shortlist + `O(1)` SAM + Zero-Sync Probabilistic DSpark:** Inkling-2 puts all 32K leading-space (`Ġ`) words in upper BPE band `149,860..199,997`; a `0.256 MiB` `id_map` cuts draft reads 3x (`99.6%` code hit, 0 MB weight copy) and `O(1)` SAM gives free `0 ms` drafts on code repeats.
-6. **Prefix-Cache Immunity + Deferred Checkpoints + Zero-Pacer First Token (`2,113 -> 226 ms`):** Ephemeral host-RAM KV stashing protects cached conversations from short side-requests; `IE_DEFER_CKSAVE=2` overlaps post-token-1 checkpoint saves via async SWA ring copies, and `IE_PACE_FIRST_FAST=1` streams the first SSE token immediately.
+1. **WDDM Launch Collapse (`2,222 -> 585`):** Fusing 4 loop controllers (`H17` exact, `-120` launches/step), single-launch QKV+sconv+KV (`H20`), router+top8+sort, K/V short-conv+vclip+store (`C1` FP16 & `Q4_0`), MoE tail, `CT=8` QKV/RelClip/Sink/Gate, `W_o+sconv`, and FLUTE `IQ3_XXS` expert paths cut Windows HIP issue time to `0.453 ms/step`.
+2. **0-VRAM FLUTE SoA `IQ3_XXS` + Wave-Interleaved `IQ4_NL` & Core `Q8_0` Repacks (`R42`, `R74`, `R76`):** Load-time SoA transpose of `IQ3_XXS`, zero-persistent-VRAM wave-interleaved `IQ4_NL` (`+13.9%` 256K `T=1`), and core `blk.6..17` `Q8_0` wave repack (`+17.5%` 256K `T=1`, `+15.0%` 256K DS5) eliminate bit-unpack and bank-conflict stalls with 100% exact SHA.
+3. **`chunk=1024` RDNA4 WMMA Prefill (`6,135 tok/s` @ 4K, `106 s` @ 256K):** Largest-first `BM=64` `FLUTE` + `IQ4_NL` wave worklists (`R74`, `R75`), exact `R13` router (`+6.5%`), `Q4_0` fast prefill (`R61`), async ping-pong H38 prefill (`R57`), and `chunk=1024` guarded by `gpu_chunk_clamp()` (`2.14x` faster 256K cold fill).
+4. **16K-256K Attention & Outer-Layer SLRU Cache:** `T<=8` single-pass `Q4_0` WMMA global attention (`23.51 / 25.58 ms` `T=6/T=8` at 256K), split-KV `Q4_0` incremental prefill (`236 ms` `inc256`), global-only `Q4_0 + FWHT-128` KV (`2,304 MiB` at 256K), and host-backed outer-layer SLRU expert cache keep filled 256K DSpark (`107.5 - 137.0 tok/s`, `+1,731 - 2,089 MiB` DXGI reserve) inside 16 GB VRAM.
+5. **0-VRAM 2-Tier Shortlist + Persistent 256K SAM + Fused DSpark (`R30`, `R66 - R73`):** Inkling-2 puts all 32K leading-space (`Ġ`) words in upper BPE band `149,860..199,997`; `id_map` shortlists (`28K -> 60K` + `4K` dynamic tail), fused DSpark QKV/Markov/attn/proj (`R66`/`R73`), lossless `T_draft=0.75` sharpening (`R69`), and a persistent 2-tier 256K prompt-suffix SAM (`R71`) accelerate speculative drafting with exact output parity.
+6. **Instant Disk/RAM Resume + GPU Ephemeral Stash + 4T Stack BPE (`R78 - R83`):** Windows `IoRing`/pooled `OVERLAPPED` + async pipelined H2D (`-40.4%` cold / `-61.1%` prewarmed restore), GPU `K_COPY_LIST` ephemeral stash (`3.66x`, `8.8 ms`), 4-thread lossless-split stack BPE + segment cache (`4.37x`, `3.87 ms` for `261.6K` tokens), `IE_DEFER_CKSAVE=2`, and `IE_PACE_FIRST_FAST=1`.
 7. **Zero-Waste Sampling (`0.399 -> 0.005 ms`):** Fixed unpadded-vocab `topk_prefetch` cache miss + 1-launch wave32 Top-K + `O(1)` hash-chain DRY loop penalty (auto-pauses inside `<tool_call>`).
 
 ---
@@ -157,7 +166,7 @@ pip install rocm-sdk-core rocm-sdk-libraries rocm-sdk-device-gfx1201
 ```
 
 ```bash
-# 1. Build host engine + all 264 custom gfx1201 kernels (0 Inkling-2/vision spills)
+# 1. Build host engine + all 310 custom gfx1201 kernels (0 Inkling-2/vision spills)
 cd engine && sh build-win.sh
 
 # 2. Optional: shrink Inkling-2 output.weight Q8_0 -> Q4_K (-231 MB VRAM)
@@ -186,12 +195,12 @@ cd engine && make
 | Path | Contents |
 |---|---|
 | [`engine/src/`](engine/src) | Pure C11 engine (based on [`hanw/amd.c`](https://github.com/hanw/amd.c)): GGUF v3, HIP loader, arena planner, DSpark/MTP/DFlash, disk cache, HTTP server, ViT vision |
-| [`engine/kernels/`](engine/kernels) | Base `gfx1201` kernels (`hanw/amd.c`) + **171 Inkling-2** (`0/0` spills) + **81 Saluki-27B** + **12 ViT** (`6` RDNA4 WMMA + `6` Qwen3.5) custom kernels |
+| [`engine/kernels/`](engine/kernels) | Base `gfx1201` kernels (`hanw/amd.c`) + **217 Inkling-2** (`0/0` spills, `priv=0`) + **81 Saluki-27B** + **12 ViT** (`6` RDNA4 WMMA + `6` Qwen3.5) custom kernels |
 | [`engine/core/`](engine/core) & [`engine/laws/`](engine/laws) | Formally verified indexing/quantization core (`ie_core.h`) + law checks from [`hanw/amd.c`](https://github.com/hanw/amd.c) |
 | [`engine/tools/`](engine/tools) & [`engine/tests/`](engine/tests) | Per-module build scripts, `objdump` checks, CPU unit, DRY, shortlist, vision & cache tests |
 | [`engine/serve-inkling2.ps1`](engine/serve-inkling2.ps1) | Production Inkling-2-Mini launcher (`chunk=1024`, Q4\_K DSpark, 0-VRAM shortlist, 0-VRAM WMMA ViT vision, auto 256K long-context preset) |
 | [`engine/serve-saluki.ps1`](engine/serve-saluki.ps1) | Production Saluki-27B launcher (128K q8 KV, MTP7, ViT vision, disk prompt cache) |
-| [`data/inkling2-shortlist/`](data/inkling2-shortlist) | Portable 0-VRAM `60K+4K` Inkling-2 Band-B frequency shortlist (`240 KB`) |
+| [`data/inkling2-shortlist/`](data/inkling2-shortlist) | Portable 0-VRAM 2-tier (`28K -> 60K + 4K`) Inkling-2 Band-B frequency shortlists (`112 KB` + `240 KB`) |
 | [`scripts/`](scripts) | Requantizer, shortlist builder, wall-clock harness & offline HTML dashboard generator |
 | [`docs/`](docs) | Live GitHub Pages dashboard ([`index.html`](docs/index.html)), 52-round JSON ledger (`R00-R52`), SVG charts & research notes |
 
@@ -200,11 +209,11 @@ cd engine && make
 <details>
 <summary><img src="docs/icons/sliders.svg" width="14" height="14" align="absmiddle" alt=""/> <b>Promoted Kernel Masks & Rollback Controls</b></summary>
 
-- **Inkling-2 Defaults:** `IE_INK_DEFAULT_MASK = 0xfe7dfc0369c3ffff`, `IE_INK_DEFAULT_MASK2 = 0x1c7f103d36b`, `IE_INK_DEFAULT_MASK3 = 0x0` (192-bit mask)
+- **Inkling-2 Defaults:** `IE_INK_DEFAULT_MASK = 0xfe7dfc0369c3ffff`, `IE_INK_DEFAULT_MASK2 = 0x20001c7f103d36b`, `IE_INK_DEFAULT_MASK3 = 0x3` (192-bit mask, plus promoted `R53 - R87` env-gated kernels/hooks with explicit `=0` opt-outs)
   - Disable all custom Inkling kernels: `IE_INKLING_KERNELS=0`
-  - Individual toggles: `IE_DS_SHORTLIST=0` (full 201K head), `IE_SAM_LOOKUP=0`, `IE_EPHEMERAL_CACHE=0`, `IE_DRY_HASH=0`, `IE_DS_PROB=0`, `IE_DS_SPLIT=0`, `IE_SNAP_HOST=0`, `IE_DEFER_CKSAVE=0`, `IE_PACE_FIRST_FAST=0`
-  - Long-context 128K-256K controls (auto-enabled by `serve-inkling2.ps1` at `-Ctx > 131072`): `IE_INK_GLOB_KV=q4rot` (global-only `Q4_0 + FWHT-128` KV), `IE_DS_GLOB_WIN=8192` (ringed DSpark global KV), `IE_DS_ROPE_OTF=1` (on-the-fly FP64 Cody-Waite DSpark RoPE, auto-on at `n_ctx >= 131072`), `IE_MOE_CACHE_SLOTS=auto` (outer-layer host-backed VRAM SLRU expert cache)
-  - Opt-in experiments kept off by default: `IE_INKLING_GRAPH=2` (piecewise HIP graphs), `IE_DS_TREE=1` (8-node tree verify), `IE_DS_FORESPARK=1`, `IE_DS_OVERLAP=1`, `IE_MK_INKLING=1`
+  - Individual opt-out toggles: `IE_INK_H17_EXACT=0`, `IE_INK_R17_DS_QKV=0`, `IE_INKLING_IQ4_REPACK=0`, `IE_INK_R17_IQ4_PF64=0`, `IE_INK_ROUTER_R13=0`, `IE_INK_R17_FLUTE_PF64=0`, `IE_INKLING_Q8_REPACK=0`, `IE_SAM_PERSIST=0`, `IE_DS_SHORTLIST=0`, `IE_DS_SHORTLIST_TIER2=0`, `IE_DS_ADAP_D=0`, `IE_SAM_LOOKUP=0`, `IE_EPHEMERAL_CACHE=0`, `IE_EPHEM_FAST=0`, `IE_DISK_IORING=0`, `IE_KV_H2D_PIPE=0`, `IE_DISK_PREWARM=0`, `IE_TOK_FAST_BPE=0`, `IE_TOK_THREADS=1`, `IE_TOK_SEG_CACHE=0`, `IE_DRY_HASH=0`, `IE_DS_PROB=0`, `IE_DS_SPLIT=0`, `IE_SNAP_HOST=0`, `IE_DEFER_CKSAVE=0`, `IE_PACE_FIRST_FAST=0`
+  - Long-context 128K-256K controls (auto-enabled by `serve-inkling2.ps1` at `-Ctx > 131072`): `IE_INK_GLOB_KV=q4rot` (global-only `Q4_0 + FWHT-128` KV), `IE_DS_GLOB_WIN=8192` (or `auto16k`), `IE_DS_ROPE_OTF=1` (on-the-fly FP64 Cody-Waite DSpark RoPE, auto-on at `n_ctx >= 131072`), `IE_MOE_CACHE_SLOTS=auto` (outer-layer host-backed VRAM SLRU expert cache)
+  - Opt-in experiments kept off by default: `IE_DISK_LZ4=1` + `IE_DCACHE_UNSHUF=1` (v4 byte-shuffled LZ4 disk cache + GPU unshuffle), `IE_RAM_CACHE_GB=N` (OS-guarded Host-RAM Radix L2 / RAM-only mode), `IE_INKLING_Q4K_REPACK=1`, `IE_INK_R17_FLUTE_VER=1`, `IE_INK_R17_SWA_PF=1`, `IE_INKLING_GRAPH=2` (piecewise HIP graphs), `IE_DS_TREE=1` (8-node tree verify), `IE_DS_FORESPARK=1`, `IE_DS_OVERLAP=1`, `IE_MK_INKLING=1`
 - **Saluki-27B Defaults:** `IE_SALUKI_KERNEL_MASK = 0x67e8de841ffffffff` (81 compiled kernels across R0-R11: `rq128`/`rq64` raw-quant WMMA, `attn_pl_r10`, `attn_long_mp_r11`, `gdn_wy_wmma_r11`, `qkn_rope_kv_r11`, `lora_b_r11`, `topk_r11`)
   - Disable all custom Saluki kernels: `IE_SALUKI_KERNELS=0`
   - KV modes: `-Kv q8` (default, 128K), `-Kv q4` (`IE_KV_Q4=1 IE_KV_ROT=1` rotated 4-bit), `-Kv f16`
@@ -220,17 +229,17 @@ cd engine && make
 <summary><img src="docs/icons/help.svg" width="14" height="14" align="absmiddle" alt=""/> <b>FAQ: Upstream Credit, License, RX 9070 XT & 16GB VRAM</b></summary>
 
 - **What is upstream (`hanw/amd.c`) vs. what was added here?**
-  The base C11 engine (`amd-infer`), formally verified core (`core/ie_core.h`), Lean laws, base `gfx1201` runtime/kernels, and base `ie-serve` HTTP server are by Han Wang ([`hanw/amd.c`](https://github.com/hanw/amd.c)). This repo adds the Windows 11 WDDM port (`build-win.sh` via user-space `rocm-sdk` wheels), native raw `IQ1_S`/`IQ1_M`/`IQ2_*`/`IQ3_XXS`/`Q2_K` quant loaders, 264 custom `gfx1201` kernels (`171` Inkling-2-Mini with `0/0` spills + `81` Saluki-27B + `12` ViT including `6` RDNA4 WMMA), FLUTE SoA `IQ3_XXS` repack, native DSpark + 0-VRAM `60K+4K` Band-B shortlist, filled 128K-256K global `q4rot` KV + outer-layer SLRU MoE cache, 0-VRAM Inkling-2 WMMA vision, ephemeral host-RAM prefix-cache immunity, `O(1)` hash-chain DRY loop penalty, compact SWA disk checkpoints, and the 52-round telemetry dashboard.
+  The base C11 engine (`amd-infer`), formally verified core (`core/ie_core.h`), Lean laws, base `gfx1201` runtime/kernels, and base `ie-serve` HTTP server are by Han Wang ([`hanw/amd.c`](https://github.com/hanw/amd.c)). This repo adds the Windows 11 WDDM port (`build-win.sh` via user-space `rocm-sdk` wheels), native raw `IQ1_S`/`IQ1_M`/`IQ2_*`/`IQ3_XXS`/`Q2_K` quant loaders, 310 custom `gfx1201` kernels (`217` Inkling-2-Mini with `0/0` spills + `81` Saluki-27B + `12` ViT including `6` RDNA4 WMMA), FLUTE SoA `IQ3_XXS` + wave-interleaved `IQ4_NL` & `Q8_0` repacks, native DSpark + 0-VRAM 2-tier shortlist + persistent 256K SAM, filled 128K-256K global `q4rot` KV + outer-layer SLRU MoE cache, 0-VRAM Inkling-2 WMMA vision, GPU ephemeral prefix-cache immunity, Windows `IoRing` + async H2D disk cache + idle pre-warming, 4-thread stack BPE, `O(1)` hash-chain DRY loop penalty, and the telemetry dashboard.
 - **Why is there no `LICENSE` file in this repo?**
   Upstream [`hanw/amd.c`](https://github.com/hanw/amd.c) does not currently declare a license, so default copyright applies to the upstream code and this repo intentionally does not place an MIT/Apache license over it. If `hanw/amd.c` adds a license, this repo will adopt matching terms (or strip down to our newly written kernel/script files if requested).
 - **Do I need a system ROCm install on Windows to run LLMs on an RX 9070 XT?**
   No. `engine/build-win.sh` compiles native `gfx1201` AMDGPU `.hsaco` kernels using user-space `rocm-sdk` Python wheels (`amdclang`, `ld.lld`, `hipblas.dll`) on top of standard Windows Adrenalin drivers, with no system ROCm toolkit required.
 - **How do Inkling-2-Mini (26B `IQ3_XXS`, up to 256K) and Qwen3.8-27B (`IQ2-mix`, 128K) fit inside 16 GB VRAM?**
-  At 64K-96K context, Inkling-2-Mini (`IQ3_XXS` MoE + `Q4_K` output head + `Q4_K` DSpark + 0-VRAM `60K+4K` shortlist) runs with **3.7-3.9 GB VRAM free** using on-demand growing `f16` KV cache. For filled **128K-256K context + DSpark**, `-Ctx 262144` switches the 8 global KV layers to 72 B/head `Q4_0 + FWHT-128` (`2,304 MiB` at 256K), rings DSpark's global KV to `8K`, computes DSpark RoPE on the fly (`-127.5 MiB`), and runs an outer-layer host-backed VRAM SLRU expert cache (`+870 MiB` worst DXGI reserve at 256K). Saluki-27B (`Qwen3.8-27B IQ2-mix`) uses a growing `q8` KV cache (`4.85 GB` at full 128K vs `12.1 GB` FP16, `7.8 GB` VRAM free at load) plus disk-backed prefix checkpoints and zero-VRAM ViT vision.
+  At 64K-96K context, Inkling-2-Mini (`IQ3_XXS` MoE + `Q4_K` output head + `Q4_K` DSpark + 0-VRAM 2-tier `28K -> 60K + 4K` shortlist) runs with **3.7-3.9 GB VRAM free** using on-demand growing `f16` KV cache. For filled **128K-256K context + DSpark**, `-Ctx 262144` switches the 8 global KV layers to 72 B/head `Q4_0 + FWHT-128` (`2,304 MiB` at 256K), rings DSpark's global KV (`8K` / `auto16k`), computes DSpark RoPE on the fly (`-127.5 MiB`), and runs an outer-layer host-backed VRAM SLRU expert cache (`+1,731 - 2,089 MiB` DXGI reserve at 256K in `R87`). Saluki-27B (`Qwen3.8-27B IQ2-mix`) uses a growing `q8` KV cache (`4.85 GB` at full 128K vs `12.1 GB` FP16, `7.8 GB` VRAM free at load) plus disk-backed prefix checkpoints and zero-VRAM ViT vision.
 - **Does `ie-serve` work with Open WebUI, OpenCode, OMP, Cline, or standard OpenAI SDKs?**
   Yes. `ie-serve` exposes `/v1/chat/completions`, `/v1/models`, streaming SSE, reasoning effort (`--effort`), tool calling (`--tool-temp 0`), multimodal image inputs, and `O(1)` DRY loop-penalty protection.
 - **What GPU architectures are supported?**
-  The custom `264`-kernel specializations target AMD RDNA4 (`gfx1201`: Radeon RX 9070 XT / RX 9070) using native `wave32` and RDNA4 WMMA instructions. Base C11/HIP kernels can be built for other `amdgcn` targets via `GPU_ARCH=...` in `engine/Makefile`.
+  The custom `310`-kernel specializations target AMD RDNA4 (`gfx1201`: Radeon RX 9070 XT / RX 9070) using native `wave32` and RDNA4 WMMA instructions. Base C11/HIP kernels can be built for other `amdgcn` targets via `GPU_ARCH=...` in `engine/Makefile`.
 
 </details>
 

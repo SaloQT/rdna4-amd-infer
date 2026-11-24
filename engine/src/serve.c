@@ -1265,7 +1265,9 @@ static void *engine_main(void *arg) {
     VIS = vision_open(O.mmproj, gpu ? O.hsaco : NULL, M.dim);
   }
   const char *dcd = getenv("IE_DISK_CACHE");
-  if (dcd && dcd[0] && O.cache) { /* what the K/V rows and states depend on: the files (size, time) and the cache format */
+  const char *rce = getenv("IE_RAM_CACHE_GB");
+  const int ram_l2_req = rce && rce[0] && atof(rce) > 0.0;
+  if (((dcd && dcd[0]) || ram_l2_req) && O.cache) { /* what the K/V rows and states depend on: the files (size, time) and the cache format */
     sbuf sig = {0};
     const char *files[4] = {O.path, O.draft ? O.mtp : NULL, gpu ? O.hsaco : NULL, O.dflash ? O.dflash : O.dspark};
     for (int i = 0; i < 4; i++) {
@@ -1281,7 +1283,7 @@ static void *engine_main(void *arg) {
     for (size_t i = 0; i < sizeof env / sizeof *env; i++) sb_printf(&sig, "%s=%s|", env[i], getenv(env[i]) ? getenv(env[i]) : "");
     sb_printf(&sig, "gpu=%d|draft=%d", gpu, O.draft > 0);
     const char *gb = getenv("IE_DISK_CACHE_GB");
-    if (!gen_disk_open(&GC, dcd, sig.p, gb ? atof(gb) : 100.0, disk_lock)) fprintf(stderr, "disk cache: not with this backend or model\n");
+    if (!gen_disk_open(&GC, (dcd && dcd[0]) ? dcd : NULL, sig.p, gb ? atof(gb) : 100.0, disk_lock)) fprintf(stderr, "disk cache: not with this backend or model\n");
     else {
       pthread_t dt;
       pthread_create(&dt, NULL, disk_main, NULL);
@@ -1304,10 +1306,21 @@ static void *engine_main(void *arg) {
    * each request */
   const char *ie = getenv("IE_DISK_IDLE_S");
   const double idle_s = ie && ie[0] ? atof(ie) : 10.0;
+  /* R83 (H50, IE_DISK_PREWARM promoted default ON; =0 opts out): warm <= 16 MiB per idle tick while QH == NULL. */
+  const char *pwe = getenv("IE_DISK_PREWARM");
+  const int prewarm_on = !(pwe && pwe[0] == '0');
+  int prewarm_more = prewarm_on && GC.dc != NULL;
   struct timespec dl = {0, 0}; /* the end of the idle time; tv_sec 0: not running */
   for (;;) {
     pthread_mutex_lock(&QM);
     while (!QH) {
+      if (prewarm_more && GC.dc) {
+        pthread_mutex_unlock(&QM);
+        const int more = dc_prewarm_step(&GC, 16u << 20);
+        pthread_mutex_lock(&QM);
+        if (more <= 0) prewarm_more = 0;
+        continue;
+      }
       if (!((GC.dc && idle_s > 0 && gen_disk_pending(&GC) > 0) || HIT_WIN[0] > 0)) { /* nothing to do when idle */
         dl.tv_sec = 0;
         pthread_cond_wait(&QC, &QM);
@@ -1423,6 +1436,116 @@ static int same_secret(const char *a, const char *b) {
   return d == 0;
 }
 
+/* ---- R82 (H47a): opt-in segment-level FNV-64 BPE cache (IE_TOK_SEG_CACHE=1, default OFF) ----
+ * Bounded to <= 256 entries and <= 4 MiB of cached token IDs (<= 16 MiB exact text copies).
+ * Every hit verifies exact (hash, len, parse_ctrl) plus full byte memcmp -> 0% collision risk. */
+#define SEG_CACHE_MAX_ENT 256u
+#define SEG_CACHE_MAX_TOK_BYTES (4u << 20)
+#define SEG_CACHE_MAX_TXT_BYTES (16u << 20)
+#define SEG_CACHE_MIN_LEN 32u
+
+typedef struct {
+  uint64_t hash;
+  size_t len;
+  int parse_ctrl;
+  char *text;
+  uint32_t *ids;
+  uint32_t n_ids;
+  uint64_t used;
+} seg_cache_ent;
+
+static pthread_mutex_t SEGM = PTHREAD_MUTEX_INITIALIZER;
+static seg_cache_ent SEG_ENTS[SEG_CACHE_MAX_ENT];
+static uint32_t SEG_N;
+static size_t SEG_TOK_BYTES, SEG_TXT_BYTES;
+static uint64_t SEG_TICK;
+
+static int tok_seg_cache_on(void) {
+  const char *e = getenv("IE_TOK_SEG_CACHE");
+  return !(e && e[0] == '0'); /* R82 promoted default ON (=0 opts out) */
+}
+
+static uint64_t seg_fnv64(const char *s, size_t n, int parse_ctrl) {
+  uint64_t h = 14695981039346656037ull ^ (uint64_t)(parse_ctrl ? 0x5Au : 0xA5u);
+  for (size_t i = 0u; i < n; i++) h = (h ^ (unsigned char)s[i]) * 1099511628211ull;
+  return h;
+}
+
+static void serve_tok_ids_append(tok_ids *a, const uint32_t *src, uint32_t n) {
+  if (!n) return;
+  if (a->n + n > a->cap) {
+    uint32_t cap = a->cap ? a->cap : 64u;
+    while (cap < a->n + n) {
+      if (cap > UINT32_MAX / 2u) { cap = a->n + n; break; }
+      cap *= 2u;
+    }
+    a->v = realloc(a->v, (size_t)cap * 4u);
+    if (!a->v) ie_die("ie-serve: out of memory");
+    a->cap = cap;
+  }
+  memcpy(a->v + a->n, src, (size_t)n * 4u);
+  a->n += n;
+}
+
+static void tok_encode_seg(const tokenizer *t, const char *text, size_t len, int parse_ctrl, tok_ids *out) {
+  if (!tok_seg_cache_on() || len < SEG_CACHE_MIN_LEN || len > SEG_CACHE_MAX_TXT_BYTES / 2u) {
+    tok_encode(t, text, len, parse_ctrl, out);
+    return;
+  }
+  const uint64_t h = seg_fnv64(text, len, parse_ctrl);
+  pthread_mutex_lock(&SEGM);
+  for (uint32_t i = 0u; i < SEG_N; i++) {
+    seg_cache_ent *e = &SEG_ENTS[i];
+    if (e->hash == h && e->len == len && e->parse_ctrl == parse_ctrl && !memcmp(e->text, text, len)) {
+      e->used = ++SEG_TICK;
+      serve_tok_ids_append(out, e->ids, e->n_ids);
+      pthread_mutex_unlock(&SEGM);
+      return;
+    }
+  }
+  pthread_mutex_unlock(&SEGM);
+
+  const uint32_t start = out->n;
+  tok_encode(t, text, len, parse_ctrl, out);
+  const uint32_t n_ids = out->n - start;
+  const size_t id_bytes = (size_t)n_ids * 4u;
+  if (!n_ids || id_bytes > SEG_CACHE_MAX_TOK_BYTES / 2u) return;
+
+  char *tc = malloc(len);
+  uint32_t *ic = malloc(id_bytes);
+  if (!tc || !ic) {
+    free(tc), free(ic);
+    return;
+  }
+  memcpy(tc, text, len);
+  memcpy(ic, out->v + start, id_bytes);
+
+  pthread_mutex_lock(&SEGM);
+  for (uint32_t i = 0u; i < SEG_N; i++) {
+    seg_cache_ent *e = &SEG_ENTS[i];
+    if (e->hash == h && e->len == len && e->parse_ctrl == parse_ctrl && !memcmp(e->text, tc, len)) {
+      e->used = ++SEG_TICK;
+      pthread_mutex_unlock(&SEGM);
+      free(tc), free(ic);
+      return;
+    }
+  }
+  while (SEG_N > 0u && (SEG_N >= SEG_CACHE_MAX_ENT || SEG_TOK_BYTES + id_bytes > SEG_CACHE_MAX_TOK_BYTES ||
+                        SEG_TXT_BYTES + len > SEG_CACHE_MAX_TXT_BYTES)) {
+    uint32_t v = 0u;
+    for (uint32_t i = 1u; i < SEG_N; i++)
+      if (SEG_ENTS[i].used < SEG_ENTS[v].used) v = i;
+    SEG_TOK_BYTES -= (size_t)SEG_ENTS[v].n_ids * 4u;
+    SEG_TXT_BYTES -= SEG_ENTS[v].len;
+    free(SEG_ENTS[v].text), free(SEG_ENTS[v].ids);
+    SEG_ENTS[v] = SEG_ENTS[--SEG_N];
+  }
+  SEG_ENTS[SEG_N++] = (seg_cache_ent){h, len, parse_ctrl, tc, ic, n_ids, ++SEG_TICK};
+  SEG_TOK_BYTES += id_bytes;
+  SEG_TXT_BYTES += len;
+  pthread_mutex_unlock(&SEGM);
+}
+
 /* ---- the request: chat ---- */
 /* The prompt tokens: control tokens as ids, text without control tokens
  * (a user cannot write <|im_start|> into the prompt). Also where the messages are (token positions, 0: none or not
@@ -1432,7 +1555,7 @@ static int same_secret(const char *a, const char *b) {
  * same position in the full segment, without changing its tokenization. */
 static uint32_t prefix_tokens(const char *text, size_t n, const tok_ids *out, uint32_t start) {
   tok_ids before = {0};
-  tok_encode(TK, text, n, 0, &before);
+  tok_encode_seg(TK, text, n, 0, &before);
   uint32_t i = 0;
   while (i < before.n && start + i < out->n && before.v[i] == out->v[start + i]) i++;
   tok_ids_free(&before);
@@ -1450,24 +1573,24 @@ static uint32_t prefix_boundary(const char *text, size_t len, const char *marker
 static void prompt_tokens(const chat_prompt *p, tok_ids *out, gen_params *gp, int agent, uint32_t *img_slots) {
   uint32_t *prefix = agent ? gp->prefix : NULL;
   if (FLINT) { /* the whole text with the control tokens (see chat_render_flint) */
-    tok_encode(TK, p->text.p, p->text.n, 1, out);
+    tok_encode_seg(TK, p->text.p, p->text.n, 1, out);
     return;
   }
   if (INKLING2) { /* gaps hold template control tags; SEG_TEXT holds untrusted message text; SEG_IMG holds image slot */
     size_t pos = 0;
     for (size_t i = 0; i < p->n_seg; i++) {
       const chat_seg *s = &p->seg[i];
-      if (s->off > pos) tok_encode(TK, p->text.p + pos, s->off - pos, 1, out);
+      if (s->off > pos) tok_encode_seg(TK, p->text.p + pos, s->off - pos, 1, out);
       if (s->kind == SEG_IMG) {
         if (img_slots) img_slots[s->n] = out->n;
         tok_ids_push(out, (uint32_t)IMAGE_PAD_ID);
         pos = s->off;
       } else {
-        tok_encode(TK, p->text.p + s->off, s->n, 0, out);
+        tok_encode_seg(TK, p->text.p + s->off, s->n, 0, out);
         pos = s->off + s->n;
       }
     }
-    if (p->text.n > pos) tok_encode(TK, p->text.p + pos, p->text.n - pos, 1, out);
+    if (p->text.n > pos) tok_encode_seg(TK, p->text.p + pos, p->text.n - pos, 1, out);
     return;
   }
   int first = 1, in_sys = 0; /* in_sys: inside the first message, which is the system message */
@@ -1495,7 +1618,7 @@ static void prompt_tokens(const chat_prompt *p, tok_ids *out, gen_params *gp, in
     } else {
       const uint32_t start = out->n;
       const char *text = p->text.p + s->off;
-      tok_encode(TK, text, s->n, 0, out);
+      tok_encode_seg(TK, text, s->n, 0, out);
       if (prefix && in_sys && p->tools_end > s->off && p->tools_end <= s->off + s->n)
         gp->tools_end = prefix_tokens(text, p->tools_end - s->off, out, start);
       if (prefix && in_sys && s->n > 1024) {
