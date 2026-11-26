@@ -82,6 +82,7 @@ struct vision_ctx {
   /* R14/R18 gfx1201 WMMA vision kernels */
   void *k_wmma_f16, *k_wmma_q8, *k_attn_hd64, *k_ln_f16, *k_patch_prep, *k_merge2x2;
   void *k_rope2d_tbl, *k_attn_hd64_r18;
+  void *k_rope_k_r18, *k_attn_hd64_krot_r18; /* K rotated once per layer, and the attention that reads it so */
   int has_wmma;
   /* Async double-buffered H2D staging (host-pinned RAM only, 0.0 MiB persistent VRAM) */
   void *vis_cs;
@@ -444,6 +445,8 @@ vision_ctx *vision_open(const char *mmproj_path, const char *hsaco_hint, uint32_
       vc->k_merge2x2 = gpu_vis_get_fn(vc->mod, "ie_vis_merge_2x2_f16");
       vc->k_rope2d_tbl = gpu_vis_get_fn(vc->mod, "ie_vis_rope2d_table_r14");
       vc->k_attn_hd64_r18 = gpu_vis_get_fn(vc->mod, "ie_vis_attn_wmma_hd64_r18");
+      vc->k_rope_k_r18 = gpu_vis_get_fn(vc->mod, "ie_vis_rope_k_r18");
+      vc->k_attn_hd64_krot_r18 = gpu_vis_get_fn(vc->mod, "ie_vis_attn_wmma_hd64_krot_r18");
       vc->has_wmma = (vc->k_wmma_f16 && vc->k_wmma_q8 && vc->k_attn_hd64 &&
                       vc->k_ln_f16 && vc->k_patch_prep && vc->k_merge2x2);
       if (is_ink) {
@@ -1160,6 +1163,15 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
     rope_tbl_env = !(e && e[0] == '0');
   }
   const int use_r18_attn = rope_tbl_env && vc->k_rope2d_tbl != NULL && vc->k_attn_hd64_r18 != NULL;
+  /* K is rotated in place once per layer (ie_vis_rope_k_r18) and the attention reads it as stored, where
+   * ie_vis_attn_wmma_hd64_r18 rotates every K tile again in each of its workgroups (IE_VIS_ROPE_K=0 opts out). */
+  static int rope_k_env = -1;
+  if (rope_k_env < 0) {
+    const char *e = getenv("IE_VIS_ROPE_K");
+    rope_k_env = !(e && e[0] == '0');
+  }
+  const int use_krot = use_r18_attn && rope_k_env && gw > 0u && vc->k_rope_k_r18 != NULL &&
+                       vc->k_attn_hd64_krot_r18 != NULL;
 
   /* Single temporary VRAM arena (borrows idle LLM b->arena in ie-serve -> 0.0 MiB extra VRAM!) */
   const size_t sz_x = align256((size_t)N_pos * D * 4u);
@@ -1269,7 +1281,14 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
       void *qp = d_qf, *op = d_att;
       uint32_t nn = N_pos, nhl = nh, gwl = gw;
       float sc = scale;
-      if (use_r18_attn) {
+      if (use_krot) {
+        /* d_qf is rewritten by the FFN (step 6) before anything else reads its K third */
+        void *rp = d_rope;
+        void *ka[] = {&qp, &nn, &nhl, &rp};
+        gpu_vis_launch(vc->k_rope_k_r18, (N_pos * nh * 4u + 255u) / 256u, 1, 1, 256, 1, 1, ka);
+        void *args[] = {&qp, &op, &nn, &nhl, &gwl, &sc, &rp};
+        gpu_vis_launch(vc->k_attn_hd64_krot_r18, (N_pos + 127u) / 128u, nh, 1, 256, 1, 1, args);
+      } else if (use_r18_attn) {
         void *rp = d_rope;
         void *args[] = {&qp, &op, &nn, &nhl, &gwl, &sc, &rp};
         gpu_vis_launch(vc->k_attn_hd64_r18, (N_pos + 127u) / 128u, nh, 1, 256, 1, 1, args);
