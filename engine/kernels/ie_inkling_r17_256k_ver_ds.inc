@@ -645,38 +645,46 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
     float dav_c = dap0[s];
     __asm__ volatile("" : "+v"(dg_c), "+v"(auxg_c));
 
+    /* Four super-blocks per pass, unrolled, so the accumulator index is a constant in each copy and
+     * INK_R17_VD_ADD4 is one add instead of a compare/branch ladder on sb & 3. Every accumulator
+     * still takes the same super-blocks in the same order. */
 #pragma clang loop unroll(disable)
-    for (u32 sb = 0u; sb < mb; sb++) {
-      const u32 j_acc = sb & 3u;
-      const u32 sb_u = (u32)__builtin_amdgcn_readfirstlane((int)sb);
-      const u32 sb_n = (sb_u + 1u < mb) ? (sb_u + 1u) : sb_u;
-      const u32 bn = (sb_n << 3u) + s;
+    for (u32 sb4 = 0u; sb4 < mb; sb4 += 4u) {
+#pragma unroll
+      for (u32 j_acc = 0u; j_acc < 4u; j_acc++) {
+        const u32 sb = sb4 + j_acc;
+        if (sb < mb) {
+          const u32 sb_u = (u32)__builtin_amdgcn_readfirstlane((int)sb);
+          const u32 sb_n = (sb_u + 1u < mb) ? (sb_u + 1u) : sb_u;
+          const u32 bn = (sb_n << 3u) + s;
 
-      const ink_r17_vd_u2 qu_c = ink_r17_vd_ld2(qs_u + (ink_r17_vd_u64)sb_u * 32ull);
-      const u32 auxu_c = aux_u[(ink_r17_vd_u64)sb_u * 32ull];
-      const u32 du_c = (u32)d_u[(ink_r17_vd_u64)sb_u * 4ull];
-      __builtin_amdgcn_sched_barrier(0);
+          const ink_r17_vd_u2 qu_c = ink_r17_vd_ld2(qs_u + (ink_r17_vd_u64)sb_u * 32ull);
+          const u32 auxu_c = aux_u[(ink_r17_vd_u64)sb_u * 32ull];
+          const u32 du_c = (u32)d_u[(ink_r17_vd_u64)sb_u * 4ull];
+          __builtin_amdgcn_sched_barrier(0);
 
-      const float vg = ink_r17_vd_iq3_stream_dot(
-          dg_c, auxg_c, qg_c.x, qg_c.y, x0_c, x1_c, dav_c);
-      INK_R17_VD_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
-      __builtin_amdgcn_sched_barrier(0);
+          const float vg = ink_r17_vd_iq3_stream_dot(
+              dg_c, auxg_c, qg_c.x, qg_c.y, x0_c, x1_c, dav_c);
+          INK_R17_VD_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
+          __builtin_amdgcn_sched_barrier(0);
 
-      const ink_r17_vd_u2 qg_n = ink_r17_vd_ld2(qs_g + (ink_r17_vd_u64)sb_n * 32ull);
-      const u32 auxg_n = aux_g[(ink_r17_vd_u64)sb_n * 32ull];
-      const u32 dg_n = (u32)d_g[(ink_r17_vd_u64)sb_n * 4ull];
-      const u32x4 x0_n = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)bn << 5u));
-      const u32x4 x1_n = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)bn << 5u) + 16ull);
-      const float dav_n = dap0[bn];
-      __builtin_amdgcn_sched_barrier(0);
+          const ink_r17_vd_u2 qg_n = ink_r17_vd_ld2(qs_g + (ink_r17_vd_u64)sb_n * 32ull);
+          const u32 auxg_n = aux_g[(ink_r17_vd_u64)sb_n * 32ull];
+          const u32 dg_n = (u32)d_g[(ink_r17_vd_u64)sb_n * 4ull];
+          const u32x4 x0_n = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)bn << 5u));
+          const u32x4 x1_n = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)bn << 5u) + 16ull);
+          const float dav_n = dap0[bn];
+          __builtin_amdgcn_sched_barrier(0);
 
-      const float vu = ink_r17_vd_iq3_stream_dot(
-          du_c, auxu_c, qu_c.x, qu_c.y, x0_c, x1_c, dav_c);
-      INK_R17_VD_ADD4(au0, au1, au2, au3, j_acc, vu);
-      __builtin_amdgcn_sched_barrier(0);
+          const float vu = ink_r17_vd_iq3_stream_dot(
+              du_c, auxu_c, qu_c.x, qu_c.y, x0_c, x1_c, dav_c);
+          INK_R17_VD_ADD4(au0, au1, au2, au3, j_acc, vu);
+          __builtin_amdgcn_sched_barrier(0);
 
-      qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
-      x0_c = x0_n; x1_c = x1_n; dav_c = dav_n;
+          qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
+          x0_c = x0_n; x1_c = x1_n; dav_c = dav_n;
+        }
+      }
     }
 
     const float gv = ink_r17_vd_oct_tree_f((ag0 + ag2) + (ag1 + ag3));
@@ -744,93 +752,99 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
     u32 dg_c = (u32)d_g[0u];
     __asm__ volatile("" : "+v"(dg_c), "+v"(auxg_c));
 
+    /* Unrolled by four for a constant accumulator index, as in the nj == 1 path. */
 #pragma clang loop unroll(disable)
-    for (u32 sb = 0u; sb < mb; sb++) {
-      const u32 sb_u = (u32)__builtin_amdgcn_readfirstlane((int)sb);
-      const u32 b = (sb_u << 3u) + s;
-      const u32 j_acc = sb_u & 3u;
-      const u32 sb_n = (sb_u + 1u < mb) ? (sb_u + 1u) : sb_u;
+    for (u32 sb4 = 0u; sb4 < mb; sb4 += 4u) {
+#pragma unroll
+      for (u32 j_acc = 0u; j_acc < 4u; j_acc++) {
+        const u32 sb = sb4 + j_acc;
+        if (sb < mb) {
+          const u32 sb_u = (u32)__builtin_amdgcn_readfirstlane((int)sb);
+          const u32 b = (sb_u << 3u) + s;
+          const u32 sb_n = (sb_u + 1u < mb) ? (sb_u + 1u) : sb_u;
 
-      const ink_r17_vd_u2 qu_c = ink_r17_vd_ld2(qs_u + (ink_r17_vd_u64)sb_u * 32ull);
-      const u32 auxu_c = aux_u[(ink_r17_vd_u64)sb_u * 32ull];
-      const u32 du_c = (u32)d_u[(ink_r17_vd_u64)sb_u * 4ull];
+          const ink_r17_vd_u2 qu_c = ink_r17_vd_ld2(qs_u + (ink_r17_vd_u64)sb_u * 32ull);
+          const u32 auxu_c = aux_u[(ink_r17_vd_u64)sb_u * 32ull];
+          const u32 du_c = (u32)d_u[(ink_r17_vd_u64)sb_u * 4ull];
 
-      /* Load both tokens' X block once; reused for Gate AND Up! */
-      u32x4 x0_0, x1_0, x0_1, x1_1;
-      float d0, d1;
-      if (use_lds_x) {
-        x0_0 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[0u] + (b << 3u));
-        x1_0 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[0u] + (b << 3u) + 4u);
-        d0 = ink_r17_vd_fl_lds.xd[0u][b];
-        x0_1 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[1u] + (b << 3u));
-        x1_1 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[1u] + (b << 3u) + 4u);
-        d1 = ink_r17_vd_fl_lds.xd[1u][b];
-      } else {
-        x0_0 = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)b << 5u));
-        x1_0 = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)b << 5u) + 16ull);
-        d0 = dap0[b];
-        x0_1 = ink_r17_vd_ld4(xp1 + ((ink_r17_vd_u64)b << 5u));
-        x1_1 = ink_r17_vd_ld4(xp1 + ((ink_r17_vd_u64)b << 5u) + 16ull);
-        d1 = dap1[b];
+          /* Load both tokens' X block once; reused for Gate AND Up! */
+          u32x4 x0_0, x1_0, x0_1, x1_1;
+          float d0, d1;
+          if (use_lds_x) {
+            x0_0 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[0u] + (b << 3u));
+            x1_0 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[0u] + (b << 3u) + 4u);
+            d0 = ink_r17_vd_fl_lds.xd[0u][b];
+            x0_1 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[1u] + (b << 3u));
+            x1_1 = *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[1u] + (b << 3u) + 4u);
+            d1 = ink_r17_vd_fl_lds.xd[1u][b];
+          } else {
+            x0_0 = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)b << 5u));
+            x1_0 = ink_r17_vd_ld4(xp0 + ((ink_r17_vd_u64)b << 5u) + 16ull);
+            d0 = dap0[b];
+            x0_1 = ink_r17_vd_ld4(xp1 + ((ink_r17_vd_u64)b << 5u));
+            x1_1 = ink_r17_vd_ld4(xp1 + ((ink_r17_vd_u64)b << 5u) + 16ull);
+            d1 = dap1[b];
+          }
+
+          /* Gate decode + 2-token dot4. */
+          {
+            const u32 q01 = qg_c.x, q23 = qg_c.y;
+            const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
+            const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
+            const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
+            const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
+            const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
+            const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
+            __builtin_amdgcn_sched_barrier(0);
+
+            const float dw = ink_r17_vd_h2f(dg_c) * (0.5f + (float)(auxg_c >> 28u)) * 0.5f;
+            u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
+            ink_r17_vd_ksw(g_lo0, g_hi0, auxg_c & 127u, &wl0, &wh0);
+            ink_r17_vd_ksw(g_lo1, g_hi1, (auxg_c >> 7u) & 127u, &wl1, &wh1);
+            ink_r17_vd_ksw(g_lo2, g_hi2, (auxg_c >> 14u) & 127u, &wl2, &wh2);
+            ink_r17_vd_ksw(g_lo3, g_hi3, (auxg_c >> 21u) & 127u, &wl3, &wh3);
+
+            INK_R17_VD_ADD4(ag0_0, ag0_1, ag0_2, ag0_3, j_acc,
+                            ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));
+            INK_R17_VD_ADD4(ag1_0, ag1_1, ag1_2, ag1_3, j_acc,
+                            ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_1, x1_1, d1));
+          }
+          __builtin_amdgcn_sched_barrier(0);
+
+          /* Issue next-SB Gate prefetch before Up decode + dot4. */
+          const ink_r17_vd_u2 qg_n = ink_r17_vd_ld2(qs_g + (ink_r17_vd_u64)sb_n * 32ull);
+          const u32 auxg_n = aux_g[(ink_r17_vd_u64)sb_n * 32ull];
+          const u32 dg_n = (u32)d_g[(ink_r17_vd_u64)sb_n * 4ull];
+          __builtin_amdgcn_sched_barrier(0);
+
+          /* Up decode + 2-token dot4. */
+          {
+            const u32 q01 = qu_c.x, q23 = qu_c.y;
+            const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
+            const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
+            const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
+            const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
+            const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
+            const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
+            __builtin_amdgcn_sched_barrier(0);
+
+            const float dw = ink_r17_vd_h2f(du_c) * (0.5f + (float)(auxu_c >> 28u)) * 0.5f;
+            u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
+            ink_r17_vd_ksw(g_lo0, g_hi0, auxu_c & 127u, &wl0, &wh0);
+            ink_r17_vd_ksw(g_lo1, g_hi1, (auxu_c >> 7u) & 127u, &wl1, &wh1);
+            ink_r17_vd_ksw(g_lo2, g_hi2, (auxu_c >> 14u) & 127u, &wl2, &wh2);
+            ink_r17_vd_ksw(g_lo3, g_hi3, (auxu_c >> 21u) & 127u, &wl3, &wh3);
+
+            INK_R17_VD_ADD4(au0_0, au0_1, au0_2, au0_3, j_acc,
+                            ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));
+            INK_R17_VD_ADD4(au1_0, au1_1, au1_2, au1_3, j_acc,
+                            ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_1, x1_1, d1));
+          }
+          __builtin_amdgcn_sched_barrier(0);
+
+          qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
+        }
       }
-
-      /* Gate decode + 2-token dot4. */
-      {
-        const u32 q01 = qg_c.x, q23 = qg_c.y;
-        const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
-        const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
-        const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
-        const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
-        const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
-        const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
-        __builtin_amdgcn_sched_barrier(0);
-
-        const float dw = ink_r17_vd_h2f(dg_c) * (0.5f + (float)(auxg_c >> 28u)) * 0.5f;
-        u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
-        ink_r17_vd_ksw(g_lo0, g_hi0, auxg_c & 127u, &wl0, &wh0);
-        ink_r17_vd_ksw(g_lo1, g_hi1, (auxg_c >> 7u) & 127u, &wl1, &wh1);
-        ink_r17_vd_ksw(g_lo2, g_hi2, (auxg_c >> 14u) & 127u, &wl2, &wh2);
-        ink_r17_vd_ksw(g_lo3, g_hi3, (auxg_c >> 21u) & 127u, &wl3, &wh3);
-
-        INK_R17_VD_ADD4(ag0_0, ag0_1, ag0_2, ag0_3, j_acc,
-                        ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));
-        INK_R17_VD_ADD4(ag1_0, ag1_1, ag1_2, ag1_3, j_acc,
-                        ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_1, x1_1, d1));
-      }
-      __builtin_amdgcn_sched_barrier(0);
-
-      /* Issue next-SB Gate prefetch before Up decode + dot4. */
-      const ink_r17_vd_u2 qg_n = ink_r17_vd_ld2(qs_g + (ink_r17_vd_u64)sb_n * 32ull);
-      const u32 auxg_n = aux_g[(ink_r17_vd_u64)sb_n * 32ull];
-      const u32 dg_n = (u32)d_g[(ink_r17_vd_u64)sb_n * 4ull];
-      __builtin_amdgcn_sched_barrier(0);
-
-      /* Up decode + 2-token dot4. */
-      {
-        const u32 q01 = qu_c.x, q23 = qu_c.y;
-        const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
-        const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
-        const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
-        const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
-        const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
-        const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
-        __builtin_amdgcn_sched_barrier(0);
-
-        const float dw = ink_r17_vd_h2f(du_c) * (0.5f + (float)(auxu_c >> 28u)) * 0.5f;
-        u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
-        ink_r17_vd_ksw(g_lo0, g_hi0, auxu_c & 127u, &wl0, &wh0);
-        ink_r17_vd_ksw(g_lo1, g_hi1, (auxu_c >> 7u) & 127u, &wl1, &wh1);
-        ink_r17_vd_ksw(g_lo2, g_hi2, (auxu_c >> 14u) & 127u, &wl2, &wh2);
-        ink_r17_vd_ksw(g_lo3, g_hi3, (auxu_c >> 21u) & 127u, &wl3, &wh3);
-
-        INK_R17_VD_ADD4(au0_0, au0_1, au0_2, au0_3, j_acc,
-                        ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));
-        INK_R17_VD_ADD4(au1_0, au1_1, au1_2, au1_3, j_acc,
-                        ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_1, x1_1, d1));
-      }
-      __builtin_amdgcn_sched_barrier(0);
-
-      qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
     }
 
     {

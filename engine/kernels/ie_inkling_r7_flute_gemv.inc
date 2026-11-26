@@ -242,41 +242,49 @@ KERNEL ie_inkling_gexp_iq3xxs_flute_situ_t1_r7(
   float dav_c = dap[s];
   __asm__ volatile("" : "+v"(dg_c), "+v"(auxg_c));
 
-#pragma unroll 1
-  for (u32 sb = 0u; sb < mb; sb++) {
-    const u32 j_acc = sb & 3u;
-    const unsigned long gu = gu0 + (unsigned long)sb;
-    const ink_r7_fl_u32x2 qu_c = ink_r7_fl_ld2(p_qs + gu * 32ul + (unsigned long)l);
-    const u32 auxu_c = p_aux[gu * 32ul + (unsigned long)l];
-    const u32 du_c = (u32)p_d[gu * 4ul + (unsigned long)k];
-    __builtin_amdgcn_sched_barrier(0);
+  /* Four super-blocks per pass, unrolled, so the accumulator index is a constant in each copy and
+   * INK_R7_FL_ADD4 is one add instead of a scalar compare/branch ladder on sb & 3.
+   * Every accumulator still takes the same super-blocks in the same order. */
+#pragma clang loop unroll(disable)
+  for (u32 sb4 = 0u; sb4 < mb; sb4 += 4u) {
+#pragma unroll
+    for (u32 j_acc = 0u; j_acc < 4u; j_acc++) {
+      const u32 sb = sb4 + j_acc;
+      if (sb < mb) {
+        const unsigned long gu = gu0 + (unsigned long)sb;
+        const ink_r7_fl_u32x2 qu_c = ink_r7_fl_ld2(p_qs + gu * 32ul + (unsigned long)l);
+        const u32 auxu_c = p_aux[gu * 32ul + (unsigned long)l];
+        const u32 du_c = (u32)p_d[gu * 4ul + (unsigned long)k];
+        __builtin_amdgcn_sched_barrier(0);
 
-    const float vg = ink_r7_fl_iq3_stream_dot(ink_r7_fl_t1_lut, dg_c, auxg_c, qg_c, x0_c, x1_c, dav_c);
-    INK_R7_FL_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
-    __builtin_amdgcn_sched_barrier(0);
+        const float vg = ink_r7_fl_iq3_stream_dot(ink_r7_fl_t1_lut, dg_c, auxg_c, qg_c, x0_c, x1_c, dav_c);
+        INK_R7_FL_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
+        __builtin_amdgcn_sched_barrier(0);
 
-    ink_r7_fl_u32x2 qg_n = (ink_r7_fl_u32x2){0u, 0u};
-    u32 auxg_n = 0u, dg_n = 0u;
-    u32x4 x0_n = (u32x4)(0u), x1_n = (u32x4)(0u);
-    float dav_n = 0.0f;
-    if (sb + 1u < mb) {
-      const unsigned long ggn = gg0 + (unsigned long)(sb + 1u);
-      const u32 bn = ((sb + 1u) << 3u) + s;
-      qg_n = ink_r7_fl_ld2(p_qs + ggn * 32ul + (unsigned long)l);
-      auxg_n = p_aux[ggn * 32ul + (unsigned long)l];
-      dg_n = (u32)p_d[ggn * 4ul + (unsigned long)k];
-      x0_n = ink_r7_fl_ld4(xp + (bn << 5u));
-      x1_n = ink_r7_fl_ld4(xp + (bn << 5u) + 16u);
-      dav_n = dap[bn];
+        ink_r7_fl_u32x2 qg_n = (ink_r7_fl_u32x2){0u, 0u};
+        u32 auxg_n = 0u, dg_n = 0u;
+        u32x4 x0_n = (u32x4)(0u), x1_n = (u32x4)(0u);
+        float dav_n = 0.0f;
+        if (sb + 1u < mb) {
+          const unsigned long ggn = gg0 + (unsigned long)(sb + 1u);
+          const u32 bn = ((sb + 1u) << 3u) + s;
+          qg_n = ink_r7_fl_ld2(p_qs + ggn * 32ul + (unsigned long)l);
+          auxg_n = p_aux[ggn * 32ul + (unsigned long)l];
+          dg_n = (u32)p_d[ggn * 4ul + (unsigned long)k];
+          x0_n = ink_r7_fl_ld4(xp + (bn << 5u));
+          x1_n = ink_r7_fl_ld4(xp + (bn << 5u) + 16u);
+          dav_n = dap[bn];
+        }
+        __builtin_amdgcn_sched_barrier(0);
+
+        const float vu = ink_r7_fl_iq3_stream_dot(ink_r7_fl_t1_lut, du_c, auxu_c, qu_c, x0_c, x1_c, dav_c);
+        INK_R7_FL_ADD4(au0, au1, au2, au3, j_acc, vu);
+        __builtin_amdgcn_sched_barrier(0);
+
+        qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
+        x0_c = x0_n; x1_c = x1_n; dav_c = dav_n;
+      }
     }
-    __builtin_amdgcn_sched_barrier(0);
-
-    const float vu = ink_r7_fl_iq3_stream_dot(ink_r7_fl_t1_lut, du_c, auxu_c, qu_c, x0_c, x1_c, dav_c);
-    INK_R7_FL_ADD4(au0, au1, au2, au3, j_acc, vu);
-    __builtin_amdgcn_sched_barrier(0);
-
-    qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
-    x0_c = x0_n; x1_c = x1_n; dav_c = dav_n;
   }
 
   const float gv = ink_r7_fl_oct_tree_f((ag0 + ag2) + (ag1 + ag3));
@@ -360,41 +368,47 @@ KERNEL ie_inkling_gexp_iq3xxs_flute_situ_compact_r7(
     float dav_c = dap0[s];
     __asm__ volatile("" : "+v"(dg_c), "+v"(auxg_c));
 
-#pragma unroll 1
-    for (u32 sb = 0u; sb < mb; sb++) {
-      const u32 j_acc = sb & 3u;
-      const unsigned long gu = gu0 + (unsigned long)sb;
-      const ink_r7_fl_u32x2 qu_c = ink_r7_fl_ld2(p_qs + gu * 32ul + (unsigned long)l);
-      const u32 auxu_c = p_aux[gu * 32ul + (unsigned long)l];
-      const u32 du_c = (u32)p_d[gu * 4ul + (unsigned long)k];
-      __builtin_amdgcn_sched_barrier(0);
+    /* Unrolled by four for a constant accumulator index, as in the T=1 kernel above. */
+#pragma clang loop unroll(disable)
+    for (u32 sb4 = 0u; sb4 < mb; sb4 += 4u) {
+#pragma unroll
+      for (u32 j_acc = 0u; j_acc < 4u; j_acc++) {
+        const u32 sb = sb4 + j_acc;
+        if (sb < mb) {
+          const unsigned long gu = gu0 + (unsigned long)sb;
+          const ink_r7_fl_u32x2 qu_c = ink_r7_fl_ld2(p_qs + gu * 32ul + (unsigned long)l);
+          const u32 auxu_c = p_aux[gu * 32ul + (unsigned long)l];
+          const u32 du_c = (u32)p_d[gu * 4ul + (unsigned long)k];
+          __builtin_amdgcn_sched_barrier(0);
 
-      const float vg = ink_r7_fl_iq3_stream_dot(ink_r7_fl_cm_lut, dg_c, auxg_c, qg_c, x0_c, x1_c, dav_c);
-      INK_R7_FL_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
-      __builtin_amdgcn_sched_barrier(0);
+          const float vg = ink_r7_fl_iq3_stream_dot(ink_r7_fl_cm_lut, dg_c, auxg_c, qg_c, x0_c, x1_c, dav_c);
+          INK_R7_FL_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
+          __builtin_amdgcn_sched_barrier(0);
 
-      ink_r7_fl_u32x2 qg_n = (ink_r7_fl_u32x2){0u, 0u};
-      u32 auxg_n = 0u, dg_n = 0u;
-      u32x4 x0_n = (u32x4)(0u), x1_n = (u32x4)(0u);
-      float dav_n = 0.0f;
-      if (sb + 1u < mb) {
-        const unsigned long ggn = gg0 + (unsigned long)(sb + 1u);
-        const u32 bn = ((sb + 1u) << 3u) + s;
-        qg_n = ink_r7_fl_ld2(p_qs + ggn * 32ul + (unsigned long)l);
-        auxg_n = p_aux[ggn * 32ul + (unsigned long)l];
-        dg_n = (u32)p_d[ggn * 4ul + (unsigned long)k];
-        x0_n = ink_r7_fl_ld4(xp0 + (bn << 5u));
-        x1_n = ink_r7_fl_ld4(xp0 + (bn << 5u) + 16u);
-        dav_n = dap0[bn];
+          ink_r7_fl_u32x2 qg_n = (ink_r7_fl_u32x2){0u, 0u};
+          u32 auxg_n = 0u, dg_n = 0u;
+          u32x4 x0_n = (u32x4)(0u), x1_n = (u32x4)(0u);
+          float dav_n = 0.0f;
+          if (sb + 1u < mb) {
+            const unsigned long ggn = gg0 + (unsigned long)(sb + 1u);
+            const u32 bn = ((sb + 1u) << 3u) + s;
+            qg_n = ink_r7_fl_ld2(p_qs + ggn * 32ul + (unsigned long)l);
+            auxg_n = p_aux[ggn * 32ul + (unsigned long)l];
+            dg_n = (u32)p_d[ggn * 4ul + (unsigned long)k];
+            x0_n = ink_r7_fl_ld4(xp0 + (bn << 5u));
+            x1_n = ink_r7_fl_ld4(xp0 + (bn << 5u) + 16u);
+            dav_n = dap0[bn];
+          }
+          __builtin_amdgcn_sched_barrier(0);
+
+          const float vu = ink_r7_fl_iq3_stream_dot(ink_r7_fl_cm_lut, du_c, auxu_c, qu_c, x0_c, x1_c, dav_c);
+          INK_R7_FL_ADD4(au0, au1, au2, au3, j_acc, vu);
+          __builtin_amdgcn_sched_barrier(0);
+
+          qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
+          x0_c = x0_n; x1_c = x1_n; dav_c = dav_n;
+        }
       }
-      __builtin_amdgcn_sched_barrier(0);
-
-      const float vu = ink_r7_fl_iq3_stream_dot(ink_r7_fl_cm_lut, du_c, auxu_c, qu_c, x0_c, x1_c, dav_c);
-      INK_R7_FL_ADD4(au0, au1, au2, au3, j_acc, vu);
-      __builtin_amdgcn_sched_barrier(0);
-
-      qg_c = qg_n; auxg_c = auxg_n; dg_c = dg_n;
-      x0_c = x0_n; x1_c = x1_n; dav_c = dav_n;
     }
 
     const float gv = ink_r7_fl_oct_tree_f((ag0 + ag2) + (ag1 + ag3));
