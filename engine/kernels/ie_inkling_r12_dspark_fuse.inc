@@ -777,6 +777,8 @@ static inline __attribute__((always_inline)) void ink_r12_ds_wmma_merge_head(
   ink_r12_ds_emit_head_q8(acc * inv, ot_h, aqt, h, n_head, l, stg_w);
 }
 
+/* Capped at 96 VGPRs (16 waves per SIMD): unconstrained it takes 104, which costs four waves. */
+__attribute__((amdgpu_waves_per_eu(16, 16)))
 KERNEL ie_inkling_ds_attn_wmma_q8_r12(
     const G float *q, const G kvt *kc_ctx, const G kvt *vc_ctx,
     const G float *k_blk, const G float *v_blk, G float *out, G u8 *aq,
