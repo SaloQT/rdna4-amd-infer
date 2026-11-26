@@ -503,18 +503,25 @@ KERNEL ie_inkling_gexp_iq4nl_wave_ver_r13(
 
     if (nj == 1u) {
       float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+      /* Four steps per pass, unrolled, so the accumulator index is a constant in each copy and
+       * INK_R13_RP_ACC_FMA is one FMA instead of a scalar compare/branch ladder on st & 3.
+       * Every accumulator still takes the same steps in the same order. */
 #pragma clang loop unroll(disable)
-      for (u32 st = 0u; st < nstep_full; st++) {
-        const u32 b = (st << 3u) + sl;
-        const unsigned long dblk = (unsigned long)(st << 5u) + (unsigned long)l;
-        const u32x4 w4 = ink_r13_rp_nt4(eqw + dblk * 4ul);
-        const float sc = (float)ink_r13_rp_nt_f16(eqs + dblk);
-        const u32x4 x0 = INK_R13_RP_RBL128(rx0, b * 32u, 2);
-        const u32x4 x1 = INK_R13_RP_RBL128(rx0, b * 32u + 16u, 2);
-        const float dv = INK_R13_RP_RBLF32(rx0, da_off + b * 4u, 2);
-        const float val = sc * (float)ink_r13_rp_iq4_dot4(w4, x0, x1);
-        const u32 j = st & 3u;
-        INK_R13_RP_ACC_FMA(a0, a1, a2, a3, j, val, dv);
+      for (u32 st4 = 0u; st4 < nstep_full; st4 += 4u) {
+#pragma unroll
+        for (u32 j = 0u; j < 4u; j++) {
+          const u32 st = st4 + j;
+          if (st >= nstep_full) break;
+          const u32 b = (st << 3u) + sl;
+          const unsigned long dblk = (unsigned long)(st << 5u) + (unsigned long)l;
+          const u32x4 w4 = ink_r13_rp_nt4(eqw + dblk * 4ul);
+          const float sc = (float)ink_r13_rp_nt_f16(eqs + dblk);
+          const u32x4 x0 = INK_R13_RP_RBL128(rx0, b * 32u, 2);
+          const u32x4 x1 = INK_R13_RP_RBL128(rx0, b * 32u + 16u, 2);
+          const float dv = INK_R13_RP_RBLF32(rx0, da_off + b * 4u, 2);
+          const float val = sc * (float)ink_r13_rp_iq4_dot4(w4, x0, x1);
+          INK_R13_RP_ACC_FMA(a0, a1, a2, a3, j, val, dv);
+        }
       }
       if (rem > 0u && sl < rem) {
         const u32 b = (nstep_full << 3u) + sl;
@@ -544,47 +551,52 @@ KERNEL ie_inkling_gexp_iq4nl_wave_ver_r13(
       float a3_0 = 0.0f, a3_1 = 0.0f, a3_2 = 0.0f, a3_3 = 0.0f;
 
       const u32 nstep = nstep_full + (rem > 0u ? 1u : 0u);
+      /* Unrolled by four for a constant accumulator index, as in the nj == 1 loop above. */
 #pragma clang loop unroll(disable)
-      for (u32 st = 0u; st < nstep; st++) {
-        const u32 b = (st << 3u) + sl;
-        if (b < nb) {
-          const unsigned long dblk = (st < nstep_full)
-                                         ? ((unsigned long)(st << 5u) + (unsigned long)l)
-                                         : ((unsigned long)(nstep_full << 5u) + (unsigned long)(sub * rem + sl));
-          const u32x4 w4 = ink_r13_rp_rt4(eqw + dblk * 4ul);
-          const float sc_f = (float)eqs[dblk];
-          const u32 wx = w4.x, wy = w4.y, wz = w4.z, ww = w4.w;
-          const u32 wl0 = ie_iq4_map(wx & 0x0F0F0F0Fu), wh0 = ie_iq4_map((wx >> 4u) & 0x0F0F0F0Fu);
-          const u32 wl1 = ie_iq4_map(wy & 0x0F0F0F0Fu), wh1 = ie_iq4_map((wy >> 4u) & 0x0F0F0F0Fu);
-          const u32 wl2 = ie_iq4_map(wz & 0x0F0F0F0Fu), wh2 = ie_iq4_map((wz >> 4u) & 0x0F0F0F0Fu);
-          const u32 wl3 = ie_iq4_map(ww & 0x0F0F0F0Fu), wh3 = ie_iq4_map((ww >> 4u) & 0x0F0F0F0Fu);
-          const u32 j_acc = st & 3u;
-          const u32 bo = b * 32u, doff = da_off + b * 4u;
+      for (u32 st4 = 0u; st4 < nstep; st4 += 4u) {
+#pragma unroll
+        for (u32 j_acc = 0u; j_acc < 4u; j_acc++) {
+          const u32 st = st4 + j_acc;
+          if (st >= nstep) break;
+          const u32 b = (st << 3u) + sl;
+          if (b < nb) {
+            const unsigned long dblk = (st < nstep_full)
+                                           ? ((unsigned long)(st << 5u) + (unsigned long)l)
+                                           : ((unsigned long)(nstep_full << 5u) + (unsigned long)(sub * rem + sl));
+            const u32x4 w4 = ink_r13_rp_rt4(eqw + dblk * 4ul);
+            const float sc_f = (float)eqs[dblk];
+            const u32 wx = w4.x, wy = w4.y, wz = w4.z, ww = w4.w;
+            const u32 wl0 = ie_iq4_map(wx & 0x0F0F0F0Fu), wh0 = ie_iq4_map((wx >> 4u) & 0x0F0F0F0Fu);
+            const u32 wl1 = ie_iq4_map(wy & 0x0F0F0F0Fu), wh1 = ie_iq4_map((wy >> 4u) & 0x0F0F0F0Fu);
+            const u32 wl2 = ie_iq4_map(wz & 0x0F0F0F0Fu), wh2 = ie_iq4_map((wz >> 4u) & 0x0F0F0F0Fu);
+            const u32 wl3 = ie_iq4_map(ww & 0x0F0F0F0Fu), wh3 = ie_iq4_map((ww >> 4u) & 0x0F0F0F0Fu);
+            const u32 bo = b * 32u, doff = da_off + b * 4u;
 
-          const float v0 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
-              wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3,
-              INK_R13_RP_RBL128(rx0, bo, 2), INK_R13_RP_RBL128(rx0, bo + 16u, 2));
-          INK_R13_RP_ACC_FMA(a0_0, a0_1, a0_2, a0_3, j_acc, v0, INK_R13_RP_RBLF32(rx0, doff, 2));
-
-          const float v1 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
-              wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3,
-              INK_R13_RP_RBL128(rx1, bo, 2), INK_R13_RP_RBL128(rx1, bo + 16u, 2));
-          INK_R13_RP_ACC_FMA(a1_0, a1_1, a1_2, a1_3, j_acc, v1, INK_R13_RP_RBLF32(rx1, doff, 2));
-
-          if (nj > 2u) {
-            const float v2 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
+            const float v0 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
                 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3,
-                INK_R13_RP_RBL128(rx2, bo, 2), INK_R13_RP_RBL128(rx2, bo + 16u, 2));
-            INK_R13_RP_ACC_FMA(a2_0, a2_1, a2_2, a2_3, j_acc, v2, INK_R13_RP_RBLF32(rx2, doff, 2));
-            if (nj > 3u) {
-              const float v3 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
+                INK_R13_RP_RBL128(rx0, bo, 2), INK_R13_RP_RBL128(rx0, bo + 16u, 2));
+            INK_R13_RP_ACC_FMA(a0_0, a0_1, a0_2, a0_3, j_acc, v0, INK_R13_RP_RBLF32(rx0, doff, 2));
+
+            const float v1 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
+                wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3,
+                INK_R13_RP_RBL128(rx1, bo, 2), INK_R13_RP_RBL128(rx1, bo + 16u, 2));
+            INK_R13_RP_ACC_FMA(a1_0, a1_1, a1_2, a1_3, j_acc, v1, INK_R13_RP_RBLF32(rx1, doff, 2));
+
+            if (nj > 2u) {
+              const float v2 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
                   wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3,
-                  INK_R13_RP_RBL128(rx3, bo, 2), INK_R13_RP_RBL128(rx3, bo + 16u, 2));
-              INK_R13_RP_ACC_FMA(a3_0, a3_1, a3_2, a3_3, j_acc, v3, INK_R13_RP_RBLF32(rx3, doff, 2));
+                  INK_R13_RP_RBL128(rx2, bo, 2), INK_R13_RP_RBL128(rx2, bo + 16u, 2));
+              INK_R13_RP_ACC_FMA(a2_0, a2_1, a2_2, a2_3, j_acc, v2, INK_R13_RP_RBLF32(rx2, doff, 2));
+              if (nj > 3u) {
+                const float v3 = sc_f * (float)ink_r13_rp_iq4_dot_pre(
+                    wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3,
+                    INK_R13_RP_RBL128(rx3, bo, 2), INK_R13_RP_RBL128(rx3, bo + 16u, 2));
+                INK_R13_RP_ACC_FMA(a3_0, a3_1, a3_2, a3_3, j_acc, v3, INK_R13_RP_RBLF32(rx3, doff, 2));
+              }
             }
           }
+          __builtin_amdgcn_sched_barrier(0);
         }
-        __builtin_amdgcn_sched_barrier(0);
       }
 
       const float acc0 = ink_r13_rp_oct_tree_f(full_wave ? ((a0_0 + a0_2) + (a0_1 + a0_3)) : (a0_0 + a0_1));
@@ -1101,18 +1113,26 @@ KERNEL ie_inkling_gexp_iq4nl_wave_t1_r13(
   const u32 nstep_full = nb >> 3u;
   const u32 rem = nb & 7u;
 
+  /* Four steps per pass, unrolled, so the accumulator index is a constant in each copy and
+   * INK_R13_RP_ACC_FMA is one FMA instead of a scalar compare/branch ladder on st & 3.
+   * Every accumulator still takes the same steps in the same order. */
 #pragma clang loop unroll(disable)
-  for (u32 st = 0u; st < nstep_full; st++) {
-    const u32 b = (st << 3u) + sl;
-    const unsigned long dblk = (unsigned long)(st << 5u) + (unsigned long)l;
-    const u32x4 w4 = ink_r13_rp_nt4(eqw + dblk * 4ul);
-    const float sc = (float)ink_r13_rp_nt_f16(eqs + dblk);
-    const u32x4 x0 = INK_R13_RP_RBL128(rx, b * 32u, 0);
-    const u32x4 x1 = INK_R13_RP_RBL128(rx, b * 32u + 16u, 0);
-    const float dv = INK_R13_RP_RBLF32(rx, da_off + b * 4u, 0);
-    const float val = sc * (float)ink_r13_rp_iq4_dot4(w4, x0, x1);
-    const u32 j = st & 3u;
-    INK_R13_RP_ACC_FMA(a0, a1, a2, a3, j, val, dv);
+  for (u32 st4 = 0u; st4 < nstep_full; st4 += 4u) {
+#pragma unroll
+    for (u32 j = 0u; j < 4u; j++) {
+      const u32 st = st4 + j;
+      if (st < nstep_full) {
+        const u32 b = (st << 3u) + sl;
+        const unsigned long dblk = (unsigned long)(st << 5u) + (unsigned long)l;
+        const u32x4 w4 = ink_r13_rp_nt4(eqw + dblk * 4ul);
+        const float sc = (float)ink_r13_rp_nt_f16(eqs + dblk);
+        const u32x4 x0 = INK_R13_RP_RBL128(rx, b * 32u, 0);
+        const u32x4 x1 = INK_R13_RP_RBL128(rx, b * 32u + 16u, 0);
+        const float dv = INK_R13_RP_RBLF32(rx, da_off + b * 4u, 0);
+        const float val = sc * (float)ink_r13_rp_iq4_dot4(w4, x0, x1);
+        INK_R13_RP_ACC_FMA(a0, a1, a2, a3, j, val, dv);
+      }
+    }
   }
   if (rem > 0u && sl < rem) {
     const u32 b = (nstep_full << 3u) + sl;
