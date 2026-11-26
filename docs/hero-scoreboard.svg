@@ -33,7 +33,7 @@
   <text x="228" y="148" fill="#cbd2df" font-size="10.5" font-family="ui-monospace,Consolas,monospace">7.58s TTFT · 6,135 @ 4K</text>
 
   <line x1="28" y1="163" x2="400" y2="163" stroke="#1b1f29" stroke-width="1"/>
-  <text x="28" y="182" fill="#8c95a6" font-size="10.5" font-family="ui-monospace,Consolas,monospace">q4rot · 107.5-137@256K · 585 lnch · 75.6ms ViT</text>
+  <text x="28" y="182" fill="#8c95a6" font-size="10.5" font-family="ui-monospace,Consolas,monospace">q4rot · 107.5-137@256K · 585 lnch · 73.4ms ViT</text>
 
   <!-- RIGHT CARD: SALUKI-27B -->
   <rect x="426" y="38" width="400" height="162" rx="4" fill="#111318" stroke="#232732"/>
