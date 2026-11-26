@@ -674,7 +674,7 @@ static inline __attribute__((always_inline)) void ink_r15_q4_far_blk32_step(
  * Kernel 2A: ie_inkling_rel_attn_pf_far_glob_q4_r15
  *   Dedicated Zero-rb NB=32 Global Q4_0+FWHT-128 Far-Field Prefill.
  *   Grid:   ((T + 31u) / 32u, n_kv, 1u), NT = 256.
- *   Buffer: part = b->at_part (stride 130 floats, fits T <= 1024 in 12.19 MiB!).
+ *   Buffer: part = b->at_part (stride INK_R15_Q4_PSTR = 132 floats, fits T <= 1024 in 12.38 MiB!).
  *   Output: (M_far [log2], L_far, O_far [unnormalized, rotated if rot_flags & 2]).
  * ========================================================================== */
 __attribute__((amdgpu_waves_per_eu(12, 16)))
@@ -1225,7 +1225,7 @@ static inline __attribute__((always_inline)) void ink_r15_q4_consumer16(
  * Kernel 1: ie_inkling_rel_attn_pf_split_glob_q4_r15
  *   Split-KV Incremental Global Q4_0+FWHT-128 Prefill (T=17..256, nsplit=2..16).
  *   Grid:    (((T + 31u) / 32u) * nsplit, n_kv, 1u), NT = 256.
- *   Buffer:  part = b->at_part (stride 130 floats, 0 B extra VRAM:
+ *   Buffer:  part = b->at_part (stride INK_R15_Q4_PSTR = 132 floats, 0 B extra VRAM:
  *            T=256 nsplit=4 -> 256 WGs; T=128 nsplit=8 -> 256 WGs!).
  *   Counter: count[tile * n_kv + kh] (self-reset to 0 by last arriving WG).
  * ========================================================================== */
