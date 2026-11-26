@@ -483,37 +483,56 @@ KERNEL ie_inkling_ds_qkv_rope_q4k_r17(
  *   Grid: (eff / 32, max_packs, 1), NT=256, 13,568 B LDS (4 WGs/CU).
  * ========================================================================== */
 
+static inline __attribute__((always_inline)) float ink_r17_vd_h2f(const u32 bits) {
+  float f = ie_rq_h2f(bits);
+  __asm__ volatile("" : "+v"(f));
+  return f;
+}
+
+/* Single-mul IQ3_XXS 7-bit+parity sign decode (bitwise-identical to rq_ksign7 + ie_rq_ssign). */
+static inline __attribute__((always_inline)) void ink_r17_vd_ksw(
+    const u32 g0, const u32 g1, const u32 s7, u32 *w0_out, u32 *w1_out) {
+  const u32 p_ = s7 * 0x00204081u;
+  const u32 t0 = p_ & 0x01010101u;
+  const u32 t1 = ((p_ >> 4u) | ((u32)__builtin_popcount(s7) << 24u)) & 0x01010101u;
+  const u32 m0 = __builtin_amdgcn_perm(0u, 0u, t0 | 0x0C0C0C0Cu);
+  const u32 m1 = __builtin_amdgcn_perm(0u, 0u, t1 | 0x0C0C0C0Cu);
+  *w0_out = (g0 ^ m0) + t0;
+  *w1_out = (g1 ^ m1) + t1;
+}
+
 static inline __attribute__((always_inline)) float ink_r17_vd_iq3_stream_dot(
-    const LDSP u32 *ulut, u32 d16, u32 aux, u32 q01, u32 q23,
+    u32 d16, u32 aux, u32 q01, u32 q23,
     u32x4 x0, u32x4 x1, float dav) {
 #pragma clang fp contract(off)
-  const float dw = ie_rq_h2f(d16) * (0.5f + (float)(aux >> 28u)) * 0.5f;
+  const float dw = ink_r17_vd_h2f(d16) * (0.5f + (float)(aux >> 28u)) * 0.5f;
   const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
   const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
-  const u32 g_lo0 = ulut[qp0 & 255u], g_hi0 = ulut[qp0 >> 8u];
-  const u32 g_lo1 = ulut[qp1 & 255u], g_hi1 = ulut[qp1 >> 8u];
-  const u32 g_lo2 = ulut[qp2 & 255u], g_hi2 = ulut[qp2 >> 8u];
-  const u32 g_lo3 = ulut[qp3 & 255u], g_hi3 = ulut[qp3 >> 8u];
+  const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
+  const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
+  const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
+  const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
   __builtin_amdgcn_sched_barrier(0);
 
   const u32 x00 = x0.x, x01 = x0.y, x02 = x0.z, x03 = x0.w;
   const u32 x10 = x1.x, x11 = x1.y, x12 = x1.z, x13 = x1.w;
 
-  const u32 s8_0 = rq_ksign7(aux & 127u);
-  u32 idot = ie_dot4_ss(0u, ie_rq_ssign(g_lo0, ie_rq_mask4(s8_0 & 15u)), x00);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_hi0, ie_rq_mask4(s8_0 >> 4u)), x01);
+  u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
+  ink_r17_vd_ksw(g_lo0, g_hi0, aux & 127u, &wl0, &wh0);
+  u32 idot = ie_dot4_ss(0u, wl0, x00);
+  idot = ie_dot4_ss(idot, wh0, x01);
 
-  const u32 s8_1 = rq_ksign7((aux >> 7u) & 127u);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_lo1, ie_rq_mask4(s8_1 & 15u)), x02);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_hi1, ie_rq_mask4(s8_1 >> 4u)), x03);
+  ink_r17_vd_ksw(g_lo1, g_hi1, (aux >> 7u) & 127u, &wl1, &wh1);
+  idot = ie_dot4_ss(idot, wl1, x02);
+  idot = ie_dot4_ss(idot, wh1, x03);
 
-  const u32 s8_2 = rq_ksign7((aux >> 14u) & 127u);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_lo2, ie_rq_mask4(s8_2 & 15u)), x10);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_hi2, ie_rq_mask4(s8_2 >> 4u)), x11);
+  ink_r17_vd_ksw(g_lo2, g_hi2, (aux >> 14u) & 127u, &wl2, &wh2);
+  idot = ie_dot4_ss(idot, wl2, x10);
+  idot = ie_dot4_ss(idot, wh2, x11);
 
-  const u32 s8_3 = rq_ksign7((aux >> 21u) & 127u);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_lo3, ie_rq_mask4(s8_3 & 15u)), x12);
-  idot = ie_dot4_ss(idot, ie_rq_ssign(g_hi3, ie_rq_mask4(s8_3 >> 4u)), x13);
+  ink_r17_vd_ksw(g_lo3, g_hi3, (aux >> 21u) & 127u, &wl3, &wh3);
+  idot = ie_dot4_ss(idot, wl3, x12);
+  idot = ie_dot4_ss(idot, wh3, x13);
 
   return dav * (dw * (float)(int)idot);
 }
@@ -536,7 +555,6 @@ static inline __attribute__((always_inline)) float ink_r17_vd_iq3_dot_pre(
 }
 
 typedef struct {
-  u32   lut[256u]                        __attribute__((aligned(16))); /*  1,024 B */
   u32   xq[4u][INK_R17_VD_FL_MAXNB * 8u] __attribute__((aligned(16))); /* 10,240 B */
   float xd[4u][INK_R17_VD_FL_MAXNB]      __attribute__((aligned(16))); /*  1,280 B */
   float g[4u][32u]                       __attribute__((aligned(16))); /*    512 B */
@@ -544,7 +562,7 @@ typedef struct {
 } ink_r17_vd_flute_lds_t;
 
 static LDS ink_r17_vd_flute_lds_t ink_r17_vd_fl_lds __attribute__((aligned(16)));
-_Static_assert(sizeof(ink_r17_vd_flute_lds_t) == 13568u, "ink_r17_vd_flute_lds_t must be 13,568 B (<= 16 KiB)");
+_Static_assert(sizeof(ink_r17_vd_flute_lds_t) == 12544u, "ink_r17_vd_flute_lds_t must be 12,544 B (<= 16 KiB)");
 
 KERNEL ie_inkling_flute_situ_ver_t8_r17(
     const G u8 *qw, const G u8 *X, G float *b_out, G u8 *q_out,
@@ -568,7 +586,6 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
   if (nj == 0u) return;
 
   const u32 t0 = tid();
-  ink_r17_vd_fl_lds.lut[t0] = ie_rq_iq3xxs_grid[t0];
 
   const u32 wv = (u32)__builtin_amdgcn_readfirstlane((int)(t0 >> 5u));
   const u32 l = lane(), k = l >> 3u, s = l & 7u;
@@ -587,7 +604,6 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
    *                   branch-free 1-SB prefetch, cached loads only.
    * ---------------------------------------------------------------------- */
   if (nj == 1u) {
-    lbarrier();
     const u32 p0 = (u32)__builtin_amdgcn_readfirstlane((int)list[lo]);
     const G u8 *xp0 = rq_ptr_u(X + (ink_r17_vd_u64)ink_r17_vd_div_x(p0, xdiv) * (ink_r17_vd_u64)xs);
     const G float *dap0 = (const G float *)(xp0 + x_sc_off);
@@ -627,7 +643,7 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
       __builtin_amdgcn_sched_barrier(0);
 
       const float vg = ink_r17_vd_iq3_stream_dot(
-          ink_r17_vd_fl_lds.lut, dg_c, auxg_c, qg_c.x, qg_c.y, x0_c, x1_c, dav_c);
+          dg_c, auxg_c, qg_c.x, qg_c.y, x0_c, x1_c, dav_c);
       INK_R17_VD_ADD4(ag0, ag1, ag2, ag3, j_acc, vg);
       __builtin_amdgcn_sched_barrier(0);
 
@@ -640,7 +656,7 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
       __builtin_amdgcn_sched_barrier(0);
 
       const float vu = ink_r17_vd_iq3_stream_dot(
-          ink_r17_vd_fl_lds.lut, du_c, auxu_c, qu_c.x, qu_c.y, x0_c, x1_c, dav_c);
+          du_c, auxu_c, qu_c.x, qu_c.y, x0_c, x1_c, dav_c);
       INK_R17_VD_ADD4(au0, au1, au2, au3, j_acc, vu);
       __builtin_amdgcn_sched_barrier(0);
 
@@ -748,21 +764,18 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
         const u32 q01 = qg_c.x, q23 = qg_c.y;
         const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
         const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
-        const u32 g_lo0 = ink_r17_vd_fl_lds.lut[qp0 & 255u], g_hi0 = ink_r17_vd_fl_lds.lut[qp0 >> 8u];
-        const u32 g_lo1 = ink_r17_vd_fl_lds.lut[qp1 & 255u], g_hi1 = ink_r17_vd_fl_lds.lut[qp1 >> 8u];
-        const u32 g_lo2 = ink_r17_vd_fl_lds.lut[qp2 & 255u], g_hi2 = ink_r17_vd_fl_lds.lut[qp2 >> 8u];
-        const u32 g_lo3 = ink_r17_vd_fl_lds.lut[qp3 & 255u], g_hi3 = ink_r17_vd_fl_lds.lut[qp3 >> 8u];
+        const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
+        const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
+        const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
+        const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
         __builtin_amdgcn_sched_barrier(0);
 
-        const float dw = ie_rq_h2f(dg_c) * (0.5f + (float)(auxg_c >> 28u)) * 0.5f;
-        const u32 s8_0 = rq_ksign7(auxg_c & 127u);
-        const u32 wl0 = ie_rq_ssign(g_lo0, ie_rq_mask4(s8_0 & 15u)), wh0 = ie_rq_ssign(g_hi0, ie_rq_mask4(s8_0 >> 4u));
-        const u32 s8_1 = rq_ksign7((auxg_c >> 7u) & 127u);
-        const u32 wl1 = ie_rq_ssign(g_lo1, ie_rq_mask4(s8_1 & 15u)), wh1 = ie_rq_ssign(g_hi1, ie_rq_mask4(s8_1 >> 4u));
-        const u32 s8_2 = rq_ksign7((auxg_c >> 14u) & 127u);
-        const u32 wl2 = ie_rq_ssign(g_lo2, ie_rq_mask4(s8_2 & 15u)), wh2 = ie_rq_ssign(g_hi2, ie_rq_mask4(s8_2 >> 4u));
-        const u32 s8_3 = rq_ksign7((auxg_c >> 21u) & 127u);
-        const u32 wl3 = ie_rq_ssign(g_lo3, ie_rq_mask4(s8_3 & 15u)), wh3 = ie_rq_ssign(g_hi3, ie_rq_mask4(s8_3 >> 4u));
+        const float dw = ink_r17_vd_h2f(dg_c) * (0.5f + (float)(auxg_c >> 28u)) * 0.5f;
+        u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
+        ink_r17_vd_ksw(g_lo0, g_hi0, auxg_c & 127u, &wl0, &wh0);
+        ink_r17_vd_ksw(g_lo1, g_hi1, (auxg_c >> 7u) & 127u, &wl1, &wh1);
+        ink_r17_vd_ksw(g_lo2, g_hi2, (auxg_c >> 14u) & 127u, &wl2, &wh2);
+        ink_r17_vd_ksw(g_lo3, g_hi3, (auxg_c >> 21u) & 127u, &wl3, &wh3);
 
         INK_R17_VD_ADD4(ag0_0, ag0_1, ag0_2, ag0_3, j_acc,
                         ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));
@@ -782,21 +795,18 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
         const u32 q01 = qu_c.x, q23 = qu_c.y;
         const u32 qp0 = q01 & 0xFFFFu, qp1 = q01 >> 16u;
         const u32 qp2 = q23 & 0xFFFFu, qp3 = q23 >> 16u;
-        const u32 g_lo0 = ink_r17_vd_fl_lds.lut[qp0 & 255u], g_hi0 = ink_r17_vd_fl_lds.lut[qp0 >> 8u];
-        const u32 g_lo1 = ink_r17_vd_fl_lds.lut[qp1 & 255u], g_hi1 = ink_r17_vd_fl_lds.lut[qp1 >> 8u];
-        const u32 g_lo2 = ink_r17_vd_fl_lds.lut[qp2 & 255u], g_hi2 = ink_r17_vd_fl_lds.lut[qp2 >> 8u];
-        const u32 g_lo3 = ink_r17_vd_fl_lds.lut[qp3 & 255u], g_hi3 = ink_r17_vd_fl_lds.lut[qp3 >> 8u];
+        const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
+        const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
+        const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
+        const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
         __builtin_amdgcn_sched_barrier(0);
 
-        const float dw = ie_rq_h2f(du_c) * (0.5f + (float)(auxu_c >> 28u)) * 0.5f;
-        const u32 s8_0 = rq_ksign7(auxu_c & 127u);
-        const u32 wl0 = ie_rq_ssign(g_lo0, ie_rq_mask4(s8_0 & 15u)), wh0 = ie_rq_ssign(g_hi0, ie_rq_mask4(s8_0 >> 4u));
-        const u32 s8_1 = rq_ksign7((auxu_c >> 7u) & 127u);
-        const u32 wl1 = ie_rq_ssign(g_lo1, ie_rq_mask4(s8_1 & 15u)), wh1 = ie_rq_ssign(g_hi1, ie_rq_mask4(s8_1 >> 4u));
-        const u32 s8_2 = rq_ksign7((auxu_c >> 14u) & 127u);
-        const u32 wl2 = ie_rq_ssign(g_lo2, ie_rq_mask4(s8_2 & 15u)), wh2 = ie_rq_ssign(g_hi2, ie_rq_mask4(s8_2 >> 4u));
-        const u32 s8_3 = rq_ksign7((auxu_c >> 21u) & 127u);
-        const u32 wl3 = ie_rq_ssign(g_lo3, ie_rq_mask4(s8_3 & 15u)), wh3 = ie_rq_ssign(g_hi3, ie_rq_mask4(s8_3 >> 4u));
+        const float dw = ink_r17_vd_h2f(du_c) * (0.5f + (float)(auxu_c >> 28u)) * 0.5f;
+        u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
+        ink_r17_vd_ksw(g_lo0, g_hi0, auxu_c & 127u, &wl0, &wh0);
+        ink_r17_vd_ksw(g_lo1, g_hi1, (auxu_c >> 7u) & 127u, &wl1, &wh1);
+        ink_r17_vd_ksw(g_lo2, g_hi2, (auxu_c >> 14u) & 127u, &wl2, &wh2);
+        ink_r17_vd_ksw(g_lo3, g_hi3, (auxu_c >> 21u) & 127u, &wl3, &wh3);
 
         INK_R17_VD_ADD4(au0_0, au0_1, au0_2, au0_3, j_acc,
                         ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));
@@ -919,10 +929,10 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
         const u32 q01_c = q_c.x, q23_c = q_c.y;
         const u32 qp0 = q01_c & 0xFFFFu, qp1 = q01_c >> 16u;
         const u32 qp2 = q23_c & 0xFFFFu, qp3 = q23_c >> 16u;
-        const u32 g_lo0 = ink_r17_vd_fl_lds.lut[qp0 & 255u], g_hi0 = ink_r17_vd_fl_lds.lut[qp0 >> 8u];
-        const u32 g_lo1 = ink_r17_vd_fl_lds.lut[qp1 & 255u], g_hi1 = ink_r17_vd_fl_lds.lut[qp1 >> 8u];
-        const u32 g_lo2 = ink_r17_vd_fl_lds.lut[qp2 & 255u], g_hi2 = ink_r17_vd_fl_lds.lut[qp2 >> 8u];
-        const u32 g_lo3 = ink_r17_vd_fl_lds.lut[qp3 & 255u], g_hi3 = ink_r17_vd_fl_lds.lut[qp3 >> 8u];
+        const u32 g_lo0 = ie_rq_iq3xxs_grid[qp0 & 255u], g_hi0 = ie_rq_iq3xxs_grid[qp0 >> 8u];
+        const u32 g_lo1 = ie_rq_iq3xxs_grid[qp1 & 255u], g_hi1 = ie_rq_iq3xxs_grid[qp1 >> 8u];
+        const u32 g_lo2 = ie_rq_iq3xxs_grid[qp2 & 255u], g_hi2 = ie_rq_iq3xxs_grid[qp2 >> 8u];
+        const u32 g_lo3 = ie_rq_iq3xxs_grid[qp3 & 255u], g_hi3 = ie_rq_iq3xxs_grid[qp3 >> 8u];
 
         /* Issue token 0 X load BEFORE sign-mask decode to hide LDS latency! */
         const u32x4 x0_0 = use_lds_x ? *(const LDSP u32x4 *)(ink_r17_vd_fl_lds.xq[0u] + (b << 3u))
@@ -932,15 +942,12 @@ KERNEL ie_inkling_flute_situ_ver_t8_r17(
         const float d0 = use_lds_x ? ink_r17_vd_fl_lds.xd[0u][b] : dap0[b];
         __builtin_amdgcn_sched_barrier(0);
 
-        const float dw = ie_rq_h2f(d_c) * (0.5f + (float)(aux_c >> 28u)) * 0.5f;
-        const u32 s8_0 = rq_ksign7(aux_c & 127u);
-        const u32 wl0 = ie_rq_ssign(g_lo0, ie_rq_mask4(s8_0 & 15u)), wh0 = ie_rq_ssign(g_hi0, ie_rq_mask4(s8_0 >> 4u));
-        const u32 s8_1 = rq_ksign7((aux_c >> 7u) & 127u);
-        const u32 wl1 = ie_rq_ssign(g_lo1, ie_rq_mask4(s8_1 & 15u)), wh1 = ie_rq_ssign(g_hi1, ie_rq_mask4(s8_1 >> 4u));
-        const u32 s8_2 = rq_ksign7((aux_c >> 14u) & 127u);
-        const u32 wl2 = ie_rq_ssign(g_lo2, ie_rq_mask4(s8_2 & 15u)), wh2 = ie_rq_ssign(g_hi2, ie_rq_mask4(s8_2 >> 4u));
-        const u32 s8_3 = rq_ksign7((aux_c >> 21u) & 127u);
-        const u32 wl3 = ie_rq_ssign(g_lo3, ie_rq_mask4(s8_3 & 15u)), wh3 = ie_rq_ssign(g_hi3, ie_rq_mask4(s8_3 >> 4u));
+        const float dw = ink_r17_vd_h2f(d_c) * (0.5f + (float)(aux_c >> 28u)) * 0.5f;
+        u32 wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3;
+        ink_r17_vd_ksw(g_lo0, g_hi0, aux_c & 127u, &wl0, &wh0);
+        ink_r17_vd_ksw(g_lo1, g_hi1, (aux_c >> 7u) & 127u, &wl1, &wh1);
+        ink_r17_vd_ksw(g_lo2, g_hi2, (aux_c >> 14u) & 127u, &wl2, &wh2);
+        ink_r17_vd_ksw(g_lo3, g_hi3, (aux_c >> 21u) & 127u, &wl3, &wh3);
 
         INK_R17_VD_ADD4(a0_0, a0_1, a0_2, a0_3, j_acc,
                         ink_r17_vd_iq3_dot_pre(wl0, wh0, wl1, wh1, wl2, wh2, wl3, wh3, dw, x0_0, x1_0, d0));

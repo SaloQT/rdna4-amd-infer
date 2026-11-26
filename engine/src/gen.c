@@ -6,6 +6,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
 #ifdef _WIN32
 #include <direct.h>
 #include <sys/utime.h>
@@ -3434,7 +3437,30 @@ static void dc_shuf_f16(const uint8_t *src, uint8_t *lo, uint8_t *hi, size_t n_e
   }
 }
 static void dc_unshuf_f16(const uint8_t *lo, const uint8_t *hi, uint8_t *dst, size_t n_elems) {
-  for (size_t i = 0; i < n_elems; i++) {
+  size_t i = 0u;
+#ifdef __AVX2__
+  for (; i + 32u <= n_elems; i += 32u) {
+    const __m256i vlo = _mm256_loadu_si256((const __m256i *)(lo + i));
+    const __m256i vhi = _mm256_loadu_si256((const __m256i *)(hi + i));
+    const __m256i u0 = _mm256_unpacklo_epi8(vlo, vhi);
+    const __m256i u1 = _mm256_unpackhi_epi8(vlo, vhi);
+    const __m256i o0 = _mm256_permute2x128_si256(u0, u1, 0x20);
+    const __m256i o1 = _mm256_permute2x128_si256(u0, u1, 0x31);
+    _mm256_storeu_si256((__m256i *)(dst + 2u * i), o0);
+    _mm256_storeu_si256((__m256i *)(dst + 2u * i + 32u), o1);
+  }
+#endif
+  for (; i + 8u <= n_elems; i += 8u) {
+    dst[2u * i + 0u] = lo[i + 0u]; dst[2u * i + 1u] = hi[i + 0u];
+    dst[2u * i + 2u] = lo[i + 1u]; dst[2u * i + 3u] = hi[i + 1u];
+    dst[2u * i + 4u] = lo[i + 2u]; dst[2u * i + 5u] = hi[i + 2u];
+    dst[2u * i + 6u] = lo[i + 3u]; dst[2u * i + 7u] = hi[i + 3u];
+    dst[2u * i + 8u] = lo[i + 4u]; dst[2u * i + 9u] = hi[i + 4u];
+    dst[2u * i + 10u] = lo[i + 5u]; dst[2u * i + 11u] = hi[i + 5u];
+    dst[2u * i + 12u] = lo[i + 6u]; dst[2u * i + 13u] = hi[i + 6u];
+    dst[2u * i + 14u] = lo[i + 7u]; dst[2u * i + 15u] = hi[i + 7u];
+  }
+  for (; i < n_elems; i++) {
     dst[2u * i] = lo[i];
     dst[2u * i + 1u] = hi[i];
   }
@@ -3795,37 +3821,177 @@ static void dc_v4_pack_job(const dcache *d, dc_job *j) {
   j->img.len = total_v4;
   free(shuf), free(out);
 }
+typedef struct {
+  const uint8_t *src;
+  uint8_t *dst;
+  uint32_t clen_word;
+  size_t ulen;
+} dc_v4_sjob;
+
+typedef struct {
+  const dc_v4_sjob *jobs;
+  uint32_t i0, i1;
+  int err;
+} dc_v4_sworker;
+
+static int dc_v4_exec_stripe(const dc_v4_sjob *j) {
+  const uint32_t slen = j->clen_word & ~DC_V4_RAW_BIT;
+  if (j->clen_word & DC_V4_RAW_BIT) {
+    if ((size_t)slen != j->ulen) return -1;
+    memcpy(j->dst, j->src, j->ulen);
+    return 0;
+  }
+  return dc_lz4_decompress(j->src, (size_t)slen, j->dst, j->ulen);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI dc_v4_sworker_fn(LPVOID arg) {
+  dc_v4_sworker *w = (dc_v4_sworker *)arg;
+  for (uint32_t i = w->i0; i < w->i1; i++) {
+    if (dc_v4_exec_stripe(&w->jobs[i]) != 0) { w->err = -1; break; }
+  }
+  return 0;
+}
+#endif
+
+static int dc_v4_run_stripes(const dc_v4_sjob *jobs, uint32_t n_jobs) {
+  if (n_jobs == 0u) return 0;
+#ifdef _WIN32
+  if (n_jobs >= 4u) {
+    uint32_t nt = n_jobs < 4u ? n_jobs : 4u;
+    dc_v4_sworker ws[4];
+    HANDLE hs[3];
+    uint32_t nh = 0u;
+    for (uint32_t t = 0u; t < nt; t++) {
+      ws[t].jobs = jobs;
+      ws[t].i0 = (n_jobs * t) / nt;
+      ws[t].i1 = (n_jobs * (t + 1u)) / nt;
+      ws[t].err = 0;
+    }
+    for (uint32_t t = 1u; t < nt; t++) {
+      HANDLE h = CreateThread(NULL, 0, dc_v4_sworker_fn, &ws[t], 0, NULL);
+      if (h) hs[nh++] = h;
+      else {
+        for (uint32_t i = ws[t].i0; i < ws[t].i1; i++)
+          if (dc_v4_exec_stripe(&jobs[i]) != 0) { ws[t].err = -1; break; }
+      }
+    }
+    for (uint32_t i = ws[0].i0; i < ws[0].i1; i++)
+      if (dc_v4_exec_stripe(&jobs[i]) != 0) { ws[0].err = -1; break; }
+    if (nh) {
+      WaitForMultipleObjects(nh, hs, TRUE, INFINITE);
+      for (uint32_t t = 0u; t < nh; t++) CloseHandle(hs[t]);
+    }
+    for (uint32_t t = 0u; t < nt; t++)
+      if (ws[t].err) return -1;
+    return 0;
+  }
+#endif
+  for (uint32_t i = 0u; i < n_jobs; i++)
+    if (dc_v4_exec_stripe(&jobs[i]) != 0) return -1;
+  return 0;
+}
+
+typedef struct {
+  const uint8_t *src_lo, *src_hi;
+  uint8_t *dst;
+  uint32_t clen_lo, clen_hi;
+  size_t half;
+} dc_v4_shuf_job;
+
+typedef struct {
+  const dc_v4_shuf_job *jobs;
+  uint32_t i0, i1;
+  size_t stripe_sz;
+  int err;
+} dc_v4_shuf_worker;
+
+static int dc_v4_exec_shuf_range(const dc_v4_shuf_job *jobs, uint32_t i0, uint32_t i1, size_t stripe_sz) {
+  uint8_t *tmp = (uint8_t *)dc_alloc(stripe_sz);
+  int err = 0;
+  for (uint32_t i = i0; i < i1 && !err; i++) {
+    const dc_v4_sjob j0 = {jobs[i].src_lo, tmp, jobs[i].clen_lo, jobs[i].half};
+    const dc_v4_sjob j1 = {jobs[i].src_hi, tmp + jobs[i].half, jobs[i].clen_hi, jobs[i].half};
+    if (dc_v4_exec_stripe(&j0) != 0 || dc_v4_exec_stripe(&j1) != 0) {
+      err = -1;
+      break;
+    }
+    dc_unshuf_f16(tmp, tmp + jobs[i].half, jobs[i].dst, jobs[i].half);
+  }
+  free(tmp);
+  return err;
+}
+
+#ifdef _WIN32
+static DWORD WINAPI dc_v4_shuf_worker_fn(LPVOID arg) {
+  dc_v4_shuf_worker *w = (dc_v4_shuf_worker *)arg;
+  w->err = dc_v4_exec_shuf_range(w->jobs, w->i0, w->i1, w->stripe_sz);
+  return 0;
+}
+#endif
+
 /* Decompress v4 snap section into dst (Lu.snap_len bytes), unshuffling f16 bytes when snap_shuf == 1. */
 static int dc_v4_unpack_snap(const dc_v4_ext *ext, const char *src, size_t snap_len, char *dst) {
   if (snap_len == 0u) return 0;
   const uint8_t *sp = (const uint8_t *)src;
   uint8_t *dp = (uint8_t *)dst;
-  uint8_t *tmp = ext->snap_shuf ? (uint8_t *)dc_alloc(ext->stripe_sz) : NULL;
   size_t soff = 0u;
   uint32_t si = 0u;
-  int err = 0;
-  for (size_t off = 0; off < snap_len && !err; off += ext->stripe_sz) {
-    const size_t clen = snap_len - off < ext->stripe_sz ? (snap_len - off) : ext->stripe_sz;
-    if (ext->snap_shuf) {
+  if (ext->snap_shuf) {
+    dc_v4_shuf_job sjobs[DC_V4_MAX_STRIPES / 2u];
+    uint32_t nj = 0u;
+    for (size_t off = 0; off < snap_len; off += ext->stripe_sz) {
+      const size_t clen = snap_len - off < ext->stripe_sz ? (snap_len - off) : ext->stripe_sz;
       const size_t half = clen / 2u;
-      if (si + 2u > ext->n_snap_stripes ||
-          dc_v4_read_stripe(sp, ext->stripe_clen[si], tmp, half, &soff) != 0 ||
-          dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], tmp + half, half, &soff) != 0) {
-        err = -1;
-        break;
-      }
-      dc_unshuf_f16(tmp, tmp + half, dp + off, half);
+      if (si + 2u > ext->n_snap_stripes || nj >= DC_V4_MAX_STRIPES / 2u) return -1;
+      const uint32_t w0 = ext->stripe_clen[si], w1 = ext->stripe_clen[si + 1u];
+      const size_t s0 = (size_t)(w0 & ~DC_V4_RAW_BIT), s1 = (size_t)(w1 & ~DC_V4_RAW_BIT);
+      sjobs[nj++] = (dc_v4_shuf_job){sp + soff, sp + soff + s0, dp + off, w0, w1, half};
+      soff += s0 + s1;
       si += 2u;
-    } else {
-      if (si >= ext->n_snap_stripes || dc_v4_read_stripe(sp, ext->stripe_clen[si], dp + off, clen, &soff) != 0) {
-        err = -1;
-        break;
-      }
-      si++;
     }
+    if (soff != (size_t)ext->comp_snap_len) return -1;
+#ifdef _WIN32
+    if (nj >= 2u) {
+      uint32_t nt = nj < 4u ? nj : 4u;
+      dc_v4_shuf_worker ws[4];
+      HANDLE hs[3];
+      uint32_t nh = 0u;
+      for (uint32_t t = 0u; t < nt; t++) {
+        ws[t].jobs = sjobs;
+        ws[t].i0 = (nj * t) / nt;
+        ws[t].i1 = (nj * (t + 1u)) / nt;
+        ws[t].stripe_sz = ext->stripe_sz;
+        ws[t].err = 0;
+      }
+      for (uint32_t t = 1u; t < nt; t++) {
+        HANDLE h = CreateThread(NULL, 0, dc_v4_shuf_worker_fn, &ws[t], 0, NULL);
+        if (h) hs[nh++] = h;
+        else ws[t].err = dc_v4_exec_shuf_range(sjobs, ws[t].i0, ws[t].i1, ext->stripe_sz);
+      }
+      ws[0].err = dc_v4_exec_shuf_range(sjobs, ws[0].i0, ws[0].i1, ext->stripe_sz);
+      if (nh) {
+        WaitForMultipleObjects(nh, hs, TRUE, INFINITE);
+        for (uint32_t t = 0u; t < nh; t++) CloseHandle(hs[t]);
+      }
+      for (uint32_t t = 0u; t < nt; t++)
+        if (ws[t].err) return -1;
+      return 0;
+    }
+#endif
+    return dc_v4_exec_shuf_range(sjobs, 0u, nj, ext->stripe_sz);
   }
-  free(tmp);
-  return (!err && soff == (size_t)ext->comp_snap_len) ? 0 : -1;
+  dc_v4_sjob jobs[DC_V4_MAX_STRIPES];
+  uint32_t nj = 0u;
+  for (size_t off = 0; off < snap_len; off += ext->stripe_sz) {
+    const size_t clen = snap_len - off < ext->stripe_sz ? (snap_len - off) : ext->stripe_sz;
+    if (si >= ext->n_snap_stripes || nj >= DC_V4_MAX_STRIPES) return -1;
+    const uint32_t w = ext->stripe_clen[si++];
+    jobs[nj++] = (dc_v4_sjob){sp + soff, dp + off, w, clen};
+    soff += (size_t)(w & ~DC_V4_RAW_BIT);
+  }
+  if (soff != (size_t)ext->comp_snap_len) return -1;
+  return dc_v4_run_stripes(jobs, nj);
 }
 /* Decompress v4 rows section into dst_shuf (n_rows * d->rowb bytes, per-slice shuffled if rows_fmt <= 1). */
 static int dc_v4_unpack_rows(const dcache *d, const dc_v4_ext *ext, const char *src, uint32_t n_rows, char *dst_shuf,
@@ -3840,42 +4006,50 @@ static int dc_v4_unpack_rows(const dcache *d, const dc_v4_ext *ext, const char *
   size_t soff = 0u;
   uint32_t si = ext->n_snap_stripes;
   const uint32_t send = ext->n_snap_stripes + ext->n_rows_stripes;
+  dc_v4_sjob jobs[DC_V4_MAX_STRIPES];
+  uint32_t nj = 0u;
   if (ext->rows_fmt == 0u || ext->rows_fmt == 1u) {
     const size_t glen = (size_t)n_rows * d->glob_slice_rowb;
     const size_t dlen = (size_t)n_rows * d->ds_slice_rowb;
     for (uint32_t s = 0; s < d->n_glob_slices; s++, dp += glen) {
-      if (si + 2u > send) return -1;
+      if (si + 2u > send || nj + 2u > DC_V4_MAX_STRIPES) return -1;
+      const uint32_t w0 = ext->stripe_clen[si], w1 = ext->stripe_clen[si + 1u];
+      const size_t s0 = (size_t)(w0 & ~DC_V4_RAW_BIT), s1 = (size_t)(w1 & ~DC_V4_RAW_BIT);
       if (ext->rows_fmt == 1u) {
         const size_t n_rec = glen / 72u;
-        if (dc_v4_read_stripe(sp, ext->stripe_clen[si], dp, n_rec * 64u, &soff) != 0 ||
-            dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], dp + n_rec * 64u, n_rec * 8u, &soff) != 0)
-          return -1;
+        jobs[nj++] = (dc_v4_sjob){sp + soff, dp, w0, n_rec * 64u};
+        jobs[nj++] = (dc_v4_sjob){sp + soff + s0, dp + n_rec * 64u, w1, n_rec * 8u};
       } else {
         const size_t half = glen / 2u;
-        if (dc_v4_read_stripe(sp, ext->stripe_clen[si], dp, half, &soff) != 0 ||
-            dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], dp + half, half, &soff) != 0)
-          return -1;
+        jobs[nj++] = (dc_v4_sjob){sp + soff, dp, w0, half};
+        jobs[nj++] = (dc_v4_sjob){sp + soff + s0, dp + half, w1, half};
       }
+      soff += s0 + s1;
       si += 2u;
     }
     for (uint32_t s = 0; s < d->n_ds_slices; s++, dp += dlen) {
-      if (si + 2u > send) return -1;
+      if (si + 2u > send || nj + 2u > DC_V4_MAX_STRIPES) return -1;
+      const uint32_t w0 = ext->stripe_clen[si], w1 = ext->stripe_clen[si + 1u];
+      const size_t s0 = (size_t)(w0 & ~DC_V4_RAW_BIT), s1 = (size_t)(w1 & ~DC_V4_RAW_BIT);
       const size_t half = dlen / 2u;
-      if (dc_v4_read_stripe(sp, ext->stripe_clen[si], dp, half, &soff) != 0 ||
-          dc_v4_read_stripe(sp, ext->stripe_clen[si + 1u], dp + half, half, &soff) != 0)
-        return -1;
+      jobs[nj++] = (dc_v4_sjob){sp + soff, dp, w0, half};
+      jobs[nj++] = (dc_v4_sjob){sp + soff + s0, dp + half, w1, half};
+      soff += s0 + s1;
       si += 2u;
     }
     *is_shuffled = 1;
   } else {
     for (size_t off = 0; off < rows_len; off += ext->rows_stripe_sz) {
       const size_t clen = rows_len - off < ext->rows_stripe_sz ? (rows_len - off) : ext->rows_stripe_sz;
-      if (si >= send || dc_v4_read_stripe(sp, ext->stripe_clen[si], dp + off, clen, &soff) != 0) return -1;
-      si++;
+      if (si >= send || nj >= DC_V4_MAX_STRIPES) return -1;
+      const uint32_t w = ext->stripe_clen[si++];
+      jobs[nj++] = (dc_v4_sjob){sp + soff, dp + off, w, clen};
+      soff += (size_t)(w & ~DC_V4_RAW_BIT);
     }
     *is_shuffled = 0;
   }
-  return (si == send && soff == (size_t)ext->comp_rows_len) ? 0 : -1;
+  if (si != send || soff != (size_t)ext->comp_rows_len) return -1;
+  return dc_v4_run_stripes(jobs, nj);
 }
 /* CPU fallback unshuffle for v4 rows (exact inverse of dc_v4_pack_job; used when b->kv_io_unshuf is NULL or returns 0). */
 static void dc_v4_cpu_unshuf_rows(const dcache *d, uint32_t rows_fmt, const char *src_shuf, char *dst_raw, uint32_t n_rows) {

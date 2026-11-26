@@ -60,7 +60,7 @@ _Static_assert(sizeof(ink_r15_q4_u64) == 8u, "ink_r15_q4_u64 must be 8 bytes");
 #define INK_R15_Q4_DREL     16u
 #define INK_R15_Q4_GQA      3u
 #define INK_R15_Q4_RECB     72u
-#define INK_R15_Q4_PSTR     130u
+#define INK_R15_Q4_PSTR     132u
 #define INK_R15_Q4_NB16     16u
 #define INK_R15_Q4_NB32     32u
 #define INK_R15_Q4_LOG2E    1.44269504088896340736f
@@ -462,32 +462,32 @@ static inline __attribute__((always_inline)) void ink_r15_q4_pv16_2d(
   const u32 l_loc = ink_r15_q4_lane();
   const u32 rl = l_loc & 15u, hl = l_loc >> 4u;
   const u32 vt_lane = (2u * rl + hl) ^ ((rl >> 2u) & 1u) ^ (rl >> 3u);
-  const u32 vtb = 16u * vt_lane;
+  u32 vtb = 16u * vt_lane;
   const LDSP u8 *vp = (const LDSP u8 *)vt_lds;
 
-  h8 v0 = *(const LDSP h8 *)(vp + 0u + vtb);
-  h8 v1 = *(const LDSP h8 *)(vp + 512u + (vtb ^ 32u));
+  h8 v0 = *(const LDSP h8 *)(vp + 0u + vtb); vtb ^= 32u;
+  h8 v1 = *(const LDSP h8 *)(vp + 512u + vtb); vtb ^= 96u;
   __builtin_amdgcn_sched_barrier(0);
 
   o[0] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(v0, pb, o[0]);
-  v0 = *(const LDSP h8 *)(vp + 1024u + (vtb ^ 64u));
+  v0 = *(const LDSP h8 *)(vp + 1024u + vtb); vtb ^= 32u;
   __builtin_amdgcn_sched_barrier(0);
   o[1] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(v1, pb, o[1]);
-  v1 = *(const LDSP h8 *)(vp + 1536u + (vtb ^ 96u));
+  v1 = *(const LDSP h8 *)(vp + 1536u + vtb); vtb ^= 96u;
   __builtin_amdgcn_sched_barrier(0);
 
   o[2] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(v0, pb, o[2]);
-  v0 = *(const LDSP h8 *)(vp + 2048u + vtb);
+  v0 = *(const LDSP h8 *)(vp + 2048u + vtb); vtb ^= 32u;
   __builtin_amdgcn_sched_barrier(0);
   o[3] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(v1, pb, o[3]);
-  v1 = *(const LDSP h8 *)(vp + 2560u + (vtb ^ 32u));
+  v1 = *(const LDSP h8 *)(vp + 2560u + vtb); vtb ^= 96u;
   __builtin_amdgcn_sched_barrier(0);
 
   o[4] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(v0, pb, o[4]);
-  v0 = *(const LDSP h8 *)(vp + 3072u + (vtb ^ 64u));
+  v0 = *(const LDSP h8 *)(vp + 3072u + vtb); vtb ^= 32u;
   __builtin_amdgcn_sched_barrier(0);
   o[5] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(v1, pb, o[5]);
-  v1 = *(const LDSP h8 *)(vp + 3584u + (vtb ^ 96u));
+  v1 = *(const LDSP h8 *)(vp + 3584u + vtb);
   if (do_signal) {
     ink_r15_q4_lsignal(); /* VT LDS reads complete -> signal before final 2 PV WMMAs! */
   } else {
@@ -802,14 +802,12 @@ KERNEL ie_inkling_rel_attn_pf_far_glob_q4_r15(
       pp[0] = m;
       pp[1] = l_tot;
     }
-    G ink_r15_q4_f2 *po2 = (G ink_r15_q4_f2 *)(pp + 2u);
+    G f32x4 *po4 = (G f32x4 *)(pp + 4u);
 #pragma unroll
     for (u32 nt = 0u; nt < 8u; nt++) {
-      const u32 base2 = 8u * nt + 4u * hl_ep;
-      po2[base2 + 0u] = (ink_r15_q4_f2){o[nt][0], o[nt][1]};
-      po2[base2 + 1u] = (ink_r15_q4_f2){o[nt][2], o[nt][3]};
-      po2[base2 + 2u] = (ink_r15_q4_f2){o[nt][4], o[nt][5]};
-      po2[base2 + 3u] = (ink_r15_q4_f2){o[nt][6], o[nt][7]};
+      const u32 base4 = 4u * nt + 2u * hl_ep;
+      po4[base4 + 0u] = (f32x4){o[nt][0], o[nt][1], o[nt][2], o[nt][3]};
+      po4[base4 + 1u] = (f32x4){o[nt][4], o[nt][5], o[nt][6], o[nt][7]};
     }
   }
 }
@@ -1284,10 +1282,7 @@ KERNEL ie_inkling_rel_attn_pf_split_glob_q4_r15(
         pp[0] = -1e30f;
         pp[1] = 0.0f;
       }
-      pp[2u + 4u * l_z + 0u] = 0.0f;
-      pp[2u + 4u * l_z + 1u] = 0.0f;
-      pp[2u + 4u * l_z + 2u] = 0.0f;
-      pp[2u + 4u * l_z + 3u] = 0.0f;
+      ((G f32x4 *)(pp + 4u))[l_z] = (f32x4){0.0f, 0.0f, 0.0f, 0.0f};
     }
   } else if (w >= 6u) {
     const ink_r15_q4_u64 row_step = (ink_r15_q4_u64)n_kv * INK_R15_Q4_RECB;
@@ -1322,11 +1317,17 @@ KERNEL ie_inkling_rel_attn_pf_split_glob_q4_r15(
       /* Split-KV omits sink here; dynamic per-token sink is added once in the final merge. */
       float m = -__builtin_inff();
       float ls = 0.0f;
-      v8f o[8];
-#pragma unroll
-      for (u32 nt = 0u; nt < 8u; nt++) o[nt] = (v8f)(0.0f);
 
       ink_r15_q4_lwait();
+      v8f o[8];
+#pragma unroll
+      for (u32 nt = 0u; nt < 8u; nt++) {
+        v8f z = (v8f)(0.0f);
+        __asm__ volatile("" : "+v"(z));
+        o[nt] = z;
+      }
+      __builtin_amdgcn_sched_barrier(0);
+
       ink_r15_q4_consumer16(&ink_r15_q4_sp_lds, R, rs, t_sub0, T, h,
                             k_start, qpos_min, sub_qpos_min,
                             win, extent_lim, blk_beg, blk_end, blk_far_end, qa, &m, &ls, o);
@@ -1341,14 +1342,12 @@ KERNEL ie_inkling_rel_attn_pf_split_glob_q4_r15(
           pp[0] = (l_tot > 0.0f) ? (m * INK_R15_Q4_LN2) : -1e30f;
           pp[1] = l_tot;
         }
-        G ink_r15_q4_f2 *po2 = (G ink_r15_q4_f2 *)(pp + 2u);
+        G f32x4 *po4 = (G f32x4 *)(pp + 4u);
 #pragma unroll
         for (u32 nt = 0u; nt < 8u; nt++) {
-          const u32 base2 = 8u * nt + 4u * hl_ep;
-          po2[base2 + 0u] = (ink_r15_q4_f2){o[nt][0], o[nt][1]};
-          po2[base2 + 1u] = (ink_r15_q4_f2){o[nt][2], o[nt][3]};
-          po2[base2 + 2u] = (ink_r15_q4_f2){o[nt][4], o[nt][5]};
-          po2[base2 + 3u] = (ink_r15_q4_f2){o[nt][6], o[nt][7]};
+          const u32 base4 = 4u * nt + 2u * hl_ep;
+          po4[base4 + 0u] = (f32x4){o[nt][0], o[nt][1], o[nt][2], o[nt][3]};
+          po4[base4 + 1u] = (f32x4){o[nt][4], o[nt][5], o[nt][6], o[nt][7]};
         }
       }
     }
@@ -1389,8 +1388,7 @@ KERNEL ie_inkling_rel_attn_pf_split_glob_q4_r15(
       if (lp > 0.0f) {
         const float wt = __builtin_expf(ph[off] - M2);
         L2 += lp * wt;
-        const G float *po = ph + off + 2u + 4u * l_m;
-        const f32x4 ov = {po[0], po[1], po[2], po[3]};
+        const f32x4 ov = ((const G f32x4 *)(ph + off + 4u))[l_m];
         acc += ov * wt;
       }
     }
@@ -1492,15 +1490,13 @@ KERNEL ie_inkling_rel_attn_pf_near_glob_q4_r15(
       const G float *pp = part + (ink_r15_q4_u64)(tq_i * n_head + h) * INK_R15_Q4_PSTR;
       m = pp[0];
       ls = (hl_i == 0u) ? pp[1] : 0.0f;
-      const G ink_r15_q4_f2 *po2 = (const G ink_r15_q4_f2 *)(pp + 2u);
+      const G f32x4 *po4 = (const G f32x4 *)(pp + 4u);
 #pragma unroll
       for (u32 nt = 0u; nt < 8u; nt++) {
-        const u32 base2 = 8u * nt + 4u * hl_i;
-        const ink_r15_q4_f2 a0 = po2[base2 + 0u];
-        const ink_r15_q4_f2 a1 = po2[base2 + 1u];
-        const ink_r15_q4_f2 a2 = po2[base2 + 2u];
-        const ink_r15_q4_f2 a3 = po2[base2 + 3u];
-        o[nt] = (v8f){a0.x, a0.y, a1.x, a1.y, a2.x, a2.y, a3.x, a3.y};
+        const u32 base4 = 4u * nt + 2u * hl_i;
+        const f32x4 a0 = po4[base4 + 0u];
+        const f32x4 a1 = po4[base4 + 1u];
+        o[nt] = (v8f){a0.x, a0.y, a0.z, a0.w, a1.x, a1.y, a1.z, a1.w};
         __builtin_amdgcn_sched_barrier(0);
       }
     } else {

@@ -1291,27 +1291,23 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_decode_w(
   *a1_out = (v2i){(int)nb4.z, (int)nb4.w};
 }
 
-/* IQ4_NL WMMA K-step: exact 0x4B400000 magic-float on wj=1..3, inline-zero
- * zm=(v8i)(0) on wj=4 (saves 8 VGPRs -> 0/0 spills at 3 WGs/CU!). Optional
- * split-barrier signal on k == 3 overlaps WG barrier behind final WMMAs! */
+/* IQ4_NL WMMA K-step: exact 0x4B400000 magic-float on ALL wj=1..4!
+ * Recomputes l16/h locally after each WMMA pair and loads sw/dx AFTER WMMAs
+ * (when b0/b1 or b2/b3 are dead) -> <= 120 VGPR, 0/0 spills at 3 WGs/CU!
+ * Optional split-barrier signal on k == 3 overlaps WG barrier behind final WMMAs! */
 static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
     const u32x4 wk, const LDSP u8 *lx, const LDSP f16 *lsw, const LDSP float *lsx,
     const u32 k, const u32 wr, const u32 lx_base0, const u32 wj, const u32 sx_str,
     const int do_sig, f8 *acc) {
-  const v8i zm = (wj == 4u) ? (v8i)(0) : (v8i)(0x4B400000);
-  const u32 l_loc = ink_r17_lane();
-  const u32 l16 = l_loc & 15u, h = l_loc >> 4u;
+  const v8i zm = (v8i)(0x4B400000);
   u32 lxb = lx_base0;
   __asm__ volatile("" : "+v"(lxb));
   const LDSP u8 *lx_k = lx + (lxb ^ (k << 5u));
-  const LDSP float *lsx_k = lsx + k * sx_str + l16;
 
   v2i a0, a1;
-  ink_r17_iq4_decode_w(wk, h, &a0, &a1);
-  const f8 sw = ink_r17_iq4_load_sw_f8(lsw, k, wr, h);
+  ink_r17_iq4_decode_w(wk, ink_r17_lane() >> 4u, &a0, &a1);
 
   const u32x4 b0 = *(const LDSP u32x4 *)(lx_k + 0u * 2048u);
-  const float dx0 = lsx_k[0u];
   if (wj == 1u) {
     if (do_sig) {
       ink_r17_lsignal();
@@ -1322,6 +1318,9 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
     v8i c0 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a0, 1, b0_lo, zm, 0);
     c0 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a1, 1, b0_hi, c0, 0);
     __builtin_amdgcn_sched_barrier(0);
+    const u32 l_loc = ink_r17_lane();
+    const f8 sw = ink_r17_iq4_load_sw_f8(lsw, k, wr, l_loc >> 4u);
+    const float dx0 = lsx[k * sx_str + (l_loc & 15u)];
     acc[0] += (sw * dx0) * (__builtin_bit_cast(f8, c0) - 12582912.0f);
     __asm__ volatile("" : : "v"(acc[0]) : "memory");
     __builtin_amdgcn_sched_barrier(0);
@@ -1329,7 +1328,6 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
   }
 
   const u32x4 b1 = *(const LDSP u32x4 *)(lx_k + 1u * 2048u);
-  const float dx1 = lsx_k[16u];
   if (wj == 2u && do_sig) {
     ink_r17_lsignal();
   } else {
@@ -1342,16 +1340,22 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
   c0 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a1, 1, b0_hi, c0, 0);
   c1 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a1, 1, b1_hi, c1, 0);
   __builtin_amdgcn_sched_barrier(0);
-  acc[0] += (sw * dx0) * ((wj == 4u) ? __builtin_convertvector(c0, f8) : (__builtin_bit_cast(f8, c0) - 12582912.0f));
-  __asm__ volatile("" : : "v"(acc[0]));
-  __builtin_amdgcn_sched_barrier(0);
-  acc[1] += (sw * dx1) * ((wj == 4u) ? __builtin_convertvector(c1, f8) : (__builtin_bit_cast(f8, c1) - 12582912.0f));
-  __asm__ volatile("" : : "v"(acc[1]) : "memory");
-  __builtin_amdgcn_sched_barrier(0);
+  {
+    const u32 l_loc = ink_r17_lane();
+    const u32 l16 = l_loc & 15u;
+    const f8 sw = ink_r17_iq4_load_sw_f8(lsw, k, wr, l_loc >> 4u);
+    const float dx0 = lsx[k * sx_str + l16];
+    acc[0] += (sw * dx0) * (__builtin_bit_cast(f8, c0) - 12582912.0f);
+    __asm__ volatile("" : : "v"(acc[0]));
+    __builtin_amdgcn_sched_barrier(0);
+    const float dx1 = lsx[k * sx_str + l16 + 16u];
+    acc[1] += (sw * dx1) * (__builtin_bit_cast(f8, c1) - 12582912.0f);
+    __asm__ volatile("" : : "v"(acc[1]) : "memory");
+    __builtin_amdgcn_sched_barrier(0);
+  }
   if (wj == 2u) return;
 
   const u32x4 b2 = *(const LDSP u32x4 *)(lx_k + 2u * 2048u);
-  const float dx2 = lsx_k[32u];
   if (wj == 3u) {
     if (do_sig) {
       ink_r17_lsignal();
@@ -1362,6 +1366,9 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
     v8i c2 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a0, 1, b2_lo, zm, 0);
     c2 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a1, 1, b2_hi, c2, 0);
     __builtin_amdgcn_sched_barrier(0);
+    const u32 l_loc = ink_r17_lane();
+    const f8 sw = ink_r17_iq4_load_sw_f8(lsw, k, wr, l_loc >> 4u);
+    const float dx2 = lsx[k * sx_str + (l_loc & 15u) + 32u];
     acc[2] += (sw * dx2) * (__builtin_bit_cast(f8, c2) - 12582912.0f);
     __asm__ volatile("" : : "v"(acc[2]) : "memory");
     __builtin_amdgcn_sched_barrier(0);
@@ -1369,7 +1376,6 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
   }
 
   const u32x4 b3 = *(const LDSP u32x4 *)(lx_k + 3u * 2048u);
-  const float dx3 = lsx_k[48u];
   if (do_sig) {
     ink_r17_lsignal();
   } else {
@@ -1382,12 +1388,19 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_k_step(
   c2 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a1, 1, b2_hi, c2, 0);
   c3 = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(1, a1, 1, b3_hi, c3, 0);
   __builtin_amdgcn_sched_barrier(0);
-  acc[2] += (sw * dx2) * __builtin_convertvector(c2, f8);
-  __asm__ volatile("" : : "v"(acc[2]));
-  __builtin_amdgcn_sched_barrier(0);
-  acc[3] += (sw * dx3) * __builtin_convertvector(c3, f8);
-  __asm__ volatile("" : : "v"(acc[3]) : "memory");
-  __builtin_amdgcn_sched_barrier(0);
+  {
+    const u32 l_loc = ink_r17_lane();
+    const u32 l16 = l_loc & 15u;
+    const f8 sw = ink_r17_iq4_load_sw_f8(lsw, k, wr, l_loc >> 4u);
+    const float dx2 = lsx[k * sx_str + l16 + 32u];
+    acc[2] += (sw * dx2) * (__builtin_bit_cast(f8, c2) - 12582912.0f);
+    __asm__ volatile("" : : "v"(acc[2]));
+    __builtin_amdgcn_sched_barrier(0);
+    const float dx3 = lsx[k * sx_str + l16 + 48u];
+    acc[3] += (sw * dx3) * (__builtin_bit_cast(f8, c3) - 12582912.0f);
+    __asm__ volatile("" : : "v"(acc[3]) : "memory");
+    __builtin_amdgcn_sched_barrier(0);
+  }
 }
 
 static inline __attribute__((always_inline)) void ink_r17_iq4_run_wj(

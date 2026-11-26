@@ -784,6 +784,318 @@ KERNEL ie_vis_attn_wmma_hd64(
 }
 
 /* ============================================================================
+ * Kernel 3b: ie_vis_rope2d_table_r14
+ *   Precomputes 2D Axial RoPE cos/sin table once per image (matching
+ *   ie_vis_attn_wmma_hd64's exact CLS + 1-based (px+1, py+1) formula).
+ *   Layout: cs_out[p * 64 + 2 * k + 0] = cos, cs_out[p * 64 + 2 * k + 1] = sin
+ *           for p in [0, n_pos), k in [0, 32) (256 B/patch).
+ *   Grid: ((n_pos + 7) / 8, 1, 1), Block: (256, 1, 1)
+ * ========================================================================== */
+static inline __attribute__((always_inline)) float vis_r14_inv_freq_2pi(u32 j) {
+  switch (j) {
+    case 0u:  return 1.591549367e-01f;
+    case 1u:  return 8.949939907e-02f;
+    case 2u:  return 5.032921210e-02f;
+    case 3u:  return 2.830219641e-02f;
+    case 4u:  return 1.591549441e-02f;
+    case 5u:  return 8.949940093e-03f;
+    case 6u:  return 5.032921210e-03f;
+    case 7u:  return 2.830219688e-03f;
+    case 8u:  return 1.591549488e-03f;
+    case 9u:  return 8.949940093e-04f;
+    case 10u: return 5.032921326e-04f;
+    case 11u: return 2.830219455e-04f;
+    case 12u: return 1.591549371e-04f;
+    case 13u: return 8.949940093e-05f;
+    case 14u: return 5.032921035e-05f;
+    default:  return 2.830219637e-05f;
+  }
+}
+
+KERNEL ie_vis_rope2d_table_r14(
+    G float *cs_out, u32 n_pos, u32 gw, u32 gh, float freq_base) {
+  (void)gh;
+  const u32 idx = wgid_x() * NT + tid();
+  if (idx >= n_pos * 32u) return;
+  const u32 p = idx >> 5u;
+  const u32 k = idx & 31u;
+
+  float c = 1.0f;
+  float s = 0.0f;
+  if (gw > 0u && p > 0u) {
+    float pw, ph;
+    vis_r14_pos2d(p, gw, &pw, &ph);
+    const float pos = (k >= 16u) ? ph : pw;
+    const u32 j = k & 15u;
+    float fj;
+    if (freq_base <= 0.0f || freq_base == 10000.0f) {
+      fj = vis_r14_inv_freq_2pi(j);
+    } else {
+      fj = __builtin_amdgcn_exp2f(-((float)(j << 1u) * (1.0f / 32.0f)) * __builtin_log2f(freq_base)) *
+           0.15915494309189533577f;
+    }
+    const float ta = __builtin_amdgcn_fractf(pos * fj);
+    c = __builtin_amdgcn_cosf(ta);
+    s = __builtin_amdgcn_sinf(ta);
+  }
+
+  const vis_r14_u64 off = (vis_r14_u64)p * 64ull + (vis_r14_u64)(k << 1u);
+  cs_out[off + 0ull] = c;
+  cs_out[off + 1ull] = s;
+}
+
+/* ============================================================================
+ * Kernel 3c: ie_vis_attn_wmma_hd64_r18
+ *   FP16 WMMA bidirectional FlashAttention (hd=64) using precomputed 2D-RoPE
+ *   cos/sin table (zero idx/gw div & zero cosf/sinf in Q and K) + wave-uniform
+ *   zero-tile PV skip (ballot_w32(mx - m < -28.0f)) + 2x LDS double-buffering.
+ *   Grid:  ((N_pos + 127) / 128, nh, 1), Block: (256, 1, 1)
+ * ========================================================================== */
+static inline __attribute__((always_inline)) vis_r14_h8 vis_r14_rope_h8_cs(
+    vis_r14_h8 v, const G float *csp, float post_scale) {
+  const vis_r14_f4 cs0 = *(const G vis_r14_f4 *)(csp + 0u);
+  const vis_r14_f4 cs1 = *(const G vis_r14_f4 *)(csp + 4u);
+  const float x0 = (float)v[0], x1 = (float)v[1];
+  const float x2 = (float)v[2], x3 = (float)v[3];
+  const float x4 = (float)v[4], x5 = (float)v[5];
+  const float x6 = (float)v[6], x7 = (float)v[7];
+  return (vis_r14_h8){
+      (f16)((x0 * cs0.x - x1 * cs0.y) * post_scale), (f16)((x0 * cs0.y + x1 * cs0.x) * post_scale),
+      (f16)((x2 * cs0.z - x3 * cs0.w) * post_scale), (f16)((x2 * cs0.w + x3 * cs0.z) * post_scale),
+      (f16)((x4 * cs1.x - x5 * cs1.y) * post_scale), (f16)((x4 * cs1.y + x5 * cs1.x) * post_scale),
+      (f16)((x6 * cs1.z - x7 * cs1.w) * post_scale), (f16)((x6 * cs1.w + x7 * cs1.z) * post_scale)};
+}
+
+static inline __attribute__((always_inline)) void vis_r14_attn_load_kv_r18(
+    const G f16 *k_base, const G f16 *v_base, const G float *rope_cs,
+    vis_r14_u64 row_stride, u32 k0, u32 N_pos, u32 gw, int check_bounds, u32 buf) {
+  u32 t = tid();
+  __asm__ volatile("" : "+v"(t));
+  const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(t >> 5u));
+  const u32 l = t & 31u;
+
+  /* Load K[64, 64] -> apply precomputed 2D Axial RoPE -> 0-conflict lds[buf].k */
+  const u32 rk = t >> 2u;
+  const u32 qk = t & 3u;
+  const u32 gk = k0 + rk;
+  const int k_ok = (!check_bounds) || (gk < N_pos);
+  vis_r14_h8 k_lo = (vis_r14_h8)(0.0f);
+  vis_r14_h8 k_hi = (vis_r14_h8)(0.0f);
+  if (k_ok) {
+    const G f16 *kp = k_base + (vis_r14_u64)gk * row_stride + (qk << 4u);
+    k_lo = *(const G vis_r14_h8 *)(kp + 0u);
+    k_hi = *(const G vis_r14_h8 *)(kp + 8u);
+    if (gw > 0u && gk > 0u) {
+      if (rope_cs) {
+        const G float *csp = rope_cs + (vis_r14_u64)gk * 64ull + (qk << 4u);
+        k_lo = vis_r14_rope_h8_cs(k_lo, csp + 0u, 1.0f);
+        k_hi = vis_r14_rope_h8_cs(k_hi, csp + 8u, 1.0f);
+      } else {
+        float pw, ph;
+        vis_r14_pos2d(gk, gw, &pw, &ph);
+        const float pos = (qk >= 2u) ? ph : pw;
+        const u32 hi8 = qk & 1u;
+        k_lo = vis_r14_rope_h8_q(k_lo, pos, hi8, 0u, 1.0f);
+        k_hi = vis_r14_rope_h8_q(k_hi, pos, hi8, 1u, 1.0f);
+      }
+    }
+  }
+  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(rk, (qk << 1u) + 0u)) = k_lo;
+  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(rk, (qk << 1u) + 1u)) = k_hi;
+  __builtin_amdgcn_sched_barrier(0);
+
+  /* Load V[64, 64] (coalesced 128 B/wave per row) -> transpose8 -> 0-conflict lds[buf].vt */
+  u32 vr[8];
+  const u32 kv0 = k0 + (w << 3u);
+  const G f16 *vp_base = v_base + (l << 1u);
+#pragma unroll
+  for (u32 u = 0u; u < 8u; u++) {
+    const u32 gv = kv0 + u;
+    if ((!check_bounds) || (gv < N_pos)) {
+      vr[u] = *(const G u32 *)(vp_base + (vis_r14_u64)gv * row_stride);
+    } else {
+      vr[u] = 0u;
+    }
+  }
+  vis_r14_u4 ev, od;
+  vis_r14_t8_f16(vr, &ev, &od);
+  const u32 d0 = l << 1u;
+  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(d0 + 0u, w)) = ev;
+  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(d0 + 1u, w)) = od;
+}
+
+static inline __attribute__((always_inline)) void vis_r14_attn_step16_r18(
+    const vis_r14_h8 qa[4], vis_r14_f8 o[4], float *m_io, float *ls_io,
+    u32 kb16, u32 rem, int check_mask, u32 buf) {
+  vis_r14_f8 s = vis_r14_attn_qk16(qa, kb16, buf);
+
+  if (check_mask) {
+    const u32 hl = vis_r14_lane_pin() >> 4u;
+    const u32 kbase = (kb16 << 4u) + (hl << 3u);
+#pragma unroll
+    for (u32 v = 0u; v < 8u; v++) {
+      if (kbase + v >= rem) s[v] = -__builtin_inff();
+    }
+  }
+
+  float mx = s[0];
+#pragma unroll
+  for (u32 v = 1u; v < 8u; v++) mx = __builtin_fmaxf(mx, s[v]);
+  mx = __builtin_fmaxf(mx, vis_r14_xrow_f(mx));
+
+  float m = *m_io;
+  /* Wave-uniform zero-tile PV skip: 2^-28 < 3.7e-9 (below fp16 subnormal 6e-8). */
+  if (__builtin_amdgcn_ballot_w32(mx > -1e30f && !(mx - m < -28.0f)) == 0u) return;
+
+  float ls = *ls_io;
+  const float mn = __builtin_fmaxf(m, mx);
+  if (__builtin_amdgcn_ballot_w32(mn != m) != 0u) {
+    if (mn != m) {
+      const float rsc = (m == -__builtin_inff()) ? 0.0f : __builtin_amdgcn_exp2f(m - mn);
+      o[0] *= rsc;
+      o[1] *= rsc;
+      o[2] *= rsc;
+      o[3] *= rsc;
+      ls *= rsc;
+      m = mn;
+    }
+  }
+  vis_r14_h8 p;
+#pragma unroll
+  for (u32 v = 0u; v < 8u; v++) {
+    const float e = (mn != -__builtin_inff()) ? __builtin_amdgcn_exp2f(s[v] - mn) : 0.0f;
+    ls += e;
+    p[v] = (f16)e;
+  }
+  vis_r14_attn_pv16(p, o, kb16, buf);
+  *m_io = m;
+  *ls_io = ls;
+}
+
+KERNEL ie_vis_attn_wmma_hd64_r18(
+    const G f16 *qkv, G f16 *out, u32 N_pos, u32 nh, u32 gw, float scale,
+    const G float *rope_cs) {
+  if (N_pos == 0u || nh == 0u) return;
+
+  const u32 q_wg = (u32)__builtin_amdgcn_readfirstlane((int)(wgid_x() << 7u));
+  const u32 h = (u32)__builtin_amdgcn_readfirstlane((int)wgid_y());
+  if (q_wg >= N_pos || h >= nh) return;
+
+  const u32 D = nh << 6u;
+  const vis_r14_u64 row_stride = (vis_r14_u64)(3u * D);
+  const G f16 *q_base = qkv + (vis_r14_u64)(h << 6u);
+  const G f16 *k_base = q_base + (vis_r14_u64)D;
+  const G f16 *v_base = k_base + (vis_r14_u64)D;
+
+  const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(tid() >> 5u));
+  const u32 q_sub0 = q_wg + (w << 4u);
+
+  vis_r14_h8 qa[4];
+  {
+    const u32 l_init = vis_r14_lane_pin();
+    const u32 rl_i = l_init & 15u, hl_i = l_init >> 4u;
+    const u32 q_idx = (q_sub0 + rl_i < N_pos) ? (q_sub0 + rl_i) : (N_pos - 1u);
+    const float qsc = scale * VIS_R14_LOG2E;
+    const G f16 *qp = q_base + (vis_r14_u64)q_idx * row_stride;
+
+    qa[0] = *(const G vis_r14_h8 *)(qp + (0u << 4u) + (hl_i << 3u));
+    qa[1] = *(const G vis_r14_h8 *)(qp + (1u << 4u) + (hl_i << 3u));
+    qa[2] = *(const G vis_r14_h8 *)(qp + (2u << 4u) + (hl_i << 3u));
+    qa[3] = *(const G vis_r14_h8 *)(qp + (3u << 4u) + (hl_i << 3u));
+
+    if (gw > 0u && q_idx > 0u) {
+      if (rope_cs) {
+        const G float *csp = rope_cs + (vis_r14_u64)q_idx * 64ull + (hl_i << 3u);
+        qa[0] = vis_r14_rope_h8_cs(qa[0], csp + (0u << 4u), qsc);
+        qa[1] = vis_r14_rope_h8_cs(qa[1], csp + (1u << 4u), qsc);
+        qa[2] = vis_r14_rope_h8_cs(qa[2], csp + (2u << 4u), qsc);
+        qa[3] = vis_r14_rope_h8_cs(qa[3], csp + (3u << 4u), qsc);
+      } else {
+        float pw, ph;
+        vis_r14_pos2d(q_idx, gw, &pw, &ph);
+        qa[0] = vis_r14_rope_h8_q(qa[0], pw, 0u, hl_i, qsc);
+        qa[1] = vis_r14_rope_h8_q(qa[1], pw, 1u, hl_i, qsc);
+        qa[2] = vis_r14_rope_h8_q(qa[2], ph, 0u, hl_i, qsc);
+        qa[3] = vis_r14_rope_h8_q(qa[3], ph, 1u, hl_i, qsc);
+      }
+    } else {
+#pragma unroll
+      for (u32 ks = 0u; ks < 4u; ks++) {
+        qa[ks] = (vis_r14_h8){
+            (f16)((float)qa[ks][0] * qsc), (f16)((float)qa[ks][1] * qsc),
+            (f16)((float)qa[ks][2] * qsc), (f16)((float)qa[ks][3] * qsc),
+            (f16)((float)qa[ks][4] * qsc), (f16)((float)qa[ks][5] * qsc),
+            (f16)((float)qa[ks][6] * qsc), (f16)((float)qa[ks][7] * qsc)};
+      }
+    }
+  }
+
+  vis_r14_f8 o[4];
+  o[0] = (vis_r14_f8)(0.0f);
+  o[1] = (vis_r14_f8)(0.0f);
+  o[2] = (vis_r14_f8)(0.0f);
+  o[3] = (vis_r14_f8)(0.0f);
+  float m = -__builtin_inff();
+  float ls = 0.0f;
+
+  u32 buf = 0u;
+  if (N_pos >= 64u) {
+    vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, 0u, N_pos, gw, 0, 0u);
+    lbarrier();
+    u32 k0 = 0u;
+#pragma clang loop unroll(disable)
+    for (; k0 + 64u <= N_pos; k0 += 64u) {
+      const u32 cur = buf;
+#pragma clang loop unroll(disable)
+      for (u32 kb16 = 0u; kb16 < 4u; kb16++) {
+        vis_r14_attn_step16_r18(qa, o, &m, &ls, kb16, 64u, 0, cur);
+      }
+      const u32 kn = k0 + 64u;
+      if (kn + 64u <= N_pos) {
+        buf ^= 1u;
+        vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, kn, N_pos, gw, 0, buf);
+        lbarrier();
+      } else if (kn < N_pos) {
+        buf ^= 1u;
+        vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, kn, N_pos, gw, 1, buf);
+        lbarrier();
+      }
+    }
+    if (k0 < N_pos) {
+      const u32 rem = N_pos - k0;
+      const u32 nkb = (rem + 15u) >> 4u;
+#pragma clang loop unroll(disable)
+      for (u32 kb16 = 0u; kb16 < nkb; kb16++) {
+        vis_r14_attn_step16_r18(qa, o, &m, &ls, kb16, rem, 1, buf);
+      }
+    }
+  } else {
+    const u32 nkb = (N_pos + 15u) >> 4u;
+    vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, 0u, N_pos, gw, 1, 0u);
+    lbarrier();
+#pragma clang loop unroll(disable)
+    for (u32 kb16 = 0u; kb16 < nkb; kb16++) {
+      vis_r14_attn_step16_r18(qa, o, &m, &ls, kb16, N_pos, 1, 0u);
+    }
+  }
+
+  const u32 l_out = vis_r14_lane_pin();
+  const u32 rl_o = l_out & 15u, hl_o = l_out >> 4u;
+  const u32 q_out = q_sub0 + rl_o;
+  if (q_out < N_pos) {
+    const float inv = 1.0f / (ls + vis_r14_xrow_f(ls));
+    G f16 *op = out + (vis_r14_u64)q_out * (vis_r14_u64)D + (vis_r14_u64)(h << 6u) + (hl_o << 3u);
+#pragma unroll
+    for (u32 nt = 0u; nt < 4u; nt++) {
+      const vis_r14_f8 ov = o[nt] * inv;
+      *(G vis_r14_h8 *)(op + (nt << 4u)) = (vis_r14_h8){
+          (f16)ov[0], (f16)ov[1], (f16)ov[2], (f16)ov[3],
+          (f16)ov[4], (f16)ov[5], (f16)ov[6], (f16)ov[7]};
+    }
+  }
+}
+
+/* ============================================================================
  * Kernel 4: ie_vis_layernorm_f16
  *   Vectorized single-pass LayerNorm for D==1024 (4 floats/thread in VGPR,
  *   0 second global read) + general fallback for arbitrary D (e.g. D=1152).

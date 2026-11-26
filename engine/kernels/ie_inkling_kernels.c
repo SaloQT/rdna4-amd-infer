@@ -77,3 +77,4 @@
 #include "ie_inkling_dcache_unshuf_r16.inc"
 #include "ie_inkling_r17_256k_ver_ds.inc"
 #include "ie_inkling_r17_256k_pf_moe.inc"
+#include "ie_inkling_r18_h20_q4.inc"

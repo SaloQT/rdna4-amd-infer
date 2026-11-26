@@ -404,6 +404,7 @@ enum { K_EMBED_Q4, K_EMBED_F32, K_RMSNORM, K_QUANT, K_GEMV_Q4, K_GEMV_Q8, K_GEMV
        K_INK_DCACHE_UNSHUF_Q4_R16, K_INK_DCACHE_UNSHUF_F16_R16, K_INK_KV_COPY_LIST_R16,
        K_INK_DS_QKV_ROPE_Q4K_R17, K_INK_FLUTE_SITU_VER_T8_R17, K_INK_REL_ATTN_VER_GLOB_Q4_WMMA_FAST_R17,
        K_INK_REL_ATTN_PF_SWA_FAST_R17, K_INK_GEMM_RQ_EXP_IQ3XXS_FLUTE_M64_R17, K_INK_GEMM_IQ4NL_WAVE_M64_R17,
+       K_INK_QKV_SCONV_KV_GLOB_Q4_R18,
        K_N };
 static const char *kname[K_N] = {"ie_embed_q4", "ie_embed_f32", "ie_rmsnorm", "ie_quant_q8", "ie_gemv_q4q8", "ie_gemv_q8q8",
                                  "ie_gemv_f32", "ie_bias",      "ie_add",     "ie_swiglu",   "ie_rope",
@@ -554,7 +555,8 @@ static const char *kname[K_N] = {"ie_embed_q4", "ie_embed_f32", "ie_rmsnorm", "i
                "ie_inkling_rel_attn_pf_far_poly_r13", "ie_inkling_rel_attn_pf_sb_poly_r13",
                "ie_inkling_dcache_unshuf_q4_r16", "ie_inkling_dcache_unshuf_f16_r16", "ie_inkling_kv_copy_list_r16",
                "ie_inkling_ds_qkv_rope_q4k_r17", "ie_inkling_flute_situ_ver_t8_r17", "ie_inkling_rel_attn_ver_glob_q4_wmma_fast_r17",
-               "ie_inkling_rel_attn_pf_swa_fast_r17", "ie_inkling_gemm_rq_exp_iq3xxs_flute_m64_r17", "ie_inkling_gemm_iq4nl_wave_m64_r17"};
+               "ie_inkling_rel_attn_pf_swa_fast_r17", "ie_inkling_gemm_rq_exp_iq3xxs_flute_m64_r17", "ie_inkling_gemm_iq4nl_wave_m64_r17",
+               "ie_inkling_qkv_sconv_kv_glob_q4_r18"};
 static const uint8_t ink_bit[K_N - K_INK_REL_ATTN_PF] = {
     0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17,
     18, 19, 20, 21, 22, 23, 24, 25, 25, 26, 27, 28, 29, 30, 31, 32,
@@ -585,7 +587,7 @@ static const uint8_t ink_bit[K_N - K_INK_REL_ATTN_PF] = {
     151, 151, 151, 151, 151,
     152, 152,
     160, 160, 161,
-    166, 167, 168, 169, 170, 171};
+    166, 167, 168, 169, 170, 171, 172};
 _Static_assert(sizeof(ink_bit) == (size_t)(K_N - K_INK_REL_ATTN_PF), "ink_bit table length mismatch");
 /* ie_gdn: conv input ring slots and state slots per linear layer */
 /* ie_gdn: conv input ring slots (as in ie_kernels.c); the state slots per
@@ -878,6 +880,7 @@ typedef struct {
   hipEvent_t moe_c_done[2]; /* R57: ping-pong half p compute finished on compute stream */
   hipEvent_t moe_c_egu_ev;  /* R58: Mode A/B egu DMA done before ed0/ed1 starts on moe_c_cs */
   hipEvent_t moe_c_ed_ev;   /* R58: Mode A/B ed0/ed1 DMA done on moe_c_cs before IQ4NL */
+  hipEvent_t moe_c_rt_ev;   /* R89: non-timing event for 32B/256B rt_orig D2H sync (avoids StreamSynchronize) */
   uint64_t moe_c_hits, moe_c_misses, moe_c_dma_bytes, moe_c_waves, moe_c_subbatches;
   int ink_graph_cap;        /* 1 while capturing T=1 decode graph -> emit *_ctx kernels */
   int in_step;              /* 1 while inside gpu_step() T=1 decode run_ops */
@@ -1420,6 +1423,14 @@ static int ink_r17_iq4_pf64_want(void) {
   if (v < 0) {
     const char *e = getenv("IE_INK_R17_IQ4_PF64");
     v = (e && *e) ? (atoi(e) != 0) : 1; /* R74 R17 bit 171 promoted default ON (=0 opts out) */
+  }
+  return v;
+}
+static int ink_h20_q4_want(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char *e = getenv("IE_INK_H20_Q4");
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R89 H20 Q4-global-KV bit 172 default ON (=0 opts out) */
   }
   return v;
 }
@@ -2586,6 +2597,7 @@ static void ink_moe_cache_setup(gpu_backend *b) {
   HIP(ie_event_create_notiming(&b->moe_c_done[1]));
   HIP(ie_event_create_notiming(&b->moe_c_egu_ev));
   HIP(ie_event_create_notiming(&b->moe_c_ed_ev));
+  HIP(ie_event_create_notiming(&b->moe_c_rt_ev));
   b->moe_c_on = 1;
   b->moe_c_slots = n_slots;
   b->moe_c_nlayers = n_outer;
@@ -3231,6 +3243,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
         if (!(pfe && pfe[0] == '0')) ink_mask3 |= (1ULL << (162u - 128u)); /* R61 promoted default */
         const char *c1e = getenv("IE_INK_Q4_C1");
         if (!(c1e && c1e[0] == '0')) ink_mask3 |= (1ULL << (163u - 128u)); /* R65 promoted default */
+        if (ink_h20_q4_want()) ink_mask3 |= (1ULL << (172u - 128u)); /* R89 H20 Q4-global-KV default ON */
         const char *tre = getenv("IE_INK_Q4_TREE");
         if (tre && tre[0] == '1') ink_mask3 |= (1ULL << (164u - 128u)) | (1ULL << (131u - 128u)); /* R68 opt-in */
       }
@@ -3850,7 +3863,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     const size_t pl = (!is_ink && b->attn_split) ? (size_t)b->at_lstride * b->at_ltmax : 0u;
     const u32 ivmax = b->base.verify_max > 1u ? b->base.verify_max : 1u;
     const u32 islots = (ivmax > 1u) ? (ivmax > 16u ? ivmax : 16u) : (g->T >= 17u ? 16u : 8u); /* 12.19 MiB verify+PF_SPLIT+H04 */
-    const size_t pi = is_ink ? (size_t)islots * m->n_head * 64u * 130u : 0u;
+    const size_t pi = is_ink ? (size_t)islots * m->n_head * 64u * 132u : 0u;
     size_t pf = po > pl ? po : pl;
     if (pi > pf) pf = pi;
     if (pf) {
@@ -7474,7 +7487,7 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
               if (b->k[K_INK_REL_ATTN_PF_SPLIT_GLOB_Q4_R15] && !mk.rec && T >= 17u && T <= 256u &&
                   pos >= ink_pf_split_min_pos() && b->at_part && b->at_count &&
                   ntile * nkv <= m->n_head * b->at_tmax) {
-                u32 max_sp = (u32)(b->at_part_floats / ((size_t)T * nh * 130u));
+                u32 max_sp = (u32)(b->at_part_floats / ((size_t)T * nh * 132u));
                 if (max_sp > 16u) max_sp = 16u;
                 u32 sp = (256u + ntile * nkv - 1u) / (ntile * nkv);
                 if (sp < 2u) sp = 2u;
@@ -7488,7 +7501,7 @@ static void launch_op(gpu_backend *b, uint32_t i, u32 t, u32 tok, u32 pos, u32 T
                 launch_t(b, K_INK_REL_ATTN_PF_SPLIT_GLOB_Q4_R15, ntile * pf_nsplit, nkv, sa);
               } else if (b->k[K_INK_REL_ATTN_PF_FAR_GLOB_Q4_R15] && b->k[K_INK_REL_ATTN_PF_NEAR_GLOB_Q4_R15] &&
                          !mk.rec && pos >= ink_pf_far_min_pos() && b->at_part &&
-                         (size_t)T * nh * 130u <= b->at_part_floats) {
+                         (size_t)T * nh * 132u <= b->at_part_floats) {
                 void *part_p = (void *)b->at_part;
                 void *fa[] = {&A, &kc, &vc, &R, &part_p, &pos, &TT, &kvlen, (void *)&hd, &nh, (void *)&nkv, &relext,
                               &qs, &ss, &rot};
@@ -8171,9 +8184,10 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   /* --- Mode A: T == 1 decode --- */
   if (T == 1u) {
     if ((size_t)rst > 16384u) ie_die("H38: route stride %u > 16384", rst);
-    ink_moe_cache_sync_w0(C);
     HIP(H.MemcpyAsync(b->moe_rt_pin, rt_orig, rst, hipMemcpyDeviceToHost, cur_stream));
-    HIP(H.StreamSynchronize(cur_stream));
+    HIP(H.EventRecord(b->moe_c_rt_ev, cur_stream));
+    ink_moe_cache_sync_w0(C);
+    HIP(H.EventSynchronize(b->moe_c_rt_ev));
     ink_moe_cache_flush_pf(C, 1);
     if ((++C->step_ctr & 63u) == 0u) {
       for (u32 e = 0u; e < ne; e++) C->score[e] >>= 1u;
@@ -8230,9 +8244,10 @@ static u32 ink_moe_cache_exec(gpu_backend *b, u32 i, u32 i1, u32 T, u32 pos) {
   if (T <= 16u) {
     const size_t rt_bytes = (size_t)T * rst;
     if (rt_bytes > 16384u) ie_die("H38: verify route bytes %zu > 16384", rt_bytes);
-    ink_moe_cache_sync_w0(C);
     HIP(H.MemcpyAsync(b->moe_rt_pin, rt_orig, rt_bytes, hipMemcpyDeviceToHost, cur_stream));
-    HIP(H.StreamSynchronize(cur_stream));
+    HIP(H.EventRecord(b->moe_c_rt_ev, cur_stream));
+    ink_moe_cache_sync_w0(C);
+    HIP(H.EventSynchronize(b->moe_c_rt_ev));
     ink_moe_cache_flush_pf(C, 1);
     if ((++C->step_ctr & 63u) == 0u) {
       for (u32 e = 0u; e < ne; e++) C->score[e] >>= 1u;
@@ -10194,9 +10209,10 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
     }
   }
 
-  /* Wave 11 R55 (H20 bit 121): Single-Launch [QKV + q_clip + inline k_dyn/v_dyn + K/V sconv + vclip + f16 KV] (-48 L) */
+  /* Wave 11 R55 (H20 bit 121) + R89 (H20 Q4-global-KV bit 172): Single-Launch [QKV + q_clip + inline k_dyn/v_dyn + K/V sconv + vclip + f16/Q4 KV] */
   if (k0 == OP_GEMV_Q8 && !sc_tree && !mk.rec && !ctx_on && !b->kvq8 && !b->kvq4 && T >= 1u && T <= 8u &&
-      b->k[K_INK_QKV_SCONV_KV_R11] && b->ink_qhead_cnt && m->hd == 128u && m->n_head > 0u && m->n_kv == 8u &&
+      (b->k[K_INK_QKV_SCONV_KV_R11] || b->k[K_INK_QKV_SCONV_KV_GLOB_Q4_R18]) &&
+      b->ink_qhead_cnt && m->hd == 128u && m->n_head > 0u && m->n_kv == 8u &&
       !o0->v && o0->res < 0 && !o0->nv && o0->boff == 0u &&
       o0->w->nb >= 8u && (o0->w->nb & 7u) == 0u) {
     const u32 nh = m->n_head, nkv = m->n_kv, hd = 128u, qd = nh * hd, kvd = nkv * hd, nb = o0->w->nb;
@@ -10234,6 +10250,9 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
       const op *ovd = has_dyn ? &g->ops[i + 5u] : NULL;
       const op *osck = &g->ops[i_sc], *okc = &g->ops[i_sc + 1u];
       const op *oscv = &g->ops[i_sc + 2u], *ovc = &g->ops[i_sc + 3u], *okv = &g->ops[i_kv];
+      const int is_gq4 = (b->ink_glob_kv_mode == 2 && g->kv_len[okv->kvi] >= g->n_ctx);
+      const int can_gq4 = is_gq4 && b->k[K_INK_QKV_SCONV_KV_GLOB_Q4_R18] != NULL;
+      const int can_f16 = !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx) && b->k[K_INK_QKV_SCONV_KV_R11] != NULL;
       if (osck->kind == OP_SCONV && okc->kind == OP_VCLIP && oscv->kind == OP_SCONV &&
           ovc->kind == OP_VCLIP && okv->kind == OP_KV &&
           osck->n == kvd && oscv->n == kvd &&
@@ -10245,7 +10264,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           okc->a == osck->b && okc->aoff == 0u && ovc->a == oscv->b && ovc->aoff == 0u &&
           okv->a == okc->b && okv->b == ovc->b && osck->escale == oscv->escale &&
           okc->clamp > 0.0f && !okc->v && !okc->norope && !ovc->v && ovc->clamp == 0.0f &&
-          g->kv_len[okv->kvi] > 0u && !(b->ink_glob_kv_mode && g->kv_len[okv->kvi] >= g->n_ctx) &&
+          g->kv_len[okv->kvi] > 0u && (can_gq4 || can_f16) &&
           g->bufs[osck->b].last <= i_kv && g->bufs[okc->b].last <= i_kv &&
           g->bufs[oscv->b].last <= i_kv && g->bufs[ovc->b].last <= i_kv) {
         const int inb[3] = {o0->a, ok->a, ov->a};
@@ -10288,29 +10307,49 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
           u32 ys_qr = g->bufs[o0->b].stride, ys_qc = g->bufs[oqc->b].stride;
           u32 ys_k = g->bufs[ok->b].stride, ys_v = g->bufs[ov->b].stride;
           u32 hrs = hist_k ? b->sc_hist_stride : 0u;
+          const uintptr_t kv_am = can_gq4 ? 7u : 15u;
           if ((((uintptr_t)y_q_raw | (uintptr_t)y_q_clip | (uintptr_t)y_k | (uintptr_t)y_v |
-                (uintptr_t)vk | (uintptr_t)vv | (uintptr_t)ring_k | (uintptr_t)ring_v |
-                (uintptr_t)kc0 | (uintptr_t)vc0) & 15u) == 0u &&
+                (uintptr_t)vk | (uintptr_t)vv | (uintptr_t)ring_k | (uintptr_t)ring_v) & 15u) == 0u &&
+              (((uintptr_t)kc0 | (uintptr_t)vc0) & kv_am) == 0u &&
               (!v_qclip || ((uintptr_t)v_qclip & 15u) == 0u) &&
               (!hist_k || ((((uintptr_t)hist_k | (uintptr_t)hist_v) & 15u) == 0u && (hrs & 3u) == 0u)) &&
               (T == 1u || ((ys_qr | ys_qc | ys_k | ys_v) & 15u) == 0u)) {
             u32 gx = (qd >> 4u) + (kvd >> 4u) + (kvd >> 4u);
-            void *fa[] = {&qw_q, &qs_q, &xq_q, &y_q_raw, &y_q_clip,
-                          &qw_k, &qs_k, &xq_k, &y_k,
-                          &qw_v, &qs_v, &xq_v, &y_v,
-                          &qw_kd, &qs_kd, &qw_vd, &qs_vd,
-                          &v_qclip,
-                          &vk, &ring_k, &hist_k,
-                          &vv, &ring_v, &hist_v,
-                          &kc0, &vc0, &b->ink_qhead_cnt,
-                          &nh_u, &nkv_u, &hd_u, &nb_u, &kvlen,
-                          &q_clamp, &norope, &q_esc, &win,
-                          &sc_esc, &k_clamp, &v_eps,
-                          &pos, &TT,
-                          &xs_q, &xs_k, &xs_v,
-                          &ys_qr, &ys_qc, &ys_k, &ys_v, &hrs};
             tr_span(g, i, n_d1 + 5u);
-            launch(b, K_INK_QKV_SCONV_KV_R11, gx, fa);
+            if (can_gq4) {
+              u32 rot = b->ink_glob_kv_rot;
+              void *fa_q4[] = {&qw_q, &qs_q, &xq_q, &y_q_raw, &y_q_clip,
+                               &qw_k, &qs_k, &xq_k, &y_k,
+                               &qw_v, &qs_v, &xq_v, &y_v,
+                               &qw_kd, &qs_kd, &qw_vd, &qs_vd,
+                               &v_qclip,
+                               &vk, &ring_k, &hist_k,
+                               &vv, &ring_v, &hist_v,
+                               &kc0, &vc0, &b->ink_qhead_cnt,
+                               &nh_u, &nkv_u, &hd_u, &nb_u, &kvlen,
+                               &q_clamp, &norope, &q_esc, &win,
+                               &sc_esc, &k_clamp, &v_eps,
+                               &pos, &TT,
+                               &xs_q, &xs_k, &xs_v,
+                               &ys_qr, &ys_qc, &ys_k, &ys_v, &hrs, &rot};
+              launch(b, K_INK_QKV_SCONV_KV_GLOB_Q4_R18, gx, fa_q4);
+            } else {
+              void *fa[] = {&qw_q, &qs_q, &xq_q, &y_q_raw, &y_q_clip,
+                            &qw_k, &qs_k, &xq_k, &y_k,
+                            &qw_v, &qs_v, &xq_v, &y_v,
+                            &qw_kd, &qs_kd, &qw_vd, &qs_vd,
+                            &v_qclip,
+                            &vk, &ring_k, &hist_k,
+                            &vv, &ring_v, &hist_v,
+                            &kc0, &vc0, &b->ink_qhead_cnt,
+                            &nh_u, &nkv_u, &hd_u, &nb_u, &kvlen,
+                            &q_clamp, &norope, &q_esc, &win,
+                            &sc_esc, &k_clamp, &v_eps,
+                            &pos, &TT,
+                            &xs_q, &xs_k, &xs_v,
+                            &ys_qr, &ys_qc, &ys_k, &ys_v, &hrs};
+              launch(b, K_INK_QKV_SCONV_KV_R11, gx, fa);
+            }
             return n_d1 + 5u;
           }
         }
@@ -14576,6 +14615,7 @@ static void gpu_close(backend *bk) {
     if (b->moe_c_done[1]) H.EventDestroy(b->moe_c_done[1]);
     if (b->moe_c_egu_ev) H.EventDestroy(b->moe_c_egu_ev);
     if (b->moe_c_ed_ev) H.EventDestroy(b->moe_c_ed_ev);
+    if (b->moe_c_rt_ev) H.EventDestroy(b->moe_c_rt_ev);
     if (b->moe_c_cs && H.StreamDestroy) H.StreamDestroy(b->moe_c_cs), b->moe_c_cs = NULL;
     if (b->moe_c_exec_s && H.StreamDestroy) H.StreamDestroy(b->moe_c_exec_s), b->moe_c_exec_s = NULL;
     free(b->moe_c), b->moe_c = NULL;

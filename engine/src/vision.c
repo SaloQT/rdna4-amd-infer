@@ -79,8 +79,9 @@ struct vision_ctx {
   /* GPU kernels (NULL when CPU-only) */
   void *mod;
   void *k_ln, *k_gq8, *k_gf16, *k_gf32, *k_rope, *k_attn;
-  /* R14 gfx1201 WMMA vision kernels */
+  /* R14/R18 gfx1201 WMMA vision kernels */
   void *k_wmma_f16, *k_wmma_q8, *k_attn_hd64, *k_ln_f16, *k_patch_prep, *k_merge2x2;
+  void *k_rope2d_tbl, *k_attn_hd64_r18;
   int has_wmma;
   /* Async double-buffered H2D staging (host-pinned RAM only, 0.0 MiB persistent VRAM) */
   void *vis_cs;
@@ -89,9 +90,11 @@ struct vision_ctx {
   uint8_t *pin_slot[2];
   size_t pin_slot_cap[2];
   /* LRU cache of encoded images */
+  pthread_mutex_t cache_mu;
   vis_cache_ent cache[VIS_CACHE_N];
   uint64_t tick;
 #ifdef _WIN32
+  pthread_mutex_t wic_mu;
   IWICImagingFactory *wic_fac;
   int wic_co;
 #endif
@@ -263,6 +266,14 @@ vision_ctx *vision_open(const char *mmproj_path, const char *hsaco_hint, uint32_
   init_f16_lut();
   vision_ctx *vc = calloc(1, sizeof *vc);
   if (!vc) ie_die("vision: out of memory");
+  pthread_mutex_init(&vc->cache_mu, NULL);
+#ifdef _WIN32
+  pthread_mutex_init(&vc->wic_mu, NULL);
+  {
+    HRESULT hr_co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    vc->wic_co = (hr_co == S_OK || hr_co == S_FALSE);
+  }
+#endif
   gguf_open(&vc->g, mmproj_path);
 
   char *ptype = gguf_get_str(&vc->g, "clip.vision.projector_type");
@@ -431,6 +442,8 @@ vision_ctx *vision_open(const char *mmproj_path, const char *hsaco_hint, uint32_
       vc->k_ln_f16 = gpu_vis_get_fn(vc->mod, "ie_vis_layernorm_f16");
       vc->k_patch_prep = gpu_vis_get_fn(vc->mod, "ie_vis_patch_prep_f16");
       vc->k_merge2x2 = gpu_vis_get_fn(vc->mod, "ie_vis_merge_2x2_f16");
+      vc->k_rope2d_tbl = gpu_vis_get_fn(vc->mod, "ie_vis_rope2d_table_r14");
+      vc->k_attn_hd64_r18 = gpu_vis_get_fn(vc->mod, "ie_vis_attn_wmma_hd64_r18");
       vc->has_wmma = (vc->k_wmma_f16 && vc->k_wmma_q8 && vc->k_attn_hd64 &&
                       vc->k_ln_f16 && vc->k_patch_prep && vc->k_merge2x2);
       if (is_ink) {
@@ -460,7 +473,9 @@ void vision_close(vision_ctx *vc) {
 #ifdef _WIN32
   if (vc->wic_fac) IWICImagingFactory_Release(vc->wic_fac);
   if (vc->wic_co) CoUninitialize();
+  pthread_mutex_destroy(&vc->wic_mu);
 #endif
+  pthread_mutex_destroy(&vc->cache_mu);
   for (int i = 0; i < VIS_CACHE_N; i++) free(vc->cache[i].embd);
   for (int i = 0; i < 2; i++) {
     if (vc->ev_h2d[i]) gpu_vis_event_destroy(vc->ev_h2d[i]);
@@ -579,13 +594,20 @@ int vision_validate_url(const char *url, size_t len, char *err, size_t errn) {
 #ifdef _WIN32
 static uint8_t *decode_image_rgb(vision_ctx *vc, const uint8_t *data, size_t nbytes, uint32_t *ow, uint32_t *oh, char *err, size_t errn) {
   if (nbytes > 0xFFFFFFFFu) { snprintf(err, errn, "image too large for WIC"); return NULL; }
+  HRESULT hr_co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  const int did_co = (hr_co == S_OK || hr_co == S_FALSE);
+  pthread_mutex_lock(&vc->wic_mu);
   if (!vc->wic_fac) {
-    HRESULT hr_co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    vc->wic_co = (hr_co == S_OK || hr_co == S_FALSE);
     HRESULT hr_f = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&vc->wic_fac);
-    if (FAILED(hr_f)) { snprintf(err, errn, "WIC init failed (0x%lx)", (unsigned long)hr_f); return NULL; }
+    if (FAILED(hr_f)) {
+      pthread_mutex_unlock(&vc->wic_mu);
+      if (did_co) CoUninitialize();
+      snprintf(err, errn, "WIC init failed (0x%lx)", (unsigned long)hr_f);
+      return NULL;
+    }
   }
   IWICImagingFactory *fac = vc->wic_fac;
+  pthread_mutex_unlock(&vc->wic_mu);
   IWICBitmapDecoder *dec = NULL;
   IWICBitmapFrameDecode *frm = NULL;
   IWICFormatConverter *conv = NULL;
@@ -622,6 +644,7 @@ done:
   if (frm) IWICBitmapFrameDecode_Release(frm);
   if (dec) IWICBitmapDecoder_Release(dec);
   if (stm) IWICStream_Release(stm);
+  if (did_co) CoUninitialize();
   return rgb;
 }
 #else
@@ -1130,6 +1153,14 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
     }
   }
 
+  /* R18: precomputed 2D axial RoPE cos/sin table + zero-tile PV skip (IE_VIS_ROPE_TBL=0 opts out) */
+  static int rope_tbl_env = -1;
+  if (rope_tbl_env < 0) {
+    const char *e = getenv("IE_VIS_ROPE_TBL");
+    rope_tbl_env = !(e && e[0] == '0');
+  }
+  const int use_r18_attn = rope_tbl_env && vc->k_rope2d_tbl != NULL && vc->k_attn_hd64_r18 != NULL;
+
   /* Single temporary VRAM arena (borrows idle LLM b->arena in ie-serve -> 0.0 MiB extra VRAM!) */
   const size_t sz_x = align256((size_t)N_pos * D * 4u);
   const size_t sz_h = align256((size_t)N_pos * D * 2u);
@@ -1141,6 +1172,7 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
   if (step0_qf_req > qf_req) qf_req = step0_qf_req;
   const size_t sz_qf = align256(qf_req);
   const size_t sz_out = align256((size_t)n_tok * vc->proj_dim * 4u);
+  const size_t sz_rope = use_r18_attn ? align256((size_t)N_pos * 64u * 4u) : 0u;
   const size_t sz_slot0 = align256(vc->pin_slot_cap[0]);
   const size_t sz_slot1 = align256(vc->pin_slot_cap[1]);
 
@@ -1150,6 +1182,7 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
   const size_t off_att = off; off += sz_att;
   const size_t off_qf = off; off += sz_qf;
   const size_t off_out = off; off += sz_out;
+  const size_t off_rope = off; off += sz_rope;
   const size_t off_w0 = off; off += sz_slot0;
   const size_t off_w1 = off; off += sz_slot1;
 
@@ -1160,6 +1193,7 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
   uint8_t *d_qf = d_arena + off_qf;    /* Step 0: [0..pf_bytes) holds patches_f16; [pf_bytes..) holds patch_out f32 */
   uint8_t *d_patch_out = d_qf + pf_bytes;
   uint8_t *d_out = d_arena + off_out;
+  uint8_t *d_rope = use_r18_attn ? (d_arena + off_rope) : NULL;
   uint8_t *d_wslot[2] = {d_arena + off_w0, d_arena + off_w1};
 
   /* Step 0: pack w_patch_f16 + cls/pre_ln vectors into pin_slot[1] -> d_wslot[1] on compute stream */
@@ -1199,6 +1233,15 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
   }
   gpu_vis_event_record(vc->ev_done[1], NULL);
 
+  /* R18: precompute 2D axial RoPE cos/sin table ONCE per image (reused across all ViT blocks) */
+  if (use_r18_attn) {
+    void *rp = d_rope;
+    uint32_t nn = N_pos, gwl = gw, ghl = gh;
+    float fb = 10000.0f;
+    void *args[] = {&rp, &nn, &gwl, &ghl, &fb};
+    gpu_vis_launch(vc->k_rope2d_tbl, (N_pos + 7u) / 8u, 1, 1, 256, 1, 1, args);
+  }
+
   /* 23 ViT layers with double-buffered async H2D overlap */
   const float scale = 1.0f / sqrtf((float)hd);
   for (uint32_t i = 0; i < vc->n_blk; i++) {
@@ -1221,13 +1264,19 @@ static void vit_run_inkling2_gpu(vision_ctx *vc, const uint16_t *patches_f16, co
     /* 2. QKV WMMA GEMM (f16 -> f16 [N_pos, 3*D]) */
     ink_wmma_gemm(vc, b->q_w->type, d_h, ws + pk_cur.off_qkv, ws + pk_cur.off_qkv_b, NULL, NULL,
                   d_qf, N_pos, 3u * D, D, 0u, 1u);
-    /* 3. WMMA FlashAttention (hd=64) with inline fused 2D Axial RoPE */
+    /* 3. WMMA FlashAttention (hd=64) with precomputed 2D Axial RoPE (R18) or inline fallback (R14) */
     {
       void *qp = d_qf, *op = d_att;
       uint32_t nn = N_pos, nhl = nh, gwl = gw;
       float sc = scale;
-      void *args[] = {&qp, &op, &nn, &nhl, &gwl, &sc};
-      gpu_vis_launch(vc->k_attn_hd64, (N_pos + 127u) / 128u, nh, 1, 256, 1, 1, args);
+      if (use_r18_attn) {
+        void *rp = d_rope;
+        void *args[] = {&qp, &op, &nn, &nhl, &gwl, &sc, &rp};
+        gpu_vis_launch(vc->k_attn_hd64_r18, (N_pos + 127u) / 128u, nh, 1, 256, 1, 1, args);
+      } else {
+        void *args[] = {&qp, &op, &nn, &nhl, &gwl, &sc};
+        gpu_vis_launch(vc->k_attn_hd64, (N_pos + 127u) / 128u, nh, 1, 256, 1, 1, args);
+      }
     }
     /* 4. Attn Out + LayerScale 1 + Residual in-place into d_x (f32) */
     ink_wmma_gemm(vc, b->out_w->type, d_att, ws + pk_cur.off_out, ws + pk_cur.off_out_b,
@@ -1863,23 +1912,117 @@ int vision_encode_f32(vision_ctx *vc, const float *rgb_chw, uint32_t w, uint32_t
   return 1;
 }
 
-int vision_encode_url(vision_ctx *vc, const char *url, size_t len, vision_emb *out, char *err, size_t errn) {
-  const uint64_t h = fnv1a64(url, len);
+static int vis_cache_lookup(vision_ctx *vc, uint64_t h, size_t len, vision_emb *out) {
+  pthread_mutex_lock(&vc->cache_mu);
   for (int i = 0; i < VIS_CACHE_N; i++) {
     vis_cache_ent *e = &vc->cache[i];
     if (e->embd && e->hash == h && e->url_len == len) {
       e->used = ++vc->tick;
-      out->embd = e->embd;
-      out->n_tok = e->n_tok;
-      out->nx = e->nx;
-      out->ny = e->ny;
-      out->proj_dim = e->proj_dim;
-      out->hash = e->hash;
-      out->owned = 0;
-      fprintf(stderr, "vision: cache hit (%ux%u grid, %u tokens)\n", e->nx, e->ny, e->n_tok);
+      if (out) {
+        out->embd = e->embd;
+        out->n_tok = e->n_tok;
+        out->nx = e->nx;
+        out->ny = e->ny;
+        out->proj_dim = e->proj_dim;
+        out->hash = e->hash;
+        out->owned = 0;
+        fprintf(stderr, "vision: cache hit (%ux%u grid, %u tokens)\n", e->nx, e->ny, e->n_tok);
+      }
+      pthread_mutex_unlock(&vc->cache_mu);
       return 1;
     }
   }
+  pthread_mutex_unlock(&vc->cache_mu);
+  return 0;
+}
+
+static void vis_cache_insert(vision_ctx *vc, uint64_t h, size_t len, const vision_emb *tmp) {
+  const size_t bytes = (size_t)tmp->n_tok * tmp->proj_dim * 4u;
+  float *cached_copy = malloc(bytes);
+  if (!cached_copy) return;
+  memcpy(cached_copy, tmp->embd, bytes);
+  pthread_mutex_lock(&vc->cache_mu);
+  int slot = 0;
+  for (int i = 0; i < VIS_CACHE_N; i++) {
+    if (!vc->cache[i].embd) { slot = i; break; }
+    if (vc->cache[i].used < vc->cache[slot].used) slot = i;
+  }
+  free(vc->cache[slot].embd);
+  vc->cache[slot] = (vis_cache_ent){
+      .hash = h, .url_len = len, .n_tok = tmp->n_tok, .nx = tmp->nx, .ny = tmp->ny,
+      .proj_dim = tmp->proj_dim, .used = ++vc->tick, .embd = cached_copy,
+  };
+  pthread_mutex_unlock(&vc->cache_mu);
+}
+
+/* Thread-safe off-engine-thread image decode + bicubic resize/normalize (called from handle_chat).
+ * On cache hit, sets *out_chw = NULL and returns 1 without decoding. */
+int vision_prepare_url(vision_ctx *vc, const char *url, size_t len, float **out_chw, uint32_t *ow, uint32_t *oh,
+                       uint64_t *out_hash, char *err, size_t errn) {
+  const uint64_t h = fnv1a64(url, len);
+  *out_hash = h;
+  *out_chw = NULL;
+  *ow = 0;
+  *oh = 0;
+  if (vis_cache_lookup(vc, h, len, NULL)) return 1;
+  size_t raw_n = 0;
+  uint8_t *raw = url_to_bytes(url, len, &raw_n, err, errn);
+  if (!raw) return 0;
+  uint32_t iw = 0, ih = 0;
+  uint8_t *rgb = decode_image_rgb(vc, raw, raw_n, &iw, &ih, err, errn);
+  free(raw);
+  if (!rgb) return 0;
+
+  const char *emin = getenv("IE_IMAGE_MIN_TOKENS"), *emax = getenv("IE_IMAGE_MAX_TOKENS");
+  uint32_t min_tok = emin && atoi(emin) > 0 ? (uint32_t)atoi(emin) : 64u;
+  uint32_t max_tok = emax && atoi(emax) > 0 ? (uint32_t)atoi(emax) : 1024u;
+  if (max_tok > 4096u) max_tok = 4096u;
+  if (min_tok > max_tok) min_tok = max_tok;
+
+  uint32_t rw = 0, rh = 0;
+  float *chw = NULL;
+  if (vc->arch == VIS_ARCH_INKLING2V) {
+    chw = inkling2_resize_pad_norm(rgb, iw, ih, vc->patch_size * vc->merge_size, max_tok, vc->mean, vc->std, &rw, &rh);
+  } else {
+    smart_resize(iw, ih, vc->patch_size * vc->merge_size, min_tok, max_tok, &rw, &rh);
+    chw = resize_and_norm(rgb, iw, ih, rw, rh, vc->mean, vc->std);
+  }
+  free(rgb);
+  *out_chw = chw;
+  *ow = rw;
+  *oh = rh;
+  return 1;
+}
+
+/* Engine-thread GPU ViT encode of a pre-decoded CHW buffer (takes ownership of chw). */
+int vision_encode_prepared(vision_ctx *vc, const char *url, size_t len, uint64_t hash, float *chw, uint32_t ow,
+                           uint32_t oh, vision_emb *out, char *err, size_t errn) {
+  if (vis_cache_lookup(vc, hash, len, out)) {
+    free(chw);
+    return 1;
+  }
+  if (!chw) return vision_encode_url(vc, url, len, out, err, errn);
+  vision_emb tmp = {0};
+  const double t0 = now_ms();
+  const int ok = vision_encode_f32(vc, chw, ow, oh, &tmp);
+  const double dt = now_ms() - t0;
+  free(chw);
+  if (!ok) {
+    snprintf(err, errn, "vision encode failed for %ux%u", ow, oh);
+    return 0;
+  }
+  fprintf(stderr, "vision: encoded %ux%u (%ux%u grid, %u tokens) in %.1f ms\n",
+          ow, oh, tmp.nx, tmp.ny, tmp.n_tok, dt);
+  vis_cache_insert(vc, hash, len, &tmp);
+  *out = tmp;
+  out->hash = hash;
+  out->owned = 1;
+  return 1;
+}
+
+int vision_encode_url(vision_ctx *vc, const char *url, size_t len, vision_emb *out, char *err, size_t errn) {
+  const uint64_t h = fnv1a64(url, len);
+  if (vis_cache_lookup(vc, h, len, out)) return 1;
   size_t raw_n = 0;
   uint8_t *raw = url_to_bytes(url, len, &raw_n, err, errn);
   if (!raw) return 0;
@@ -1916,22 +2059,7 @@ int vision_encode_url(vision_ctx *vc, const char *url, size_t len, vision_emb *o
   fprintf(stderr, "vision: encoded %ux%u -> %ux%u (%ux%u grid, %u tokens) in %.1f ms\n",
           iw, ih, ow, oh, tmp.nx, tmp.ny, tmp.n_tok, dt);
 
-  /* Insert independent copy into LRU cache so caller always owns out->embd safely */
-  int slot = 0;
-  for (int i = 0; i < VIS_CACHE_N; i++) {
-    if (!vc->cache[i].embd) { slot = i; break; }
-    if (vc->cache[i].used < vc->cache[slot].used) slot = i;
-  }
-  const size_t bytes = (size_t)tmp.n_tok * tmp.proj_dim * 4u;
-  float *cached_copy = malloc(bytes);
-  if (cached_copy) {
-    memcpy(cached_copy, tmp.embd, bytes);
-    free(vc->cache[slot].embd);
-    vc->cache[slot] = (vis_cache_ent){
-        .hash = h, .url_len = len, .n_tok = tmp.n_tok, .nx = tmp.nx, .ny = tmp.ny,
-        .proj_dim = tmp.proj_dim, .used = ++vc->tick, .embd = cached_copy,
-    };
-  }
+  vis_cache_insert(vc, h, len, &tmp);
   *out = tmp;
   out->hash = h;
   out->owned = 1;

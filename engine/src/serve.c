@@ -29,6 +29,12 @@
 #include "model.h"
 #include "tok.h"
 #include "vision.h"
+
+/* Off-engine-thread image decode/resize helpers implemented in vision.c */
+extern int vision_prepare_url(vision_ctx *vc, const char *url, size_t len, float **out_chw, uint32_t *ow, uint32_t *oh,
+                              uint64_t *out_hash, char *err, size_t errn);
+extern int vision_encode_prepared(vision_ctx *vc, const char *url, size_t len, uint64_t hash, float *chw, uint32_t ow,
+                                  uint32_t oh, vision_emb *out, char *err, size_t errn);
 #include "win_net.h" /* the sockets (POSIX, or Winsock on Windows); after the other headers */
 
 int chat_render_inkling2(const jval *msgs, const jval *tools, const jval *effort_jv, const char *effort_str,
@@ -182,6 +188,9 @@ typedef struct job {
   sbuf tcs_sent[16];   /* the arguments text sent per call */
   char sse_pfx[384];   /* pre-formatted constant SSE chunk prefix */
   size_t sse_pfx_n;
+  float **img_chw;     /* pre-decoded normalized CHW buffers from handle_chat (NULL on cache hit) */
+  uint32_t *img_w, *img_h;
+  uint64_t *img_hash;
 } job;
 
 static pthread_mutex_t QM = PTHREAD_MUTEX_INITIALIZER;
@@ -930,7 +939,13 @@ static void run_job(job *j) {
     gimgs = calloc(j->n_img_urls, sizeof *gimgs);
     if (!vembs || !gimgs) ie_die("vision: out of memory");
     for (size_t k = 0; k < j->n_img_urls; k++) {
-      if (!vision_encode_url(VIS, j->img_urls[k].url, j->img_urls[k].len, &vembs[k], verr, sizeof verr)) {
+      float *chw = j->img_chw ? j->img_chw[k] : NULL;
+      if (j->img_chw) j->img_chw[k] = NULL; /* ownership transferred to vision_encode_prepared */
+      const int ok = j->img_chw
+          ? vision_encode_prepared(VIS, j->img_urls[k].url, j->img_urls[k].len, j->img_hash[k], chw,
+                                   j->img_w[k], j->img_h[k], &vembs[k], verr, sizeof verr)
+          : vision_encode_url(VIS, j->img_urls[k].url, j->img_urls[k].len, &vembs[k], verr, sizeof verr);
+      if (!ok) {
         for (size_t z = 0; z < k; z++) vision_emb_free(&vembs[z]);
         free(vembs), free(gimgs);
         http_error(j->fd, 400, "invalid_request_error", "image %zu: %s", k + 1, verr);
@@ -1109,6 +1124,13 @@ static void run_job(job *j) {
 static void job_free(job *j) {
   if (j->fd >= 0) close(j->fd);
   tok_ids_free(&j->prompt);
+  if (j->img_chw) {
+    for (size_t k = 0; k < j->n_img_urls; k++) free(j->img_chw[k]);
+    free(j->img_chw);
+  }
+  free(j->img_w);
+  free(j->img_h);
+  free(j->img_hash);
   free(j->img_urls);
   free(j->img_slot);
   sb_free(&j->all);
@@ -1820,9 +1842,25 @@ static void handle_chat(int fd, const request *r) {
     }
     j->img_urls = malloc(cp.n_imgs * sizeof *j->img_urls);
     j->img_slot = calloc(cp.n_imgs, sizeof *j->img_slot);
-    if (!j->img_urls || !j->img_slot) ie_die("serve: out of memory");
+    j->img_chw = calloc(cp.n_imgs, sizeof *j->img_chw);
+    j->img_w = calloc(cp.n_imgs, sizeof *j->img_w);
+    j->img_h = calloc(cp.n_imgs, sizeof *j->img_h);
+    j->img_hash = calloc(cp.n_imgs, sizeof *j->img_hash);
+    if (!j->img_urls || !j->img_slot || !j->img_chw || !j->img_w || !j->img_h || !j->img_hash)
+      ie_die("serve: out of memory");
     memcpy(j->img_urls, cp.imgs, cp.n_imgs * sizeof *j->img_urls);
     j->n_img_urls = cp.n_imgs;
+    /* Off-engine-thread base64 + WIC decode + bicubic resize/normalize before queueing */
+    if (VIS) {
+      for (size_t k = 0; k < cp.n_imgs; k++) {
+        if (!vision_prepare_url(VIS, cp.imgs[k].url, cp.imgs[k].len, &j->img_chw[k], &j->img_w[k], &j->img_h[k],
+                                &j->img_hash[k], err, sizeof err)) {
+          chat_prompt_free(&cp);
+          http_error(fd, 400, "invalid_request_error", "image %zu: %s", k + 1, err);
+          goto bad;
+        }
+      }
+    }
   }
   const char *oc_prefix = getenv("IE_OPENCODE_PREFIX");
   const char *omp_prefix = getenv("IE_OMP_PREFIX");
