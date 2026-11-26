@@ -847,6 +847,8 @@ typedef struct {
   float *ring, *st; /* qwen35 linear attention state (see cpu.c) */
   float *sc_ring;   /* inkling2 sconv 4-tap ring buffer (m->sc_tot * 4 floats) */
   size_t sc_ring_bytes;
+  float *sc_ring_keep; /* the ring as a small prompt chunk found it (ink_sp_keep_ring), allocated at the first one */
+  int sc_ring_kept;    /* 1: the current gpu_run copied the ring to sc_ring_keep */
   u32 *ink_ctx_dev;         /* inkling2 HIP Graph T=1 decode device ctx: [0]=tok, [1]=pos */
   u32 *ink_ctx_host;        /* pinned host mirror of ink_ctx_dev */
   u32 *ink_toks_dev;        /* inkling2 prefill batched embed token ids on device */
@@ -855,7 +857,8 @@ typedef struct {
   u32 ink_toks_ring;
   u32 ink_toks_cap;
   u32 ink_toks_slot;        /* R50 (H09): per-slot pinned ring capacity (>= 512, matches g->T up to 1024) */
-  u32 *am_pin;              /* 256 B pinned host buffer for T=1 argmax, verify argmax, and DSpark zbuf D2H */
+  u32 *am_pin;              /* pinned host buffer: 256 B for T=1 argmax, verify argmax, and DSpark zbuf D2H, then the
+                             * word AM_PIN_SP for the persistent kernels' poison flag */
   u32 *ink_lc_count;        /* inkling2 R6 wfg_gate_norm per-(ctrl, t_tile) atomic counters */
   hipStream_t ink_gstream;  /* dedicated non-blocking stream for inkling2 HIP Graph capture/replay */
   void *ink_pgraph[8];      /* R35 piecewise hipGraphExec_t[0..ink_n_pieces-1] for inkling2 T=1 decode */
@@ -897,6 +900,8 @@ typedef struct {
   hipEvent_t stage_ev;
   int stage_pending;
   int ink_sp_poisoned, ink_sp_used;
+  hipEvent_t ink_sp_flag_ev; /* behind a run's read of sync[2] into am_pin[AM_PIN_SP] (ink_sp_queue_flag) */
+  int ink_sp_flag_q;         /* 1: that read is queued; 2: queued with ink_sp_flag_ev behind it */
   int ink_h17_probed, ink_h16_probed;
   float *snap_ring[IE_SNAP_MAX], *snap_st[IE_SNAP_MAX]; /* the prompt cache snapshots (gpu_snap), allocated at the first save: in host memory
                                      * (pageable; 2 x 160 MB less VRAM at 128K), IE_SNAP_HOST=0: in VRAM */
@@ -968,6 +973,9 @@ typedef struct {
   size_t ephem_pin_cap;
   u32 ephem_pos_saved;
 } gpu_backend;
+
+/* gpu_backend.am_pin: the index of the word that receives sync[2], behind the 256 B of argmax readback */
+#define AM_PIN_SP 64u
 
 /* The copy of streamed layer s into its slot, on the copy stream, after the slot's previous user ran. */
 static void hs_copy(gpu_backend *b, u32 s, int wait) {
@@ -3661,7 +3669,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     vis_borrow_used = 0;
   }
   HIP(H.Malloc((void **)&b->am_part, 16u * ARGMAX_GROUPS * 12u));
-  if (H.HostMalloc((void **)&b->am_pin, 256u, 0) != 0) b->am_pin = NULL;
+  if (H.HostMalloc((void **)&b->am_pin, (AM_PIN_SP + 4u) * 4u, 0) != 0) b->am_pin = NULL;
   if ((m->arch == ARCH_FLINT || m->arch == ARCH_INKLING2) && m->n_exp) {
     HIP(H.Malloc((void **)&b->ms_offs, (m->n_exp + 1u) * 4u));
     HIP(H.Malloc((void **)&b->ms_list, IE_MS_MAXP * 4u));
@@ -11274,7 +11282,63 @@ static u32 ink_nsplit_bucket(u32 np, u32 max_sp) {
   return b ? b : 1u;
 }
 
-static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits, double *ms) {
+/* The persistent kernels (the H17 loop pipes, monomoe, the sub-span glue) hold their workgroups together with a grid
+ * barrier that is guarded by the wall clock. A workgroup that waits too long sets the sticky flag sync[2] and the
+ * kernel returns unfinished: what the run computed behind it is wrong, and every later launch of these kernels
+ * returns at its first barrier. So a run that used them reads the flag before the host takes its tokens.
+ * ink_sp_queue_flag() queues that read. Its place is right in front of the copy that brings the run's tokens to the
+ * host, so the wait for the tokens covers both copies and the run gets no wait of its own for the flag. A run that
+ * ends without such a copy passes with_event, and the event marks the read as done. */
+static void ink_sp_queue_flag(gpu_backend *b, int with_event) {
+  b->ink_sp_flag_q = 0;
+  if (!b->ink_sp_used || !b->ink_sp_sync || !b->am_pin) return;
+  HIP(H.MemcpyAsync(b->am_pin + AM_PIN_SP, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost, cur_stream));
+  b->ink_sp_flag_q = 1;
+  if (with_event) {
+    if (!b->ink_sp_flag_ev) HIP(ie_event_create_notiming(&b->ink_sp_flag_ev));
+    HIP(H.EventRecord(b->ink_sp_flag_ev, cur_stream));
+    b->ink_sp_flag_q = 2;
+  }
+}
+
+/* 1 if the run that just ended used a persistent kernel that timed out. Those kernels are then off for the process
+ * and the caller runs the same tokens again: the regular kernels write every row of that run anew. */
+static int ink_sp_take_poison(gpu_backend *b) {
+  if (!b->ink_sp_used) return 0;
+  b->ink_sp_used = 0;
+  if (!b->ink_sp_sync) return 0;
+  u32 pf = 0u;
+  if (b->ink_sp_flag_q) {
+    if (b->ink_sp_flag_q == 2) HIP(H.EventSynchronize(b->ink_sp_flag_ev)); /* the run had no wait of its own */
+    pf = b->am_pin[AM_PIN_SP];
+  } else {
+    HIP(H.StreamSynchronize(cur_stream));
+    HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
+  }
+  b->ink_sp_flag_q = 0;
+  /* IE_INK_SP_FAULT=N (debug): the Nth run checked here counts as timed out, to exercise the repeat. The GPU is
+   * not made to fail: the run itself was a good one. */
+  static int fault_at = -1, n_checked;
+  if (fault_at < 0) fault_at = getenv("IE_INK_SP_FAULT") ? atoi(getenv("IE_INK_SP_FAULT")) : 0;
+  if (fault_at > 0 && ++n_checked == fault_at) pf |= 0x80000000u;
+  if (!pf) return 0;
+  b->ink_sp_poisoned = 1;
+  fprintf(stderr, "gpu: a persistent kernel timed out at its grid barrier (flag=0x%x): these kernels are off for this "
+                  "process, and the run is repeated without them\n", pf);
+  return 1;
+}
+
+/* A run of several tokens that stores them in the conv ring as it goes (a prompt chunk; a verify run keeps them in
+ * sc_hist until gpu_accept) cannot simply be made again: the ring then no longer holds the three positions before
+ * the run. Such a run of a size the persistent kernels take copies the ring first, for gpu_run to put back. */
+static void ink_sp_keep_ring(gpu_backend *b, u32 T) {
+  if (T < 2u || T > 16u || !b->sc_ring || !b->ink_sp_sync || b->ink_sp_poisoned) return;
+  if (!b->sc_ring_keep) HIP(H.Malloc((void **)&b->sc_ring_keep, b->sc_ring_bytes));
+  HIP(H.MemcpyAsync(b->sc_ring_keep, b->sc_ring, b->sc_ring_bytes, hipMemcpyDeviceToDevice, cur_stream));
+  b->sc_ring_kept = 1;
+}
+
+static uint32_t gpu_step_once(backend *bk, uint32_t tok, uint32_t pos, float *logits, double *ms) {
   gpu_backend *b = (gpu_backend *)bk;
 #ifdef _WIN32
   if (b->snap_async_busy && (pos < b->snap_async_pos || pos + 1u >= b->snap_async_pos + b->snap_async_slack))
@@ -11434,11 +11498,10 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
   if (need_ev) HIP(H.EventRecord(b->e1, cur_stream));
   u32 r = 0;
   double st2 = 0;
-  const int check_sp = b->ink_sp_used && b->ink_sp_sync;
   if (logits) HIP(H.MemcpyAsync(logits, b->arena + g->bufs[g->logits].off, m->vocab * 4, hipMemcpyDeviceToHost, cur_stream));
+  ink_sp_queue_flag(b, 0); /* read in the wait for the token (without am_pin: by ink_sp_take_poison) */
   if (b->am_pin) {
     HIP(H.MemcpyAsync(b->am_pin, b->arena + g->bufs[g->argmax].off, 4, hipMemcpyDeviceToHost, cur_stream));
-    if (check_sp) HIP(H.MemcpyAsync(b->am_pin + 63u, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost, cur_stream));
     HIP(H.StreamSynchronize(cur_stream));
     st2 = st_on ? ds_now_ms() : 0;
     r = b->am_pin[0];
@@ -11466,17 +11529,15 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
       fprintf(stderr, "step time: launches %.3f ms, wait %.3f ms, read %.3f ms per token (GPU clock %.3f ms; %u steps)\n",
               st_ms[0] / st_n, st_ms[1] / st_n, st_ms[2] / st_n, st_ms[3] / st_n, st_n);
   }
-  if (check_sp) {
-    u32 pf = 0u;
-    if (b->am_pin) pf = b->am_pin[63u];
-    else HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
-    b->ink_sp_used = 0;
-    if (pf != 0u) {
-      b->ink_sp_poisoned = 1;
-      fprintf(stderr, "gpu: ie_inkling_subspan_glue_r8 POISONED (flag=%u) -> latching off for process\n", pf);
-    }
-  }
   mk_check(pos);
+  return r;
+}
+
+/* One decode step. A step writes its own position only (its KV rows, its slot of the conv ring), so after a
+ * persistent kernel timed out it is simply run again. */
+static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits, double *ms) {
+  uint32_t r = gpu_step_once(bk, tok, pos, logits, ms);
+  if (ink_sp_take_poison((gpu_backend *)bk)) r = gpu_step_once(bk, tok, pos, logits, ms);
   return r;
 }
 
@@ -11955,8 +12016,8 @@ static void ds_ctx_frnn_finish(gpu_backend *b, u32 pos, u32 T, int save_prev) {
   ds_ctx_frnn_launch(b, T - 1u);
 }
 
-static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint32_t pos, int last_only, uint32_t *out,
-                    float *prob) {
+static void gpu_run_once(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint32_t pos, int last_only, uint32_t *out,
+                         float *prob) {
   gpu_backend *b = (gpu_backend *)bk;
 #ifdef _WIN32
   if (b->snap_async_busy && (sec == 0 || sec == 2) &&
@@ -12553,7 +12614,9 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
    * OP_ARGMAX, and the blocking D2H wait! */
   if (!sec && !out && !b->base.all_logits) {
     mk.rec = 0;
+    ink_sp_keep_ring(b, T);
     run_ops(b, 0, g->i_head, toks, T, pos, last_only && T > 1u ? T - 1u : 0u);
+    ink_sp_queue_flag(b, 1); /* nothing waits for this run: ink_sp_take_poison does, if it used a persistent kernel */
     mk_flush();
     if (pc) {
       HIP(H.DeviceSynchronize());
@@ -12639,6 +12702,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   const int prev_ver = b->in_verify;
   b->in_verify = (!sec && !last_only && T >= 2u && T <= 16u);
   fl_cnt = 0;
+  if (!sec && !defer_sc) ink_sp_keep_ring(b, T);
   if (do_ds_ov) {
     const u32 split_op = (b->ds.ov_mode == 1) ? g->i_head : (g->i_head + 1u);
     for (u32 il = 0; il < b->m->ds->n_layer; il++)
@@ -12666,6 +12730,9 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
     run_ops(b, sec ? g->n_main : 0, i1, toks, T, pos, wf);
     b->sc_defer = 0;
   }
+  /* The tails that copy the run's tokens to am_pin / tk_pin queue the poison flag next to that copy; the others
+   * get it here, with an event behind it. */
+  if (!fused_q4k_head && (fold_mtp || fold || (!fold_am_r7 && (fold_am || !out)))) ink_sp_queue_flag(b, 1);
   b->in_verify = prev_ver;
   b->tr_on = 0;
   b->skip_argmax = 0;
@@ -12727,6 +12794,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
     launch_t(b, K_INK_ARGMAX_BATCHED_R7, ng_arg, T, ama);
     const size_t am_bytes = (size_t)T * amb->stride;
     if (b->am_pin && am_bytes <= 256u) {
+      ink_sp_queue_flag(b, 0);
       HIP(H.MemcpyAsync(b->am_pin, lo, am_bytes, hipMemcpyDeviceToHost, cur_stream));
       HIP(H.StreamSynchronize(cur_stream));
       for (u32 t = 0; t < T; t++) out[t] = b->am_pin[t * amb->stride / 4u];
@@ -12754,6 +12822,7 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   const size_t am_bytes = (size_t)T * am->stride;
   u32 *tmp = NULL;
   if (b->am_pin && am_bytes <= 256u) {
+    ink_sp_queue_flag(b, 0);
     HIP(H.MemcpyAsync(b->am_pin, b->arena + am->off, am_bytes, hipMemcpyDeviceToHost, cur_stream));
     HIP(H.StreamSynchronize(cur_stream));
     tmp = b->am_pin;
@@ -12768,6 +12837,19 @@ static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint
   }
   if (tmp != b->am_pin) free(tmp);
   mk_check(pos);
+}
+
+/* One model run. After a persistent kernel timed out in it, the run is made again (ink_sp_take_poison): it writes
+ * its own positions only, once the conv ring is back as the run found it (ink_sp_keep_ring). */
+static void gpu_run(backend *bk, int sec, const uint32_t *toks, uint32_t T, uint32_t pos, int last_only, uint32_t *out,
+                    float *prob) {
+  gpu_backend *b = (gpu_backend *)bk;
+  b->sc_ring_kept = 0;
+  gpu_run_once(bk, sec, toks, T, pos, last_only, out, prob);
+  if (!ink_sp_take_poison(b)) return;
+  if (b->sc_ring_kept)
+    HIP(H.MemcpyAsync(b->sc_ring, b->sc_ring_keep, b->sc_ring_bytes, hipMemcpyDeviceToDevice, cur_stream));
+  gpu_run_once(bk, sec, toks, T, pos, last_only, out, prob);
 }
 
 /* The prompt cache snapshot: the current state slot of each linear layer,
@@ -14288,6 +14370,7 @@ static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, uint32_t pos, int
   launch(b, (b->ink_q4k_wave && qw == b->ink_q4k_w0) ? K_INK_Q4K_HEAD_WAVE_CAP_TOPK_R13 : K_INK_Q4K_HEAD_CAP_TOPK_R7, ng, fa);
   if (fold) {
     const size_t bytes = (size_t)TK_ROWS * TK_MAX * 2u * 4u;
+    ink_sp_queue_flag(b, 0);
     HIP(H.MemcpyAsync(b->tk_pin, ov_d, bytes, hipMemcpyDeviceToHost, cur_stream));
     if (do_ss_ctx) {
       HIP(H.EventRecord(b->ds.ev_head_ready, cur_stream));
@@ -14308,6 +14391,7 @@ static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, uint32_t pos, int
   } else {
     const size_t am_bytes = (size_t)T * amb->stride;
     if (b->am_pin && am_bytes <= 256u) {
+      ink_sp_queue_flag(b, 0);
       HIP(H.MemcpyAsync(b->am_pin, out_am, am_bytes, hipMemcpyDeviceToHost, cur_stream));
       if (do_ss_ctx) {
         HIP(H.EventRecord(b->ds.ev_head_ready, cur_stream));
@@ -14635,6 +14719,8 @@ static void gpu_close(backend *bk) {
   if (b->ink_sp_pin) H.HostFree(b->ink_sp_pin);
   for (u32 k = 0; k < 64u; k++) if (b->ink_sp_ev[k]) H.EventDestroy(b->ink_sp_ev[k]);
   if (b->ink_sp_sync) H.Free(b->ink_sp_sync);
+  if (b->ink_sp_flag_ev) H.EventDestroy(b->ink_sp_flag_ev);
+  if (b->sc_ring_keep) H.Free(b->sc_ring_keep);
   if (b->ink_ctx_dev) H.Free(b->ink_ctx_dev);
   if (b->ink_ctx_host) H.HostFree(b->ink_ctx_host);
   if (b->ink_toks_dev) H.Free(b->ink_toks_dev);
