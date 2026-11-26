@@ -62,11 +62,68 @@ static inline __attribute__((always_inline)) u32x4 ink_r7_q4k_ld4(const G void *
   return ((const __attribute__((address_space(1))) struct ink_r7_q4k_u32x4p *)p)->v;
 }
 
+static inline __attribute__((always_inline)) void ink_r7_q4k_sb_step(
+    const G u32 *row_qw, const G u16 *row_sm, const G u32 *row_dd32, const G u8 *xq,
+    u32 nb, u32 T, u32 xs, u32 sb_u, u32 sub, u32 sub32, u32 sub4, v8f *acc) {
+#pragma clang fp contract(off)
+  const u32 b = (sb_u << 3u) + sub;
+
+  /* Cached contiguous 128 B/row Q4_K weight load (0 TH_LOAD_NT, 1x DRAM pass). */
+  const u32x4 w4 = ink_r7_q4k_ld4(row_qw + (unsigned long)b * 4ul);
+  const u32 sm = (u32)row_sm[b];
+  const u32 dd_raw = row_dd32[sb_u];
+  const u16 d_bits = (u16)(dd_raw & 0xFFFFu);
+  const u16 dm_bits = (u16)(dd_raw >> 16u);
+  const float d = (float)__builtin_bit_cast(f16, d_bits);
+  const float dmin = (float)__builtin_bit_cast(f16, dm_bits);
+  const float sc = d * (float)(sm & 63u);
+  const float mm = dmin * (float)(sm >> 8u);
+
+  const u32 lo0 = ie_q4k_lo(w4.x), hi0 = ie_q4k_hi(w4.x);
+  const u32 lo1 = ie_q4k_lo(w4.y), hi1 = ie_q4k_hi(w4.y);
+  const u32 lo2 = ie_q4k_lo(w4.z), hi2 = ie_q4k_hi(w4.z);
+  const u32 lo3 = ie_q4k_lo(w4.w), hi3 = ie_q4k_hi(w4.w);
+
+  const unsigned long aw_sb = (unsigned long)sb_u * 256ul;
+  const unsigned long da_sb = (unsigned long)nb * 32ul + (unsigned long)sb_u * 32ul;
+  const unsigned long as_sb = (unsigned long)nb * 36ul + (unsigned long)sb_u * 32ul;
+
+  v8f av = *acc;
+#pragma unroll
+  for (u32 j = 0u; j < INK_R7_Q4K_TMAX; j++) {
+    if (j < T) {
+      const G u8 *xj = xq + (unsigned long)j * (unsigned long)xs;
+      const G u8 *xj_aw = xj + aw_sb;
+      const u32x4 act0 = ink_r7_q4k_ld4(xj_aw + sub32);
+      const u32x4 act1 = ink_r7_q4k_ld4(xj_aw + sub32 + 16u);
+      const float da = *(const G float *)(xj + da_sb + sub4);
+      const int as = (int)(*(const G u32 *)(xj + as_sb + sub4));
+      const float xa = da * (float)as;
+
+      u32 dq = ie_dot4_us(0u, lo0, act0.x);
+      dq = ie_dot4_us(dq, hi0, act1.x);
+      dq = ie_dot4_us(dq, lo1, act0.y);
+      dq = ie_dot4_us(dq, hi1, act1.y);
+      dq = ie_dot4_us(dq, lo2, act0.z);
+      dq = ie_dot4_us(dq, hi2, act1.z);
+      dq = ie_dot4_us(dq, lo3, act0.w);
+      dq = ie_dot4_us(dq, hi3, act1.w);
+
+      const float prod = sc * (float)(int)dq;
+      const float a_mid = __builtin_fmaf(prod, da, av[j]);
+      av[j] = __builtin_fmaf(-mm, xa, a_mid);
+      if ((j & 1u) == 1u) __builtin_amdgcn_sched_barrier(0);
+    }
+  }
+  *acc = av;
+  __builtin_amdgcn_sched_barrier(0);
+}
+
 /* ============================================================================
  * 8-lane/row Q4_K GEMV + optional fused logit-cap (T = 1..8, 4 rows/wave).
  * Uses SSA v8f accumulators (a0..a3) for 0 private stack / 0 spills and exact
- * 0-bit-diff wave_tree_f parity, with pair-wise sched_barrier to stay <= 96 VGPR
- * (4 WGs/CU = 16 waves/SIMD) and compact L0 I-cache footprint.
+ * 0-bit-diff wave_tree_f parity, with 4x unrolled superblock loop eliminating
+ * runtime slot branches and pair-wise sched_barrier to stay <= 96 VGPR.
  * ========================================================================== */
 KERNEL ie_inkling_gemv_q4k_head_ver_r7(const G u32 *qw, const G u16 *qs, const G u8 *xq, G float *y,
                                        u32 rows, u32 nb, const G float *bias, const G float *res,
@@ -103,74 +160,27 @@ KERNEL ie_inkling_gemv_q4k_head_ver_r7(const G u32 *qw, const G u16 *qs, const G
   /* Four virtual 32-lane accumulators per token (SSA v8f -> guaranteed 0 private memory). */
   v8f a0 = (v8f)(0.0f), a1 = (v8f)(0.0f), a2 = (v8f)(0.0f), a3 = (v8f)(0.0f);
 
+  const u32 nsb4 = nsb & ~3u;
 #pragma clang loop unroll(disable)
-  for (u32 sb = 0u; sb < nsb; sb++) {
-    const u32 sb_u = __builtin_amdgcn_readfirstlane(sb);
-    const u32 slot = __builtin_amdgcn_readfirstlane(sb_u & 3u);
-    const u32 b = (sb_u << 3u) + sub;
-
-    /* Cached contiguous 128 B/row Q4_K weight load (0 TH_LOAD_NT, 1x DRAM pass). */
-    const u32x4 w4 = ink_r7_q4k_ld4(row_qw + (unsigned long)b * 4ul);
-    const u32 sm = (u32)row_sm[b];
-    const u32 dd_raw = row_dd32[sb_u];
-    const u16 d_bits = (u16)(dd_raw & 0xFFFFu);
-    const u16 dm_bits = (u16)(dd_raw >> 16u);
-    const float d = (float)__builtin_bit_cast(f16, d_bits);
-    const float dmin = (float)__builtin_bit_cast(f16, dm_bits);
-    const float sc = d * (float)(sm & 63u);
-    const float mm = dmin * (float)(sm >> 8u);
-
-    const u32 lo0 = ie_q4k_lo(w4.x), hi0 = ie_q4k_hi(w4.x);
-    const u32 lo1 = ie_q4k_lo(w4.y), hi1 = ie_q4k_hi(w4.y);
-    const u32 lo2 = ie_q4k_lo(w4.z), hi2 = ie_q4k_hi(w4.z);
-    const u32 lo3 = ie_q4k_lo(w4.w), hi3 = ie_q4k_hi(w4.w);
-
-    const unsigned long aw_sb = (unsigned long)sb_u * 256ul;
-    const unsigned long da_sb = (unsigned long)nb * 32ul + (unsigned long)sb_u * 32ul;
-    const unsigned long as_sb = (unsigned long)nb * 36ul + (unsigned long)sb_u * 32ul;
-
-#pragma unroll
-    for (u32 j = 0u; j < INK_R7_Q4K_TMAX; j++) {
-      if (j < T) {
-        const G u8 *xj = xq + (unsigned long)j * (unsigned long)xs;
-        const G u8 *xj_aw = xj + aw_sb;
-        const u32x4 act0 = ink_r7_q4k_ld4(xj_aw + sub32);
-        const u32x4 act1 = ink_r7_q4k_ld4(xj_aw + sub32 + 16u);
-        const float da = *(const G float *)(xj + da_sb + sub4);
-        const int as = (int)(*(const G u32 *)(xj + as_sb + sub4));
-        const float xa = da * (float)as;
-
-        u32 dq = ie_dot4_us(0u, lo0, act0.x);
-        dq = ie_dot4_us(dq, hi0, act1.x);
-        dq = ie_dot4_us(dq, lo1, act0.y);
-        dq = ie_dot4_us(dq, hi1, act1.y);
-        dq = ie_dot4_us(dq, lo2, act0.z);
-        dq = ie_dot4_us(dq, hi2, act1.z);
-        dq = ie_dot4_us(dq, lo3, act0.w);
-        dq = ie_dot4_us(dq, hi3, act1.w);
-
-        const float prod = sc * (float)(int)dq;
-        if (slot == 0u) {
-          const float a_mid = __builtin_fmaf(prod, da, a0[j]);
-          a0[j] = __builtin_fmaf(-mm, xa, a_mid);
-        } else if (slot == 1u) {
-          const float a_mid = __builtin_fmaf(prod, da, a1[j]);
-          a1[j] = __builtin_fmaf(-mm, xa, a_mid);
-        } else if (slot == 2u) {
-          const float a_mid = __builtin_fmaf(prod, da, a2[j]);
-          a2[j] = __builtin_fmaf(-mm, xa, a_mid);
-        } else {
-          const float a_mid = __builtin_fmaf(prod, da, a3[j]);
-          a3[j] = __builtin_fmaf(-mm, xa, a_mid);
-        }
-        if ((j & 1u) == 1u) __builtin_amdgcn_sched_barrier(0);
-      }
-    }
-    __builtin_amdgcn_sched_barrier(0);
+  for (u32 sb0 = 0u; sb0 < nsb4; sb0 += 4u) {
+    const u32 sb_u = __builtin_amdgcn_readfirstlane(sb0);
+    ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_u + 0u, sub, sub32, sub4, &a0);
+    ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_u + 1u, sub, sub32, sub4, &a1);
+    ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_u + 2u, sub, sub32, sub4, &a2);
+    ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_u + 3u, sub, sub32, sub4, &a3);
+  }
+  if (nsb4 < nsb) {
+    const u32 sb_t = __builtin_amdgcn_readfirstlane(nsb4);
+    ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_t + 0u, sub, sub32, sub4, &a0);
+    if (sb_t + 1u < nsb)
+      ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_t + 1u, sub, sub32, sub4, &a1);
+    if (sb_t + 2u < nsb)
+      ink_r7_q4k_sb_step(row_qw, row_sm, row_dd32, xq, nb, T, xs, sb_t + 2u, sub, sub32, sub4, &a2);
   }
 
   /* Exact wave_tree_f order: +16 (a0+a2, a1+a3), +8 (u0+u1), then DPP +4, +2, +1. */
   const int use_cap = (cap > 0.0f);
+  const float inv_cap = use_cap ? (1.0f / cap) : 0.0f;
 #pragma unroll
   for (u32 j = 0u; j < INK_R7_Q4K_TMAX; j++) {
     if (j < T) {
@@ -183,7 +193,7 @@ KERNEL ie_inkling_gemv_q4k_head_ver_r7(const G u32 *qw, const G u16 *qs, const G
       if (sub == 0u) {
         const G float *rp = res ? (res + (unsigned long)j * (unsigned long)rs) : (const G float *)0;
         float val = epilogue(s, r, bias, rp);
-        if (use_cap) val = cap * ie_tanhf_s(val / cap);
+        if (use_cap) val = cap * ie_tanhf_s(val * inv_cap);
         y[(unsigned long)j * (unsigned long)ys + (unsigned long)r] = val;
       }
     }

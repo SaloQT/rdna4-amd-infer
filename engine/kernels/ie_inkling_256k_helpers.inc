@@ -95,32 +95,39 @@ KERNEL ie_inkling_ds_rope_fill_r14(
   r = __builtin_fma(-kd, INK_R14_256K_PIO2_2, r);
   r = __builtin_fma(-kd, INK_R14_256K_PIO2_3, r);
 
-  /* Degree-14 cos(r) and degree-13 sin(r) Horner on |r| <= pi/4 (< 1e-15 err). */
-  const double r2 = r * r;
-  double c = __builtin_fma(r2, -1.0 / 87178291200.0, 1.0 / 479001600.0);
-  c = __builtin_fma(r2, c, -1.0 / 3628800.0);
-  c = __builtin_fma(r2, c, 1.0 / 40320.0);
-  c = __builtin_fma(r2, c, -1.0 / 720.0);
-  c = __builtin_fma(r2, c, 1.0 / 24.0);
-  c = __builtin_fma(r2, c, -0.5);
-  c = __builtin_fma(r2, c, 1.0);
+  /* Cast reduced |r| <= pi/4 to FP32 and evaluate degree-8 cos / degree-9 sin
+   * (4 FP32 FMAs each, < 0.05 ULP error vs host (float)cos/(float)sin, avoids 1/32-rate FP64). */
+  const float rf = (float)r;
+  const float r2 = rf * rf;
+  float c = __builtin_fmaf(r2, 1.0f / 40320.0f, -1.0f / 720.0f);
+  c = __builtin_fmaf(r2, c, 1.0f / 24.0f);
+  c = __builtin_fmaf(r2, c, -0.5f);
+  c = __builtin_fmaf(r2, c, 1.0f);
 
-  double s = __builtin_fma(r2, 1.0 / 6227020800.0, -1.0 / 39916800.0);
-  s = __builtin_fma(r2, s, 1.0 / 362880.0);
-  s = __builtin_fma(r2, s, -1.0 / 5040.0);
-  s = __builtin_fma(r2, s, 1.0 / 120.0);
-  s = __builtin_fma(r2, s, -1.0 / 6.0);
-  s = __builtin_fma(r2 * r, s, r);
+  float s = __builtin_fmaf(r2, 1.0f / 362880.0f, -1.0f / 5040.0f);
+  s = __builtin_fmaf(r2, s, 1.0f / 120.0f);
+  s = __builtin_fmaf(r2, s, -1.0f / 6.0f);
+  s = __builtin_fmaf(r2 * rf, s, rf);
 
   /* Branchless quadrant reconstruction: q = k & 3. */
   const u32 q = k & 3u;
-  const double co = (q & 1u) ? -s : c;
-  const double so = (q & 1u) ?  c : s;
-  const double cf = (q & 2u) ? -co : co;
-  const double sf = (q & 2u) ? -so : so;
+  const float co = (q & 1u) ? -s : c;
+  const float so = (q & 1u) ?  c : s;
+  const float cf = (q & 2u) ? -co : co;
+  const float sf = (q & 2u) ? -so : so;
 
-  rcos[idx] = (float)cf;
-  rsin[idx] = (float)sf;
+  rcos[idx] = cf;
+  rsin[idx] = sf;
+}
+
+static inline __attribute__((always_inline)) u32 ink_r14_256k_wave_scan_inc(u32 x) {
+  x += (u32)__builtin_amdgcn_update_dpp(0, (int)x, 0x111, 0xF, 0xF, true);
+  x += (u32)__builtin_amdgcn_update_dpp(0, (int)x, 0x112, 0xF, 0xF, true);
+  x += (u32)__builtin_amdgcn_update_dpp(0, (int)x, 0x114, 0xF, 0xF, true);
+  x += (u32)__builtin_amdgcn_update_dpp(0, (int)x, 0x118, 0xF, 0xF, true);
+  const u32 lo16 = (u32)__builtin_amdgcn_readlane((int)x, 15);
+  if (lane() >= 16u) x += lo16;
+  return x;
 }
 
 /* ============================================================================
@@ -137,13 +144,14 @@ KERNEL ie_inkling_ds_rope_fill_r14(
  *                 (pass NULL to use offs_in + e_lo directly for r2/expmaj_r10)
  *   Grid        : (1u, 1u, 1u), NT = 256
  * ========================================================================== */
-static LDS u32 ink_r14_256k_bcnt[4];
-static LDS u32 ink_r14_256k_boff[4];
+static LDS u32 ink_r14_256k_wcnt[4][8];
 
 KERNEL ie_inkling_moe_wl_filter_r14(
     const G u32 *offs_in, u32 n_exp, u32 e_lo, u32 e_hi,
     G u32 *tiles_out, G u32 *n_tiles_out, G u32 *offs_out) {
   const u32 t = tid();
+  const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(t >> 5u));
+  const u32 l = lane();
 
   if (!offs_in || n_exp == 0u || e_lo >= n_exp || e_lo >= e_hi) {
     if (t == 0u) {
@@ -170,7 +178,25 @@ KERNEL ie_inkling_moe_wl_filter_r14(
     rem = c & 63u;
   }
   const u32 hi_off = (t == 0u) ? offs_in[hi] : 0u;
-  if (t < 4u) ink_r14_256k_bcnt[t] = 0u;
+
+  /* Zero-atomic wave ballot + scan across the 4 largest-first tile buckets. */
+  const int active = (tiles_out != (G u32 *)0) && (t < cnt) && (c > 0u);
+  const int has_rem = active && (rem > 0u);
+  const u32 rem_cls = has_rem ? ((rem - 1u) >> 4u) : 4u;
+  const u32 lt_mask = (1u << l) - 1u;
+
+  const u32 m0 = __builtin_amdgcn_ballot_w32(has_rem && rem_cls == 0u);
+  const u32 m1 = __builtin_amdgcn_ballot_w32(has_rem && rem_cls == 1u);
+  const u32 m2 = __builtin_amdgcn_ballot_w32(has_rem && rem_cls == 2u);
+  const u32 c3 = (active ? nfull : 0u) + ((has_rem && rem_cls == 3u) ? 1u : 0u);
+  const u32 inc3 = ink_r14_256k_wave_scan_inc(c3);
+
+  if (l == 0u) {
+    ink_r14_256k_wcnt[0][w] = (u32)__builtin_popcount(m0);
+    ink_r14_256k_wcnt[1][w] = (u32)__builtin_popcount(m1);
+    ink_r14_256k_wcnt[2][w] = (u32)__builtin_popcount(m2);
+  }
+  if (l == 31u) ink_r14_256k_wcnt[3][w] = inc3;
   lbarrier();
 
   /* Optional 0-based offs_out copy for expert-major consumers. */
@@ -179,42 +205,40 @@ KERNEL ie_inkling_moe_wl_filter_r14(
     if (t == 0u) offs_out[cnt] = hi_off;
   }
 
-  /* Pass 1: Count 4 largest-first tile buckets (cls 3: 49..64, 2: 33..48, 1: 17..32, 0: 1..16). */
-  if (tiles_out && t < cnt && c > 0u) {
-    if (nfull > 0u) __atomic_fetch_add(&ink_r14_256k_bcnt[3], nfull, __ATOMIC_RELAXED);
-    if (rem > 0u) __atomic_fetch_add(&ink_r14_256k_bcnt[(rem - 1u) >> 4u], 1u, __ATOMIC_RELAXED);
-  }
-  lbarrier();
-
-  /* Pass 2: Largest-first bucket prefix offsets + active tile count. */
-  if (t == 0u) {
-    const u32 b3 = ink_r14_256k_bcnt[3];
-    const u32 b2 = ink_r14_256k_bcnt[2];
-    const u32 b1 = ink_r14_256k_bcnt[1];
-    const u32 b0 = ink_r14_256k_bcnt[0];
-    ink_r14_256k_boff[3] = 0u;
-    ink_r14_256k_boff[2] = b3;
-    ink_r14_256k_boff[1] = b3 + b2;
-    ink_r14_256k_boff[0] = b3 + b2 + b1;
-    if (n_tiles_out) *n_tiles_out = tiles_out ? (b3 + b2 + b1 + b0) : 0u;
-  }
-  lbarrier();
-
-  /* Pass 3: Emit exact 32-bit packed descriptors with slot = e - e_lo in bits [7:0]
-   * and original list[] offset lo in bits [20:8] (matching ie_inkling_moe_pf_worklist_r7). */
-  if (tiles_out && t < cnt && c > 0u) {
-    if (nfull > 0u) {
-      const u32 base_pos = __atomic_fetch_add(&ink_r14_256k_boff[3], nfull, __ATOMIC_RELAXED);
-      for (u32 k = 0u; k < nfull; k++) {
-        const u32 lo = off0 + (k << 6u);
-        tiles_out[base_pos + k] = t | (lo << 8u) | (64u << 21u) | (3u << 28u);
-      }
+  /* Wave prefix sums + largest-first global bucket offsets (cls 3 -> 2 -> 1 -> 0). */
+  u32 woff[4] = {0u, 0u, 0u, 0u};
+  u32 btot[4] = {0u, 0u, 0u, 0u};
+#pragma unroll
+  for (u32 b = 0u; b < 4u; b++) {
+#pragma unroll
+    for (u32 j = 0u; j < 8u; j++) {
+      const u32 v = ink_r14_256k_wcnt[b][j];
+      if (j < w) woff[b] += v;
+      btot[b] += v;
     }
-    if (rem > 0u) {
-      const u32 cls = (rem - 1u) >> 4u;
-      const u32 pos = __atomic_fetch_add(&ink_r14_256k_boff[cls], 1u, __ATOMIC_RELAXED);
+  }
+  const u32 base3 = 0u;
+  const u32 base2 = btot[3];
+  const u32 base1 = base2 + btot[2];
+  const u32 base0 = base1 + btot[1];
+  if (t == 0u && n_tiles_out) *n_tiles_out = tiles_out ? (base0 + btot[0]) : 0u;
+
+  /* Emit exact 32-bit packed descriptors with slot = e - e_lo in bits [7:0]
+   * and original list[] offset lo in bits [20:8] (zero LDS atomics). */
+  if (active) {
+    const u32 off3 = base3 + woff[3] + (inc3 - c3);
+    for (u32 k = 0u; k < nfull; k++) {
+      const u32 lo = off0 + (k << 6u);
+      tiles_out[off3 + k] = t | (lo << 8u) | (64u << 21u) | (3u << 28u);
+    }
+    if (has_rem) {
       const u32 lo = off0 + (nfull << 6u);
-      tiles_out[pos] = t | (lo << 8u) | (rem << 21u) | (cls << 28u);
+      u32 pos;
+      if (rem_cls == 3u) pos = off3 + nfull;
+      else if (rem_cls == 2u) pos = base2 + woff[2] + (u32)__builtin_popcount(m2 & lt_mask);
+      else if (rem_cls == 1u) pos = base1 + woff[1] + (u32)__builtin_popcount(m1 & lt_mask);
+      else pos = base0 + woff[0] + (u32)__builtin_popcount(m0 & lt_mask);
+      tiles_out[pos] = t | (lo << 8u) | (rem << 21u) | (rem_cls << 28u);
     }
   }
 }

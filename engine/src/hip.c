@@ -889,6 +889,10 @@ typedef struct {
   hipEvent_t ink_sp_ev[64];
   u32 *ink_sp_sync;         /* 16 B device sync control block (zero-init once; sync[2]=poison_flag) */
   u32 ink_sp_ring;
+  void *stage_pin;          /* reusable pinned H2D staging buffer for ext_rows / gpu_set_rope */
+  size_t stage_pin_cap;
+  hipEvent_t stage_ev;
+  int stage_pending;
   int ink_sp_poisoned, ink_sp_used;
   int ink_h17_probed, ink_h16_probed;
   float *snap_ring[IE_SNAP_MAX], *snap_st[IE_SNAP_MAX]; /* the prompt cache snapshots (gpu_snap), allocated at the first save: in host memory
@@ -1172,7 +1176,7 @@ static int ink_h38_ed_overlap(void) {
   static int v = -1;
   if (v < 0) {
     const char *e = getenv("IE_H38_ED_OVERLAP");
-    v = (e && *e) ? (atoi(e) != 0) : 0; /* R58 (H38-DEC-OV): opt-in during screen; flip to 1 on promotion */
+    v = (e && *e) ? (atoi(e) != 0) : 1; /* R58 (H38-DEC-OV): default ON; set IE_H38_ED_OVERLAP=0 to disable */
   }
   return v;
 }
@@ -3990,13 +3994,16 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       fprintf(stderr, "gpu: dspark RoPE on-the-fly (cap=%u, %.2f MiB vs %.1f MiB static)\n",
               rcap, 2.0 * (double)rcap * h2 * 4.0 / 1048576.0, 2.0 * (double)rn * h2 * 4.0 / 1048576.0);
     } else {
+      double *hinv = ie_alloc((size_t)h2 * sizeof(double));
+      for (u32 j = 0; j < h2; j++) hinv[j] = pow((double)d->rope_base, -2.0 * (double)j / (double)d->hd);
       float *hcos = ie_alloc((size_t)rn * h2 * 4u), *hsin = ie_alloc((size_t)rn * h2 * 4u);
       for (u32 p = 0; p < rn; p++)
         for (u32 j = 0; j < h2; j++) {
-          double th = (double)p * pow((double)d->rope_base, -2.0 * (double)j / (double)d->hd);
+          double th = (double)p * hinv[j];
           hcos[(size_t)p * h2 + j] = (float)cos(th);
           hsin[(size_t)p * h2 + j] = (float)sin(th);
         }
+      free(hinv);
       b->ds.rcos = upload(b, hcos, (size_t)rn * h2 * 4u);
       b->ds.rsin = upload(b, hsin, (size_t)rn * h2 * 4u);
       free(hcos), free(hsin);
@@ -4554,6 +4561,63 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
     size_t fr = 0, tot = 0; /* what is left for the run: a context that fills the card makes the driver move buffers to system memory */
     if (H.MemGetInfo(&fr, &tot) == 0)
       fprintf(stderr, "gpu: VRAM free after loading: %.0f MB of %.0f MB; %u device allocations\n", fr / 1e6, tot / 1e6, n_dalloc);
+  }
+  if (b->ink_sp_sync && !b->ink_sp_poisoned) {
+    /* Run H17/H16 persistent co-residency probes once at open so first decode/verify step never stalls mid-layer. */
+    int probed_any = 0;
+    const int k_h17 = b->k[K_INK_LC_PIPE_MLP_EXACT_R16] ? K_INK_LC_PIPE_MLP_EXACT_R16
+                    : (b->k[K_INK_LC_PIPE_MLP_R11] ? K_INK_LC_PIPE_MLP_R11 : -1);
+    if (k_h17 >= 0) {
+      void *zptr = NULL;
+      u32 ng = ink_h17_ng(), z32 = 0u, dim = 2304u, nb_dn = 144u, rank = 64u, t1 = 1u, pflags = 4u;
+      float eps = m->eps;
+      uint64_t bt = 0ull, kt = 0ull;
+      void *pa[] = {&zptr, &zptr, &zptr, &zptr, &zptr, &zptr,
+                    &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr,
+                    &b->ink_sp_sync, &ng, &z32, &dim, &nb_dn, &rank, &t1, &pflags, &eps,
+                    &z32, &z32, &z32, &z32, &z32, &z32, &z32, &z32, &z32, &bt, &kt};
+      HIP(H.ModuleLaunchKernel(b->k[k_h17], ng, 1u, 1u, 256u, 1u, 1u, 0u, cur_stream, pa, NULL));
+      b->ink_h17_probed = 1;
+      probed_any = 1;
+    } else if (b->k[K_INK_LC_PIPE_ATTN_EXACT_R16] || b->k[K_INK_LC_PIPE_ATTN_R11]) {
+      const int k_h17a = b->k[K_INK_LC_PIPE_ATTN_EXACT_R16] ? K_INK_LC_PIPE_ATTN_EXACT_R16 : K_INK_LC_PIPE_ATTN_R11;
+      void *zptr = NULL;
+      u32 ng = ink_h17_ng(), z32 = 0u, dim = 2304u, nb_dn = 144u, rank = 64u, t1 = 1u, pflags = 4u;
+      float eps = m->eps;
+      uint64_t bt = 0ull, kt = 0ull;
+      void *pa[] = {
+          &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr,
+          &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr,
+          &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr, &zptr,
+          &b->ink_sp_sync, &ng, &dim, &nb_dn, &rank, &t1, &pflags, &eps,
+          &z32, &z32, &z32, &z32, &z32, &z32, &z32, &z32, &z32, &z32, &z32, &bt, &kt};
+      HIP(H.ModuleLaunchKernel(b->k[k_h17a], ng, 1u, 1u, 256u, 1u, 1u, 0u, cur_stream, pa, NULL));
+      b->ink_h17_probed = 1;
+      probed_any = 1;
+    }
+    if (b->k[K_INK_MONOMOE_T1_R11]) {
+      void *zptr = NULL;
+      u32 ng = ink_h16_ng(), z32 = 0u, pflags = (b->ink_iq3_flute ? 1u : 0u) | 2u;
+      float zf = 0.0f;
+      uint64_t bt = 0ull, kt = 0ull;
+      void *pa[] = {&zptr, &zptr, &zptr, &zptr, &zptr, &zf,
+                    &zptr, &zptr, &zptr, &z32, &z32, &zf, &zf,
+                    &zptr, &zptr, &zptr, &z32, &z32,
+                    &zptr, &zptr, &zptr, &zptr, &zf, &z32,
+                    &z32, &z32, &z32, &z32, &ng, &pflags, &b->ink_sp_sync, &bt, &kt};
+      HIP(H.ModuleLaunchKernel(b->k[K_INK_MONOMOE_T1_R11], ng, 1u, 1u, 256u, 1u, 1u, 0u, cur_stream, pa, NULL));
+      b->ink_h16_probed = 1;
+      probed_any = 1;
+    }
+    if (probed_any) {
+      HIP(H.StreamSynchronize(cur_stream));
+      u32 pf = 0u;
+      HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
+      if (pf != 0u) {
+        b->ink_sp_poisoned = 1;
+        fprintf(stderr, "gpu: H17/H16 startup co-residency probe FAILED (flag=%u) -> latching off\n", pf);
+      }
+    }
   }
   route_stats_init(b);
   return &b->base;
@@ -7829,6 +7893,29 @@ static unsigned ink_t1_fuse(void) {
   return (unsigned)v;
 }
 
+static void hip_h2d_staged_async(gpu_backend *b, void *dst, const void *src, size_t bytes) {
+  if (!bytes) return;
+  if (b->stage_pending && b->stage_ev) {
+    HIP(H.EventSynchronize(b->stage_ev));
+    b->stage_pending = 0;
+  }
+  if (bytes > b->stage_pin_cap) {
+    if (b->stage_pin) H.HostFree(b->stage_pin), b->stage_pin = NULL, b->stage_pin_cap = 0u;
+    size_t cap = bytes < 65536u ? 65536u : bytes;
+    if (H.HostMalloc(&b->stage_pin, cap, 0) == 0 && b->stage_pin) b->stage_pin_cap = cap;
+    else b->stage_pin = NULL, b->stage_pin_cap = 0u;
+  }
+  if (!b->stage_pin) {
+    HIP(H.Memcpy(dst, src, bytes, hipMemcpyHostToDevice));
+    return;
+  }
+  if (!b->stage_ev) HIP(ie_event_create_notiming(&b->stage_ev));
+  memcpy(b->stage_pin, src, bytes);
+  HIP(H.MemcpyAsync(dst, b->stage_pin, bytes, hipMemcpyHostToDevice, cur_stream));
+  HIP(H.EventRecord(b->stage_ev, cur_stream));
+  b->stage_pending = 1;
+}
+
 static void ink_moe_cache_flush_pf(ink_moe_cache_layer *C, int merge_scores) {
   if (C->pf_offs_pending) {
     HIP(H.EventSynchronize(C->pf_offs_ev));
@@ -7913,12 +8000,15 @@ static void ink_moe_cache_enqueue_ed(gpu_backend *b, ink_moe_cache_layer *C,
                                      const u32 *miss_e, const u32 *miss_s, u32 n_miss) {
   if (!n_miss) return;
   HIP(H.StreamWaitEvent(b->moe_c_cs, b->moe_c_egu_ev, 0));
-  for (u32 mi = 0u; mi < n_miss; mi++) {
+  for (u32 mi = 0u; mi < n_miss;) {
     const size_t e = (size_t)miss_e[mi], s = (size_t)miss_s[mi];
+    u32 run = 1u;
+    while (mi + run < n_miss && miss_e[mi + run] == miss_e[mi] + run && miss_s[mi + run] == miss_s[mi] + run) run++;
     HIP(H.MemcpyAsync((char *)C->ed0_dev + s * C->ed0_eb, (const char *)C->ed0_host + e * C->ed0_eb,
-                      C->ed0_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+                      (size_t)run * C->ed0_eb, hipMemcpyHostToDevice, b->moe_c_cs));
     HIP(H.MemcpyAsync((char *)C->ed1_dev + s * C->ed1_eb, (const char *)C->ed1_host + e * C->ed1_eb,
-                      C->ed1_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+                      (size_t)run * C->ed1_eb, hipMemcpyHostToDevice, b->moe_c_cs));
+    mi += run;
   }
   HIP(H.EventRecord(b->moe_c_ed_ev, b->moe_c_cs));
 }
@@ -8023,16 +8113,19 @@ static void ink_moe_cache_resolve(gpu_backend *b, ink_moe_cache_layer *C,
     for (u32 k = 0u; k < K; k++) ids[k] = (u32)C->slot_of[ids[k]];
   }
   HIP(H.MemcpyAsync(b->moe_rt_dev, rt_rows, (size_t)T_sub * rst, hipMemcpyHostToDevice, cur_stream));
-  for (u32 mi = 0u; mi < n_miss; mi++) {
+  for (u32 mi = 0u; mi < n_miss;) {
     const size_t e = (size_t)miss_e[mi], s = (size_t)miss_s[mi];
+    u32 run = 1u;
+    while (mi + run < n_miss && miss_e[mi + run] == miss_e[mi] + run && miss_s[mi + run] == miss_s[mi] + run) run++;
     HIP(H.MemcpyAsync((char *)C->egu_dev + s * C->egu_eb, (const char *)C->egu_host + e * C->egu_eb,
-                      C->egu_eb, hipMemcpyHostToDevice, cur_stream));
+                      (size_t)run * C->egu_eb, hipMemcpyHostToDevice, cur_stream));
     if (!defer_ed) {
       HIP(H.MemcpyAsync((char *)C->ed0_dev + s * C->ed0_eb, (const char *)C->ed0_host + e * C->ed0_eb,
-                        C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
+                        (size_t)run * C->ed0_eb, hipMemcpyHostToDevice, cur_stream));
       HIP(H.MemcpyAsync((char *)C->ed1_dev + s * C->ed1_eb, (const char *)C->ed1_host + e * C->ed1_eb,
-                        C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
+                        (size_t)run * C->ed1_eb, hipMemcpyHostToDevice, cur_stream));
     }
+    mi += run;
   }
   if (defer_ed) {
     if (n_miss > 0u) HIP(H.EventRecord(b->moe_c_egu_ev, cur_stream));
@@ -9458,7 +9551,7 @@ static u32 ink_r2_fuse(gpu_backend *b, u32 i, u32 i1, const u32 *toks, u32 T, u3
             void *fa[] = {&ka, &vk, &ck, &ring_k, &hist_k, &va, &vv, &cv, &ring_v, &hist_v,
                           &kc0, &vc0, &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen,
                           &kas, &cks, &vas, &cvs, &hrs, &tpar, &rot};
-            launch(b, K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16, 1u, fa);
+            launch(b, K_INK_C1_SCONV_VCLIP_GLOB_Q4_STORE_R16, 2u, fa);
           } else if (can_f16_tr) {
             void *fa[] = {&ka, &vk, &ck, &ring_k, &hist_k, &va, &vv, &cv, &ring_v, &hist_v,
                           &kc0, &vc0, &sc_esc, &k_clamp, &v_eps, &pos, &TT, &kvlen,
@@ -10998,7 +11091,7 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
                  b->base.ext_rows[t1] == b->base.ext_rows[t] + (size_t)(t1 - t) * b->m->dim && stride == rowb)
             t1++;
           void *dst = b->arena + g->bufs[o->a].off + o->aoff + (size_t)buf_row(&g->bufs[o->a], t) * stride;
-          HIP(H.Memcpy(dst, b->base.ext_rows[t], (size_t)(t1 - t) * rowb, hipMemcpyHostToDevice));
+          hip_h2d_staged_async(b, dst, b->base.ext_rows[t], (size_t)(t1 - t) * rowb);
           t = t1;
         }
       }
@@ -11116,7 +11209,7 @@ static void run_ops(gpu_backend *b, uint32_t i0, uint32_t i1, const u32 *toks, u
                b->base.ext_rows[t1] == b->base.ext_rows[t] + (size_t)(t1 - t) * b->m->dim && stride == rowb)
           t1++;
         void *dst = b->arena + g->bufs[o->b].off + o->boff + (size_t)buf_row(&g->bufs[o->b], t) * stride;
-        HIP(H.Memcpy(dst, b->base.ext_rows[t], (size_t)(t1 - t) * rowb, hipMemcpyHostToDevice));
+        hip_h2d_staged_async(b, dst, b->base.ext_rows[t], (size_t)(t1 - t) * rowb);
         t = t1;
       }
     }
@@ -11279,9 +11372,9 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
   const int need_ev = (ms != NULL) || (b->prof == 1) || st_on;
   const double st0 = st_on ? ds_now_ms() : 0;
   if (need_ev) HIP(H.EventRecord(b->e0, cur_stream));
-  struct timespec h0, h1;
+  struct timespec h0 = {0, 0}, h1 = {0, 0};
   const uint64_t l0 = launch_n;
-  clock_gettime(CLOCK_MONOTONIC, &h0);
+  if (st_on) clock_gettime(CLOCK_MONOTONIC, &h0);
   tr_run("decode", pos, 1);
   mk.set = b->flint ? (gq_use(b, pos) ? MKSET_FLINTL : MKSET_FLINT)
                     : m->arch == ARCH_INKLING2 ? MKSET_INKLING : MKSET_DECODE;
@@ -11292,18 +11385,21 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
   b->in_step = 0;
   mk.rec = 0;
   mk_flush();
-  clock_gettime(CLOCK_MONOTONIC, &h1);
+  if (st_on) clock_gettime(CLOCK_MONOTONIC, &h1);
   if (pos > 0) {
-    b->host_ms += (h1.tv_sec - h0.tv_sec) * 1e3 + (h1.tv_nsec - h0.tv_nsec) / 1e6, b->host_n++;
+    if (st_on) b->host_ms += (h1.tv_sec - h0.tv_sec) * 1e3 + (h1.tv_nsec - h0.tv_nsec) / 1e6;
+    b->host_n++;
     b->host_launches += launch_n - l0;
   }
   const double st1 = st_on ? ds_now_ms() : 0;
   if (need_ev) HIP(H.EventRecord(b->e1, cur_stream));
   u32 r = 0;
   double st2 = 0;
+  const int check_sp = b->ink_sp_used && b->ink_sp_sync;
   if (logits) HIP(H.MemcpyAsync(logits, b->arena + g->bufs[g->logits].off, m->vocab * 4, hipMemcpyDeviceToHost, cur_stream));
   if (b->am_pin) {
     HIP(H.MemcpyAsync(b->am_pin, b->arena + g->bufs[g->argmax].off, 4, hipMemcpyDeviceToHost, cur_stream));
+    if (check_sp) HIP(H.MemcpyAsync(b->am_pin + 63u, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost, cur_stream));
     HIP(H.StreamSynchronize(cur_stream));
     st2 = st_on ? ds_now_ms() : 0;
     r = b->am_pin[0];
@@ -11331,9 +11427,10 @@ static uint32_t gpu_step(backend *bk, uint32_t tok, uint32_t pos, float *logits,
       fprintf(stderr, "step time: launches %.3f ms, wait %.3f ms, read %.3f ms per token (GPU clock %.3f ms; %u steps)\n",
               st_ms[0] / st_n, st_ms[1] / st_n, st_ms[2] / st_n, st_ms[3] / st_n, st_n);
   }
-  if (b->ink_sp_used && b->ink_sp_sync) {
+  if (check_sp) {
     u32 pf = 0u;
-    HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
+    if (b->am_pin) pf = b->am_pin[63u];
+    else HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
     b->ink_sp_used = 0;
     if (pf != 0u) {
       b->ink_sp_poisoned = 1;
@@ -11586,6 +11683,7 @@ static void gpu_ds_note_tokens(backend *bk, const uint32_t *toks, uint32_t n_tok
   if (!b->ds.id_map_dev || !b->m->ds) return;
   const u32 unpad = b->m->ds->vocab_unpadded;
   const size_t bmb = (b->m->vocab + 7u) / 8u;
+  u32 dyn_dirty_lo = b->ds.n_dyn;
   for (u32 i = 0; i < n_toks; i++) {
     const u32 t = toks[i];
     if (t >= unpad) continue;
@@ -11598,8 +11696,6 @@ static void gpu_ds_note_tokens(backend *bk, const uint32_t *toks, uint32_t n_tok
       const u32 idx = b->ds.n_dyn++;
       b->ds.id_dyn_pin[idx] = t;
       b->ds.n_act = b->ds.n_core + b->ds.n_dyn;
-      HIP(H.MemcpyAsync(b->ds.id_map_dev + b->ds.n_core + idx, b->ds.id_dyn_pin + idx, 4u,
-                        hipMemcpyHostToDevice, cur_stream));
     }
     if (b->ds.sl_tier == 0 && b->ds.id_core_t1_host && b->ds.sl_miss_ema > 0.06f) {
       /* H27 instant <20 us escalation: Tier 0 (28K+4K) -> Tier 1 (60K+4K) */
@@ -11608,6 +11704,7 @@ static void gpu_ds_note_tokens(backend *bk, const uint32_t *toks, uint32_t n_tok
       memcpy(b->ds.core_bm, b->ds.core_t1_bm, bmb);
       memset(b->ds.dyn_bm, 0, bmb);
       b->ds.n_dyn = 0u;
+      dyn_dirty_lo = 0u;
       b->ds.n_act = b->ds.n_core;
       b->ds.sl_miss_ema = 0.03f;
       HIP(H.MemcpyAsync(b->ds.id_map_dev, b->ds.id_core_t1_host, (size_t)b->ds.n_core * 4u,
@@ -11616,6 +11713,10 @@ static void gpu_ds_note_tokens(backend *bk, const uint32_t *toks, uint32_t n_tok
       b->ds.sl_tier = 2;
       b->ds.sl_bypass = 1;
     }
+  }
+  if (b->ds.n_dyn > dyn_dirty_lo) {
+    HIP(H.MemcpyAsync(b->ds.id_map_dev + b->ds.n_core + dyn_dirty_lo, b->ds.id_dyn_pin + dyn_dirty_lo,
+                      (size_t)(b->ds.n_dyn - dyn_dirty_lo) * 4u, hipMemcpyHostToDevice, cur_stream));
   }
 }
 
@@ -13713,15 +13814,6 @@ static void gpu_accept(backend *bk, uint32_t k) {
     launch(b, K_INK_SCONV_COMMIT_R4, (tot + 255u) / 256u, ca);
     b->sc_ver_T = 0;
   }
-  if (b->ink_sp_used && b->ink_sp_sync) {
-    u32 pf = 0u;
-    HIP(H.Memcpy(&pf, b->ink_sp_sync + 2u, 4u, hipMemcpyDeviceToHost));
-    b->ink_sp_used = 0;
-    if (pf != 0u) {
-      b->ink_sp_poisoned = 1;
-      fprintf(stderr, "gpu: ie_inkling_subspan_glue_r8 POISONED (flag=%u) -> latching off for process\n", pf);
-    }
-  }
   gdn_state_check(b, k);
 }
 
@@ -14017,7 +14109,7 @@ static float *topk_launch(gpu_backend *b, int id, uint32_t r0, uint32_t n, uint3
     HIP(H.Malloc((void **)&b->tk_buf, (tk_base_f + 2064u + TK_ROWS) * 4u));
     HIP(H.Memset(b->tk_buf + tk_base_f + 2064u, 0, (size_t)TK_ROWS * 4u));
   }
-  if (!b->tk_pin) HIP(H.HostMalloc((void **)&b->tk_pin, (size_t)TK_ROWS * TK_MAX * 2u * 4u, 0));
+  if (!b->tk_pin) HIP(H.HostMalloc((void **)&b->tk_pin, ((size_t)TK_ROWS * TK_MAX * 2u + TK_ROWS) * 4u, 0));
   float *cv = b->tk_buf, *ov = cv + (size_t)TK_ROWS * TK_NG * TK_MAX * 2u;
   u32 *ci = (u32 *)(cv + (size_t)TK_ROWS * TK_NG * TK_MAX), *oi = (u32 *)(ov + (size_t)TK_ROWS * TK_MAX);
   void *x = b->arena + B->off + (size_t)buf_row(B, r0) * B->stride;
@@ -14062,8 +14154,14 @@ static int topk_fetch_ex(gpu_backend *b, int id, uint32_t r0, uint32_t n, uint32
   float *ov = topk_launch(b, id, r0, n, nv, K, fast, lse != NULL);
   if (!ov) return 0;
   const size_t bytes = (size_t)TK_ROWS * TK_MAX * 2u * 4u;
+  const float *lse_src = (lse && fast)
+      ? (((b->k[K_INK_TOPK_BATCHED_R7] || b->k[K_SALUKI_TOPK_R11]) && !mk.rec && nv > 0u && n > 0u)
+             ? (b->tk_buf + (size_t)TK_ROWS * (TK_NG + 1u) * TK_MAX * 2u + 2048u)
+             : (b->tk_buf + (size_t)TK_ROWS * TF_CAP + 2048u))
+      : NULL;
   if (b->tk_pin) {
     HIP(H.MemcpyAsync(b->tk_pin, ov, bytes, hipMemcpyDeviceToHost, cur_stream));
+    if (lse_src) HIP(H.MemcpyAsync(b->tk_pin + TK_ROWS * TK_MAX * 2u, lse_src, (size_t)n * 4u, hipMemcpyDeviceToHost, cur_stream));
     HIP(H.StreamSynchronize(cur_stream));
     memcpy(res, b->tk_pin, bytes);
   } else {
@@ -14074,10 +14172,8 @@ static int topk_fetch_ex(gpu_backend *b, int id, uint32_t r0, uint32_t n, uint32
     for (uint32_t r = 0; r < n; r++) again |= ((const u32 *)(res + TK_ROWS * TK_MAX))[(size_t)r * K] == 0xFFFFFFFFu;
   if (lse) {
     if (fast && !again) {
-      const float *lse_src = ((b->k[K_INK_TOPK_BATCHED_R7] || b->k[K_SALUKI_TOPK_R11]) && !mk.rec && nv > 0u && n > 0u)
-          ? (b->tk_buf + (size_t)TK_ROWS * (TK_NG + 1u) * TK_MAX * 2u + 2048u)
-          : (b->tk_buf + (size_t)TK_ROWS * TF_CAP + 2048u);
-      HIP(H.Memcpy(lse, lse_src, (size_t)n * 4u, hipMemcpyDeviceToHost));
+      if (b->tk_pin) memcpy(lse, b->tk_pin + TK_ROWS * TK_MAX * 2u, (size_t)n * 4u);
+      else HIP(H.Memcpy(lse, lse_src, (size_t)n * 4u, hipMemcpyDeviceToHost));
     } else {
       for (uint32_t r = 0; r < n; r++) lse[r] = NAN;
     }
@@ -14134,7 +14230,7 @@ static void ink_fused_q4k_head_run(gpu_backend *b, uint32_t T, uint32_t pos, int
     HIP(H.Malloc((void **)&b->tk_buf, (tk_base_f + 2064u + TK_ROWS) * 4u));
     HIP(H.Memset(b->tk_buf + tk_base_f + 2064u, 0, (size_t)TK_ROWS * 4u));
   }
-  if (!b->tk_pin) HIP(H.HostMalloc((void **)&b->tk_pin, (size_t)TK_ROWS * TK_MAX * 2u * 4u, 0));
+  if (!b->tk_pin) HIP(H.HostMalloc((void **)&b->tk_pin, ((size_t)TK_ROWS * TK_MAX * 2u + TK_ROWS) * 4u, 0));
   float *part_v = b->tk_buf;
   u32 *part_i = (u32 *)(b->tk_buf + 32768u);
   float *ov_d = b->tk_buf + (size_t)TK_ROWS * TK_NG * TK_MAX * 2u;
@@ -14220,16 +14316,17 @@ static void gpu_copy_rows(backend *bk, int dst, uint32_t d0, int src, uint32_t r
   const graph *g = b->g;
   const buf *D = &g->bufs[dst];
   char *dp = b->arena + D->off + (size_t)d0 * D->stride;
+  /* a device-to-device copy / memset in the launch stream: no wait for the host (the blocking one drains the GPU first
+   * and wakes the host before the next launches can begin); IE_ASYNC_COPY=0: the blocking copy */
+  static int async = -1;
+  if (async < 0) async = !(getenv("IE_ASYNC_COPY") && getenv("IE_ASYNC_COPY")[0] == '0');
   if (src < 0) {
-    HIP(H.Memset(dp, 0, (size_t)n * D->stride));
+    if (async && H.MemsetAsync) HIP(H.MemsetAsync(dp, 0, (size_t)n * D->stride, cur_stream));
+    else HIP(H.Memset(dp, 0, (size_t)n * D->stride));
     return;
   }
   const buf *S = &g->bufs[src];
   if (S->stride != D->stride) ie_die("copy_rows: strides differ");
-  /* a device-to-device copy in the launch stream: no wait for the host (the blocking one drains the GPU first and
-   * wakes the host before the next launches can begin); IE_ASYNC_COPY=0: the blocking copy */
-  static int async = -1;
-  if (async < 0) async = !(getenv("IE_ASYNC_COPY") && getenv("IE_ASYNC_COPY")[0] == '0');
   void *sp = b->arena + S->off + (size_t)r0 * S->stride;
   if (async) HIP(H.MemcpyAsync(dp, sp, (size_t)n * D->stride, hipMemcpyDeviceToDevice, cur_stream));
   else HIP(H.Memcpy(dp, sp, (size_t)n * D->stride, hipMemcpyDeviceToDevice));
@@ -14599,6 +14696,8 @@ static void gpu_close(backend *bk) {
   if (b->cl_pin) H.HostFree(b->cl_pin);
   if (b->tk_pin) H.HostFree(b->tk_pin);
   if (b->am_pin) H.HostFree(b->am_pin);
+  if (b->stage_ev) H.EventDestroy(b->stage_ev);
+  if (b->stage_pin) H.HostFree(b->stage_pin);
   if (b->ink_toks_pin) {
     for (u32 k = 0; k < 16u; k++) if (b->ink_toks_ev[k]) H.EventDestroy(b->ink_toks_ev[k]);
     H.HostFree(b->ink_toks_pin);
@@ -14625,8 +14724,30 @@ static void gpu_set_rope(backend *bk, uint32_t pos0, uint32_t n, const float *co
   if (!n || pos0 + n > b->g->n_ctx) return;
   const size_t off = (size_t)pos0 * h2;
   const size_t bytes = (size_t)n * h2 * 4u;
-  HIP(H.Memcpy(b->rcos + off, cos_tab, bytes, hipMemcpyHostToDevice));
-  HIP(H.Memcpy(b->rsin + off, sin_tab, bytes, hipMemcpyHostToDevice));
+  if (b->stage_pending && b->stage_ev) {
+    HIP(H.EventSynchronize(b->stage_ev));
+    b->stage_pending = 0;
+  }
+  const size_t need = bytes * 2u;
+  if (need > b->stage_pin_cap) {
+    if (b->stage_pin) H.HostFree(b->stage_pin), b->stage_pin = NULL, b->stage_pin_cap = 0u;
+    size_t cap = need < 65536u ? 65536u : need;
+    if (H.HostMalloc(&b->stage_pin, cap, 0) == 0 && b->stage_pin) b->stage_pin_cap = cap;
+    else b->stage_pin = NULL, b->stage_pin_cap = 0u;
+  }
+  if (b->stage_pin) {
+    if (!b->stage_ev) HIP(ie_event_create_notiming(&b->stage_ev));
+    char *sp = (char *)b->stage_pin;
+    memcpy(sp, cos_tab, bytes);
+    memcpy(sp + bytes, sin_tab, bytes);
+    HIP(H.MemcpyAsync(b->rcos + off, sp, bytes, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.MemcpyAsync(b->rsin + off, sp + bytes, bytes, hipMemcpyHostToDevice, cur_stream));
+    HIP(H.EventRecord(b->stage_ev, cur_stream));
+    b->stage_pending = 1;
+  } else {
+    HIP(H.Memcpy(b->rcos + off, cos_tab, bytes, hipMemcpyHostToDevice));
+    HIP(H.Memcpy(b->rsin + off, sin_tab, bytes, hipMemcpyHostToDevice));
+  }
 }
 
 typedef struct { void *va; void **hs; size_t nh, chunk, sz; } vis_vmm_rec;

@@ -67,6 +67,58 @@ _Static_assert(sizeof(ink_r15_q4_u64) == 8u, "ink_r15_q4_u64 must be 8 bytes");
 #define INK_R15_Q4_LN2      0.69314718055994530942f
 #define INK_R15_Q4_INV_SQRT 0.08838834764831844299f /* 1 / sqrt(128) */
 #define INK_R15_Q4_QSC      (0.08838834764831844299f * 1.44269504088896340736f)
+#define INK_R15_Q4_EXP_C1   0.693124235f
+#define INK_R15_Q4_EXP_C2   0.240240976f
+#define INK_R15_Q4_EXP_C3   0.0559059493f
+#define INK_R15_Q4_EXP_C4   0.00958269928f
+#define INK_R15_Q4_EXP_MAG  12582912.0f
+
+static inline __attribute__((always_inline)) void ink_r15_q4_exp2_poly_pair(
+    const float xa, const float xb, float *ra_out, float *rb_out) {
+  const float ca = __builtin_fmaxf(xa, -127.0f);
+  const float cb = __builtin_fmaxf(xb, -127.0f);
+  float za = ca + INK_R15_Q4_EXP_MAG;
+  float zb = cb + INK_R15_Q4_EXP_MAG;
+  __asm__ volatile("" : "+v"(za), "+v"(zb));
+  const float fa = ca - (za - INK_R15_Q4_EXP_MAG);
+  const float fb = cb - (zb - INK_R15_Q4_EXP_MAG);
+  const u32 ua = __builtin_bit_cast(u32, za);
+  const u32 ub = __builtin_bit_cast(u32, zb);
+  const float sa = __builtin_bit_cast(float, (ua << 23u) + 0x3F800000u);
+  const float sb = __builtin_bit_cast(float, (ub << 23u) + 0x3F800000u);
+  float pa = __builtin_fmaf(INK_R15_Q4_EXP_C4, fa, INK_R15_Q4_EXP_C3);
+  float pb = __builtin_fmaf(INK_R15_Q4_EXP_C4, fb, INK_R15_Q4_EXP_C3);
+  pa = __builtin_fmaf(pa, fa, INK_R15_Q4_EXP_C2);
+  pb = __builtin_fmaf(pb, fb, INK_R15_Q4_EXP_C2);
+  pa = __builtin_fmaf(pa, fa, INK_R15_Q4_EXP_C1);
+  pb = __builtin_fmaf(pb, fb, INK_R15_Q4_EXP_C1);
+  pa = __builtin_fmaf(pa, fa, 1.0f);
+  pb = __builtin_fmaf(pb, fb, 1.0f);
+  float ra = pa * sa;
+  float rb = pb * sb;
+  __asm__ volatile("" : "+v"(ra), "+v"(rb));
+  *ra_out = ra;
+  *rb_out = rb;
+}
+
+static inline __attribute__((always_inline)) float ink_r15_q4_exp2_interleaved8(
+    const float s0, const float s1, const float s2, const float s3,
+    const float s4, const float s5, const float s6, const float s7,
+    const float mn, h8 *pb_out) {
+  float p0, p2, p4, p6;
+  const float p1 = __builtin_amdgcn_exp2f(s1 - mn);
+  const float p3 = __builtin_amdgcn_exp2f(s3 - mn);
+  ink_r15_q4_exp2_poly_pair(s0 - mn, s2 - mn, &p0, &p2);
+  float ps = (p0 + p1) + (p2 + p3);
+  const f16 h0 = (f16)p0, h1 = (f16)p1, h2 = (f16)p2, h3 = (f16)p3;
+  __builtin_amdgcn_sched_barrier(0);
+  const float p5 = __builtin_amdgcn_exp2f(s5 - mn);
+  const float p7 = __builtin_amdgcn_exp2f(s7 - mn);
+  ink_r15_q4_exp2_poly_pair(s4 - mn, s6 - mn, &p4, &p6);
+  ps += (p4 + p5) + (p6 + p7);
+  *pb_out = (h8){h0, h1, h2, h3, (f16)p4, (f16)p5, (f16)p6, (f16)p7};
+  return ps;
+}
 
 /* ============================================================================
  * Shared Low-Level Primitives (Split Barriers, Swizzles, FWHT-128, Q4 Dequant)
@@ -329,17 +381,33 @@ static inline __attribute__((always_inline)) v8f ink_r15_q4_qk16_s1_sig(
   const LDSP u8 *kp = (const LDSP u8 *)k_lds;
 
   v8f sa = (v8f)(0.0f);
-  h8 k0;
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[0], sa); kb_b ^= 32u;  __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[1], sa); kb_b ^= 96u;  __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[2], sa); kb_b ^= 32u;  __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[3], sa); kb_b ^= 224u; __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[4], sa); kb_b ^= 32u;  __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[5], sa); kb_b ^= 96u;  __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b); sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[6], sa); kb_b ^= 32u;  __builtin_amdgcn_sched_barrier(0);
-  k0 = *(const LDSP h8 *)(kp + kb_b);
-  ink_r15_q4_lsignal(); /* K LDS reads complete -> signal before final QK WMMA! */
-  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[7], sa);
+  h8 k0 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 32u;
+  h8 k1 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 96u;
+  __builtin_amdgcn_sched_barrier(0);
+
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[0], sa);
+  k0 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 32u;
+  __builtin_amdgcn_sched_barrier(0);
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k1, qa[1], sa);
+  k1 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 224u;
+  __builtin_amdgcn_sched_barrier(0);
+
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[2], sa);
+  k0 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 32u;
+  __builtin_amdgcn_sched_barrier(0);
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k1, qa[3], sa);
+  k1 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 96u;
+  __builtin_amdgcn_sched_barrier(0);
+
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[4], sa);
+  k0 = *(const LDSP h8 *)(kp + kb_b); kb_b ^= 32u;
+  __builtin_amdgcn_sched_barrier(0);
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k1, qa[5], sa);
+  k1 = *(const LDSP h8 *)(kp + kb_b);
+  ink_r15_q4_lsignal(); /* K LDS reads complete -> signal before final 2 QK WMMAs! */
+
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k0, qa[6], sa);
+  sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(k1, qa[7], sa);
   __builtin_amdgcn_sched_barrier(0);
   return sa;
 }
@@ -542,12 +610,7 @@ static inline __attribute__((always_inline)) void ink_r15_q4_far_blk32_step(
       const float mn0 = nr0 ? __builtin_fmaxf(m, bm0) : m;
       float ps0 = 0.0f;
       if (mn0 > -1e30f) {
-#pragma unroll
-        for (u32 v = 0u; v < 8u; v++) {
-          const float p0 = __builtin_amdgcn_exp2f(s0[v] - mn0);
-          ps0 += p0;
-          pb0[v] = (f16)p0;
-        }
+        ps0 = ink_r15_q4_exp2_interleaved8(s0[0], s0[1], s0[2], s0[3], s0[4], s0[5], s0[6], s0[7], mn0, &pb0);
       }
       float c0 = 1.0f;
       if (nr0) {
@@ -579,12 +642,7 @@ static inline __attribute__((always_inline)) void ink_r15_q4_far_blk32_step(
       const float mn1 = nr1 ? __builtin_fmaxf(m, bm1) : m;
       float ps1 = 0.0f;
       if (mn1 > -1e30f) {
-#pragma unroll
-        for (u32 v = 0u; v < 8u; v++) {
-          const float p1 = __builtin_amdgcn_exp2f(s1[v] - mn1);
-          ps1 += p1;
-          pb1[v] = (f16)p1;
-        }
+        ps1 = ink_r15_q4_exp2_interleaved8(s1[0], s1[1], s1[2], s1[3], s1[4], s1[5], s1[6], s1[7], mn1, &pb1);
       }
       if (nr1) c1 = (m > -1e30f) ? __builtin_amdgcn_exp2f(m - mn1) : 0.0f;
       ls = ls * c1 + ps1;
@@ -1047,12 +1105,14 @@ static inline __attribute__((always_inline)) void ink_r15_q4_softmax_pv16_sb(
     h8 pb;
     float ps = 0.0f;
     if (mn > -1e30f) {
+      f16 pa[8];
 #pragma unroll
       for (u32 v = 0u; v < 8u; v++) {
-        const float p = __builtin_amdgcn_exp2f(sa[v] - mn);
-        ps += p;
-        pb[v] = (f16)p;
+        const float pv = __builtin_amdgcn_exp2f(sa[v] - mn);
+        pa[v] = (f16)pv;
+        ps += pv;
       }
+      pb = (h8){pa[0], pa[1], pa[2], pa[3], pa[4], pa[5], pa[6], pa[7]};
     } else {
       pb = (h8)(0.0f);
     }
@@ -1124,7 +1184,7 @@ static inline __attribute__((always_inline)) void ink_r15_q4_consumer16(
   const u32 nfar = (u32)__builtin_amdgcn_readfirstlane((int)(
       (blk_far_end > blk_beg) ? (((blk_far_end < blk_end) ? blk_far_end : blk_end) - blk_beg) : 0u));
 
-  /* Phase A: Pure Far-Field (99.6% of 256K blocks: 1-deep QK/PV -> <= 116 VGPR, 0 spills!). */
+  /* Phase A: Pure Far-Field (1-deep QK/PV keeps <= 120 VGPR, 0/0 spills). */
 #pragma clang loop unroll(disable)
   for (u32 k = 0u; k < nfar; k++) {
     const u32 k_u = (u32)__builtin_amdgcn_readfirstlane((int)k);
@@ -1133,7 +1193,7 @@ static inline __attribute__((always_inline)) void ink_r15_q4_consumer16(
     ink_r15_q4_softmax_pv16_sb(lds->vt[bf], sa, (k_u + 1u < nblk_loc), 1, m_p, ls_p, o);
   }
 
-  /* Phase B: Near-Field (<= 66 blocks: 1-deep QK/PV + exact L1-cached R*rb, <= 120 VGPR, 0 spills!). */
+  /* Phase B: Near-Field (<= 66 blocks: 1-deep QK/PV + exact L1-cached R*rb). */
   if (nfar < nblk_loc) {
 #pragma clang loop unroll(disable)
     for (u32 k = nfar; k < nblk_loc; k++) {
@@ -1565,6 +1625,11 @@ KERNEL ie_inkling_rel_attn_pf_glob_q4_fast_r15(
   ink_r15_q4_store_o(out, os, t_sub0, T, h, rot_flags, ink_r15_q4_fast_lds.ku.tmp[w], ls, o);
 }
 
+#undef INK_R15_Q4_EXP_MAG
+#undef INK_R15_Q4_EXP_C4
+#undef INK_R15_Q4_EXP_C3
+#undef INK_R15_Q4_EXP_C2
+#undef INK_R15_Q4_EXP_C1
 #undef INK_R15_Q4_QSC
 #undef INK_R15_Q4_INV_SQRT
 #undef INK_R15_Q4_LN2

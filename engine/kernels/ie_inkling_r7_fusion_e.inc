@@ -478,7 +478,7 @@ typedef struct {
   union {
     float ar_red[INK_R7_FE_AR_SLOTS * 8u]; /* 4,096 B */
     struct {
-      float rn_red[8u];
+      float rn_red[3u][8u];
       float rn_sh[8u][128u];               /* 4,096 B */
     } rn;
   } u;
@@ -512,18 +512,19 @@ static inline __attribute__((always_inline)) void ink_r7_fe_quant_chunk4(
   __asm__ volatile("s_wait_dscnt 0x0" ::: "memory");
 }
 
-static inline __attribute__((always_inline)) void ink_r7_fe_norm_2304(
-    f32x4 x0, f32x4 x1, float x2, const G float *nw, G float *y, G u8 *q,
-    float eps, u32 th, u32 wv, u32 l) {
+static inline __attribute__((always_inline)) float ink_r7_fe_ss_wave_2304(f32x4 x0, f32x4 x1, float x2) {
   float ss = (x0.x * x0.x + x0.y * x0.y) + (x0.z * x0.z + x0.w * x0.w);
   ss += (x1.x * x1.x + x1.y * x1.y) + (x1.z * x1.z + x1.w * x1.w);
   ss += x2 * x2;
-  ss = wave_tree_f(ss);
-  if (l == 0u) ink_r7_fe_ar_lds.u.rn.rn_red[wv] = ss;
-  lbarrier();
+  return wave_tree_f(ss);
+}
+
+static inline __attribute__((always_inline)) void ink_r7_fe_norm_finish_2304(
+    f32x4 x0, f32x4 x1, float x2, const G float *nw, G float *y, G u8 *q,
+    float eps, u32 head_idx, u32 th, u32 wv, u32 l) {
   float tot = 0.0f;
 #pragma unroll
-  for (u32 w = 0u; w < 8u; w++) tot += ink_r7_fe_ar_lds.u.rn.rn_red[w];
+  for (u32 w = 0u; w < 8u; w++) tot += ink_r7_fe_ar_lds.u.rn.rn_red[head_idx][w];
   const float s = 1.0f / __builtin_sqrtf(tot / 2304.0f + eps);
 
   const f32x4 w0 = *(const G f32x4 *)(nw + (th << 2u));
@@ -686,16 +687,20 @@ KERNEL ie_inkling_attn_res_norm_q8_r7(
     }
   }
 
-  /* Pass 3: inline exact RMSNorm [+ Q8_0] for each output head k = 0..K-1. */
-  ink_r7_fe_norm_2304(a0_0, a1_0, a2_0, nw0, y0, q0, eps, th, wv, l);
-  if (K > 1u) {
-    lbarrier();
-    ink_r7_fe_norm_2304(a0_1, a1_1, a2_1, nw1, y1, q1, eps, th, wv, l);
+  /* Pass 3: fuse all K=1..3 RMSNorm sum-of-squares reductions behind 1 single lbarrier(). */
+  const float ss0 = ink_r7_fe_ss_wave_2304(a0_0, a1_0, a2_0);
+  const float ss1 = (K > 1u) ? ink_r7_fe_ss_wave_2304(a0_1, a1_1, a2_1) : 0.0f;
+  const float ss2 = (K > 2u) ? ink_r7_fe_ss_wave_2304(a0_2, a1_2, a2_2) : 0.0f;
+  if (l == 0u) {
+    ink_r7_fe_ar_lds.u.rn.rn_red[0u][wv] = ss0;
+    if (K > 1u) ink_r7_fe_ar_lds.u.rn.rn_red[1u][wv] = ss1;
+    if (K > 2u) ink_r7_fe_ar_lds.u.rn.rn_red[2u][wv] = ss2;
   }
-  if (K > 2u) {
-    lbarrier();
-    ink_r7_fe_norm_2304(a0_2, a1_2, a2_2, nw2, y2, q2, eps, th, wv, l);
-  }
+  lbarrier();
+
+  ink_r7_fe_norm_finish_2304(a0_0, a1_0, a2_0, nw0, y0, q0, eps, 0u, th, wv, l);
+  if (K > 1u) ink_r7_fe_norm_finish_2304(a0_1, a1_1, a2_1, nw1, y1, q1, eps, 1u, th, wv, l);
+  if (K > 2u) ink_r7_fe_norm_finish_2304(a0_2, a1_2, a2_2, nw2, y2, q2, eps, 2u, th, wv, l);
 }
 
 /* ============================================================================

@@ -52,6 +52,10 @@ static inline __attribute__((always_inline)) float ink_r7_vt_cap(float v, float 
   return (cap > 0.0f) ? (cap * ie_tanhf_s(v / cap)) : v;
 }
 
+static inline __attribute__((always_inline)) float ink_r7_vt_cap_inv(float v, float cap, float inv_cap) {
+  return (cap > 0.0f) ? (cap * ie_tanhf_s(v * inv_cap)) : v;
+}
+
 static inline __attribute__((always_inline)) int ink_r7_vt_better(float v, u32 i, float bv, u32 bi) {
   return (v > bv) || (v == bv && i < bi);
 }
@@ -134,13 +138,14 @@ KERNEL ie_inkling_argmax_batched_r7(
   const u32 n4 = n >> 2u;
   const u32 stride4 = ng * NT;
   if (need_prob) {
+    const float inv_cap = (cap > 0.0f) ? (1.0f / cap) : 0.0f;
     for (u32 v4i = g * NT + t; v4i < n4; v4i += stride4) {
       const u32 i0 = v4i << 2u;
       const f32x4 raw = ((const G struct ink_r7_vt_f32x4_a4 *)(row + i0))->v;
-      const float f0 = ink_r7_vt_cap(raw.x, cap);
-      const float f1 = ink_r7_vt_cap(raw.y, cap);
-      const float f2 = ink_r7_vt_cap(raw.z, cap);
-      const float f3 = ink_r7_vt_cap(raw.w, cap);
+      const float f0 = ink_r7_vt_cap_inv(raw.x, cap, inv_cap);
+      const float f1 = ink_r7_vt_cap_inv(raw.y, cap, inv_cap);
+      const float f2 = ink_r7_vt_cap_inv(raw.z, cap, inv_cap);
+      const float f3 = ink_r7_vt_cap_inv(raw.w, cap, inv_cap);
 
       if (f0 > bv) { se = se * __builtin_expf(bv - f0) + 1.0f; bv = f0; bi = i0; }
       else { if (f0 == bv && i0 < bi) bi = i0; if (f0 > -__builtin_inff()) se += __builtin_expf(f0 - bv); }
@@ -157,27 +162,24 @@ KERNEL ie_inkling_argmax_batched_r7(
     const u32 tail_base = n4 << 2u;
     if (g == 0u && tail_base + t < n) {
       const u32 idx = tail_base + t;
-      const float fv = ink_r7_vt_cap(row[idx], cap);
+      const float fv = ink_r7_vt_cap_inv(row[idx], cap, inv_cap);
       if (fv > bv) { se = se * __builtin_expf(bv - fv) + 1.0f; bv = fv; bi = idx; }
       else { if (fv == bv && idx < bi) bi = idx; if (fv > -__builtin_inff()) se += __builtin_expf(fv - bv); }
     }
   } else {
+    /* Monotonic softcap preserves argmax index; skip cap*tanh when need_prob == 0. */
     for (u32 v4i = g * NT + t; v4i < n4; v4i += stride4) {
       const u32 i0 = v4i << 2u;
       const f32x4 raw = ((const G struct ink_r7_vt_f32x4_a4 *)(row + i0))->v;
-      const float f0 = ink_r7_vt_cap(raw.x, cap);
-      const float f1 = ink_r7_vt_cap(raw.y, cap);
-      const float f2 = ink_r7_vt_cap(raw.z, cap);
-      const float f3 = ink_r7_vt_cap(raw.w, cap);
-      if (ink_r7_vt_better(f0, i0, bv, bi)) { bv = f0; bi = i0; }
-      if (ink_r7_vt_better(f1, i0 + 1u, bv, bi)) { bv = f1; bi = i0 + 1u; }
-      if (ink_r7_vt_better(f2, i0 + 2u, bv, bi)) { bv = f2; bi = i0 + 2u; }
-      if (ink_r7_vt_better(f3, i0 + 3u, bv, bi)) { bv = f3; bi = i0 + 3u; }
+      if (ink_r7_vt_better(raw.x, i0, bv, bi)) { bv = raw.x; bi = i0; }
+      if (ink_r7_vt_better(raw.y, i0 + 1u, bv, bi)) { bv = raw.y; bi = i0 + 1u; }
+      if (ink_r7_vt_better(raw.z, i0 + 2u, bv, bi)) { bv = raw.z; bi = i0 + 2u; }
+      if (ink_r7_vt_better(raw.w, i0 + 3u, bv, bi)) { bv = raw.w; bi = i0 + 3u; }
     }
     const u32 tail_base = n4 << 2u;
     if (g == 0u && tail_base + t < n) {
       const u32 idx = tail_base + t;
-      const float fv = ink_r7_vt_cap(row[idx], cap);
+      const float fv = row[idx];
       if (ink_r7_vt_better(fv, idx, bv, bi)) { bv = fv; bi = idx; }
     }
   }
@@ -355,7 +357,7 @@ static inline __attribute__((always_inline)) u32 ink_r7_vt_wg_scan_u32(
 }
 
 static inline __attribute__((always_inline)) void ink_r7_vt_rank_write(
-    u32 c, u32 K, G float *out_v, G u32 *out_i) {
+    u32 c, u32 K, float out_cap, G float *out_v, G u32 *out_i) {
   for (u32 j = tid(); j < c; j += NT) {
     const float a = ink_r7_vt_tk_lds.u.cand.cv[j];
     const u32 ai = ink_r7_vt_tk_lds.u.cand.ci[j];
@@ -366,7 +368,7 @@ static inline __attribute__((always_inline)) void ink_r7_vt_rank_write(
       rank += (u32)((b > a) | ((b == a) & (ink_r7_vt_tk_lds.u.cand.ci[u] < ai)));
     }
     if (rank < K) {
-      out_v[rank] = a;
+      out_v[rank] = ink_r7_vt_cap(a, out_cap);
       out_i[rank] = ai;
     }
   }
@@ -416,18 +418,19 @@ KERNEL ie_inkling_topk_batched_r7(
   {
     const G float *row = x + (unsigned long)r * (unsigned long)xs_f32;
     if (need_lse) {
+      const float inv_cap = (cap > 0.0f) ? (1.0f / cap) : 0.0f;
       i0 = g * cs;
       u32 in_bounds = 0u;
       if (cs == INK_R7_VT_CSMAX && i0 + INK_R7_VT_CSMAX <= n) {
 #pragma unroll
-        for (u32 k = 0u; k < 16u; k++) rv[k] = ink_r7_vt_cap(row[i0 + t + k * NT], cap);
+        for (u32 k = 0u; k < 16u; k++) rv[k] = ink_r7_vt_cap_inv(row[i0 + t + k * NT], cap, inv_cap);
         in_bounds = 0xFFFFu;
       } else {
 #pragma unroll
         for (u32 k = 0u; k < 16u; k++) {
           const u32 p = t + k * NT;
           const u32 ok = (p < cs && i0 + p < n);
-          rv[k] = ok ? ink_r7_vt_cap(row[i0 + p], cap) : -__builtin_inff();
+          rv[k] = ok ? ink_r7_vt_cap_inv(row[i0 + p], cap, inv_cap) : -__builtin_inff();
           if (ok) in_bounds |= (1u << k);
         }
       }
@@ -474,16 +477,16 @@ KERNEL ie_inkling_topk_batched_r7(
         const u32 base = i0 + (vidx << 2u);
         if (vidx < nvec && base + 4u <= n) {
           const f32x4 v4 = ((const G struct ink_r7_vt_f32x4_a4 *)(row + base))->v;
-          rv[4u * q + 0u] = ink_r7_vt_cap(v4.x, cap);
-          rv[4u * q + 1u] = ink_r7_vt_cap(v4.y, cap);
-          rv[4u * q + 2u] = ink_r7_vt_cap(v4.z, cap);
-          rv[4u * q + 3u] = ink_r7_vt_cap(v4.w, cap);
+          rv[4u * q + 0u] = v4.x;
+          rv[4u * q + 1u] = v4.y;
+          rv[4u * q + 2u] = v4.z;
+          rv[4u * q + 3u] = v4.w;
           in_bounds |= (0xFu << (4u * q));
         } else if (vidx < nvec && base < n) {
 #pragma unroll
           for (u32 e = 0u; e < 4u; e++) {
             const u32 ok = (base + e < n);
-            rv[4u * q + e] = ok ? ink_r7_vt_cap(row[base + e], cap) : -__builtin_inff();
+            rv[4u * q + e] = ok ? row[base + e] : -__builtin_inff();
             if (ok) in_bounds |= (1u << (4u * q + e));
           }
         } else {
@@ -621,7 +624,8 @@ KERNEL ie_inkling_topk_batched_r7(
               for (u32 e = 0u; e < 4u; e++) {
                 if (m4 & (1u << e)) {
                   if (off < need) {
-                    seg_v[total_gt + off] = ink_r7_vt_cap(row_eq[base + e], cap);
+                    const float rv_eq = row_eq[base + e];
+                    seg_v[total_gt + off] = (ng == 1u) ? ink_r7_vt_cap(rv_eq, cap) : rv_eq;
                     seg_i[total_gt + off] = base + e;
                   }
                   off++;
@@ -634,7 +638,7 @@ KERNEL ie_inkling_topk_batched_r7(
       }
     }
 
-    ink_r7_vt_rank_write(cand_n, K, seg_v, seg_i);
+    ink_r7_vt_rank_write(cand_n, K, (!need_lse && ng == 1u) ? cap : 0.0f, seg_v, seg_i);
     if (tau_k == 0u && cand_n < K && t < K - cand_n) {
       seg_v[cand_n + t] = -__builtin_inff();
       seg_i[cand_n + t] = 0xFFFFFFFFu;
@@ -681,6 +685,7 @@ KERNEL ie_inkling_topk_batched_r7(
   G float *ov_row = ov + (unsigned long)r * (unsigned long)K;
   G u32   *oi_row = oi + (unsigned long)r * (unsigned long)K;
 
+  const float final_cap = need_lse ? 0.0f : cap;
   if (nc <= NT) {
     float mv = -__builtin_inff();
     u32 mi = 0xFFFFFFFFu;
@@ -711,7 +716,7 @@ KERNEL ie_inkling_topk_batched_r7(
         }
       }
       if (rank < K) {
-        ov_row[rank] = mv;
+        ov_row[rank] = ink_r7_vt_cap(mv, final_cap);
         oi_row[rank] = mi;
       }
     }
@@ -796,7 +801,7 @@ KERNEL ie_inkling_topk_batched_r7(
           if (hit && taken2 + soff < need2) {
             const u32 p = t + k * NT;
             const u32 rk = tgt2 + taken2 + soff;
-            ov_row[rk] = cv_row[p];
+            ov_row[rk] = ink_r7_vt_cap(cv_row[p], final_cap);
             oi_row[rk] = ci_row[p];
           }
           taken2 += stot;
@@ -804,7 +809,7 @@ KERNEL ie_inkling_topk_batched_r7(
       }
     }
 
-    ink_r7_vt_rank_write(c2, K, ov_row, oi_row);
+    ink_r7_vt_rank_write(c2, K, final_cap, ov_row, oi_row);
     if (tau2_k == 0u && c2 < K && t < K - c2) {
       ov_row[c2 + t] = -__builtin_inff();
       oi_row[c2 + t] = 0xFFFFFFFFu;

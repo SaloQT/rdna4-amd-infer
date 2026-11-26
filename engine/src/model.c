@@ -2435,13 +2435,15 @@ void model_free(model *m) {
 /* GPT2 byte-level: the inverse of bytes_to_unicode(). */
 static int gpt2_byte(uint32_t cp) {
   if ((cp >= 33 && cp <= 126) || (cp >= 161 && cp <= 172) || (cp >= 174 && cp <= 255)) return (int)cp;
-  /* the other 68 bytes map to 256, 257, ... in byte order */
-  uint32_t n = 0;
-  for (uint32_t b = 0; b < 256; b++) {
-    if ((b >= 33 && b <= 126) || (b >= 161 && b <= 172) || (b >= 174 && b <= 255)) continue;
-    if (cp == 256 + n) return (int)b;
-    n++;
-  }
+  /* the other 68 bytes map to 256..323 in byte order */
+  static const uint8_t extra[68] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+    127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+    144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160,
+    173
+  };
+  if (cp >= 256u && cp < 324u) return (int)extra[cp - 256u];
   return -1;
 }
 
@@ -3706,12 +3708,17 @@ void graph_build(graph *g, const model *m, uint32_t n_ctx, uint32_t T, int mtp) 
   uint32_t h2 = m->n_rot / 2;
   g->rope_cos = ie_alloc((size_t)n_ctx * h2 * 4);
   g->rope_sin = ie_alloc((size_t)n_ctx * h2 * 4);
+  double *inv_freq = h2 ? malloc((size_t)h2 * sizeof(double)) : NULL;
+  if (h2 && !inv_freq) ie_die("graph_build: out of memory");
+  for (uint32_t i = 0; i < h2; i++)
+    inv_freq[i] = pow((double)m->rope_base, -2.0 * (double)i / (double)m->n_rot);
   for (uint32_t p = 0; p < n_ctx; p++)
     for (uint32_t i = 0; i < h2; i++) {
-      double th = (double)p * pow((double)m->rope_base, -2.0 * i / (double)m->n_rot);
+      double th = (double)p * inv_freq[i];
       g->rope_cos[p * h2 + i] = (float)cos(th);
       g->rope_sin[p * h2 + i] = (float)sin(th);
     }
+  free(inv_freq);
 }
 
 void graph_free(graph *g) {

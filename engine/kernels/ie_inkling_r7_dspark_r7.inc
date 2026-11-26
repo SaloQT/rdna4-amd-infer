@@ -95,6 +95,10 @@ static inline __attribute__((always_inline)) float ink_r7_ds_cap(float v, float 
   return (cap > 0.0f) ? (cap * ie_tanhf_s(v / cap)) : v;
 }
 
+static inline __attribute__((always_inline)) float ink_r7_ds_cap_inv(float v, float cap, float inv_cap) {
+  return (cap > 0.0f) ? (cap * ie_tanhf_s(v * inv_cap)) : v;
+}
+
 static inline __attribute__((always_inline)) int ink_r7_ds_better(float v, u32 i, float bv, u32 bi) {
   return (v > bv) || (v == bv && i < bi);
 }
@@ -318,6 +322,7 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
    * Mode A: Greedy (temp <= 0.0f) -- exact bitwise parity with R5 zsync.
    * ---------------------------------------------------------------------- */
   if (temp <= 0.0f) {
+    const float inv_cap = (cap > 0.0f) ? (1.0f / cap) : 0.0f;
     float bv = -__builtin_inff();
     u32 bi = 0xFFFFFFFFu;
     float se = 0.0f;
@@ -327,10 +332,10 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
     for (u32 v4i = g * NT + t; v4i < n4; v4i += stride4) {
       const u32 i0 = v4i << 2u;
       const f32x4 raw = ((const G struct ink_r7_ds_f32x4_a4 *)(logits + i0))->v;
-      const float f0 = ink_r7_ds_cap(raw.x, cap);
-      const float f1 = ink_r7_ds_cap(raw.y, cap);
-      const float f2 = ink_r7_ds_cap(raw.z, cap);
-      const float f3 = ink_r7_ds_cap(raw.w, cap);
+      const float f0 = ink_r7_ds_cap_inv(raw.x, cap, inv_cap);
+      const float f1 = ink_r7_ds_cap_inv(raw.y, cap, inv_cap);
+      const float f2 = ink_r7_ds_cap_inv(raw.z, cap, inv_cap);
+      const float f3 = ink_r7_ds_cap_inv(raw.w, cap, inv_cap);
 
       if (f0 > bv) { se = se * __builtin_expf(bv - f0) + 1.0f; bv = f0; bi = i0; }
       else { if (f0 == bv && i0 < bi) bi = i0; if (f0 > -__builtin_inff()) se += __builtin_expf(f0 - bv); }
@@ -347,7 +352,7 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
     const u32 tail_base = n4 << 2u;
     if (g == 0u && tail_base + t < V) {
       const u32 idx = tail_base + t;
-      const float fv = ink_r7_ds_cap(logits[idx], cap);
+      const float fv = ink_r7_ds_cap_inv(logits[idx], cap, inv_cap);
       if (fv > bv) { se = se * __builtin_expf(bv - fv) + 1.0f; bv = fv; bi = idx; }
       else { if (fv == bv && idx < bi) bi = idx; if (fv > -__builtin_inff()) se += __builtin_expf(fv - bv); }
     }
@@ -435,16 +440,16 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
     const u32 base = i0 + (vidx << 2u);
     if (vidx < nvec && base + 4u <= V) {
       const f32x4 v4 = ((const G struct ink_r7_ds_f32x4_a4 *)(logits + base))->v;
-      rv[4u * q + 0u] = ink_r7_ds_cap(v4.x, cap);
-      rv[4u * q + 1u] = ink_r7_ds_cap(v4.y, cap);
-      rv[4u * q + 2u] = ink_r7_ds_cap(v4.z, cap);
-      rv[4u * q + 3u] = ink_r7_ds_cap(v4.w, cap);
+      rv[4u * q + 0u] = v4.x;
+      rv[4u * q + 1u] = v4.y;
+      rv[4u * q + 2u] = v4.z;
+      rv[4u * q + 3u] = v4.w;
       in_bounds |= (0xFu << (4u * q));
     } else if (vidx < nvec && base < V) {
 #pragma unroll
       for (u32 e = 0u; e < 4u; e++) {
         const u32 ok = (base + e < V);
-        rv[4u * q + e] = ok ? ink_r7_ds_cap(logits[base + e], cap) : -__builtin_inff();
+        rv[4u * q + e] = ok ? logits[base + e] : -__builtin_inff();
         if (ok) in_bounds |= (1u << (4u * q + e));
       }
     } else {
@@ -538,7 +543,7 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
             for (u32 e = 0u; e < 4u; e++) {
               if (m4 & (1u << e)) {
                 if (off < need) {
-                  seg_v[total_gt + off] = ink_r7_ds_cap(logits[base + e], cap);
+                  seg_v[total_gt + off] = logits[base + e];
                   seg_i[total_gt + off] = base + e;
                 }
                 off++;
@@ -713,7 +718,7 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
             for (u32 e = 0u; e < 4u; e++) {
               if (m4 & (1u << e)) {
                 if (off < need) {
-                  ink_r7_ds_samp_lds.fv[total_gt + off] = ink_r7_ds_cap(logits[base + e], cap);
+                  ink_r7_ds_samp_lds.fv[total_gt + off] = logits[base + e];
                   ink_r7_ds_samp_lds.fi[total_gt + off] = base + e;
                 }
                 off++;
@@ -736,9 +741,11 @@ KERNEL ie_inkling_ds_cap_sample_zsync_r7(
   if (t < 32u) {
     const u32 c = t;
     const u32 ci = (c < K) ? ink_r7_ds_samp_lds.fi[c] : 0xFFFFFFFFu;
-    const float cv = (c < K) ? ink_r7_ds_samp_lds.fv[c] : -__builtin_inff();
-    const float v0 = ink_r7_ds_samp_lds.fv[0u];
-    const u32 valid = (c < K && ci != 0xFFFFFFFFu && cv == cv && v0 == v0) ? 1u : 0u;
+    const float cv_raw = (c < K) ? ink_r7_ds_samp_lds.fv[c] : -__builtin_inff();
+    const float v0_raw = ink_r7_ds_samp_lds.fv[0u];
+    const u32 valid = (c < K && ci != 0xFFFFFFFFu && cv_raw == cv_raw && v0_raw == v0_raw) ? 1u : 0u;
+    const float cv = valid ? ink_r7_ds_cap(cv_raw, cap) : -__builtin_inff();
+    const float v0 = (v0_raw == v0_raw) ? ink_r7_ds_cap(v0_raw, cap) : v0_raw;
 
     const float wc = valid ? __builtin_expf((cv - v0) / temp) : 0.0f;
     const float z = wave_sum_all(wc);

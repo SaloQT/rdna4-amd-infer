@@ -29,6 +29,7 @@ _Static_assert(sizeof(vis_r14_u64) == 8u, "vis_r14_u64 must be 64-bit");
 
 typedef f16   vis_r14_h8 __attribute__((ext_vector_type(8)));
 typedef f16   vis_r14_h4 __attribute__((ext_vector_type(4)));
+typedef f16   vis_r14_h2 __attribute__((ext_vector_type(2)));
 typedef float vis_r14_f8 __attribute__((ext_vector_type(8)));
 typedef float vis_r14_f4 __attribute__((ext_vector_type(4)));
 typedef u32   vis_r14_u4 __attribute__((ext_vector_type(4)));
@@ -109,7 +110,7 @@ static inline __attribute__((always_inline)) float vis_r14_gelu_erf(float x) {
 }
 
 /* ============================================================================
- * Shared 0-Bank-Conflict WMMA GEMM Engine (BN=64, BM=128, BK=32, 12,288 B LDS)
+ * Shared 0-Bank-Conflict WMMA GEMM Engine (BN=64, BM=128, BK=32, 24,576 B 2x LDS)
  * Wave grid: 2 N-strips of 32 (wn = (w>>2)*32) x 4 M-strips of 32 (wm = (w&3)*32)
  * WMMA mapping: acc = wmma(w_frag, a_frag, acc)
  *   -> lane (hl, rl) owns n = n_tile + rl, m = m_tile + 8*hl + (0..7)
@@ -120,20 +121,20 @@ typedef struct {
   f16 w[128u * 32u]; /*  8,192 B: W[128, 32] XOR-swizzled */
 } vis_r14_gemm_lds_t;
 
-static LDS vis_r14_gemm_lds_t vis_r14_gemm_lds __attribute__((aligned(16)));
-_Static_assert(sizeof(vis_r14_gemm_lds_t) == 12288u, "vis_r14_gemm_lds_t must be 12,288 B (4 WGs/CU)");
+static LDS vis_r14_gemm_lds_t vis_r14_gemm_lds[2] __attribute__((aligned(16)));
+_Static_assert(sizeof(vis_r14_gemm_lds) == 24576u, "vis_r14_gemm_lds must be 24,576 B (2 WGs/CU)");
 
 static inline __attribute__((always_inline)) u32 vis_r14_gemm_off(u32 r, u32 c8) {
   return (r << 5u) + ((c8 ^ ((r >> 1u) & 3u)) << 3u);
 }
 
 static inline __attribute__((always_inline)) void vis_r14_gemm_mma_ks(
-    vis_r14_f8 acc[2][2], u32 wn, u32 wm, u32 rl, u32 hl, u32 ks) {
+    vis_r14_f8 acc[2][2], u32 wn, u32 wm, u32 rl, u32 hl, u32 ks, u32 buf) {
   const u32 c8 = (ks << 1u) + hl;
-  const vis_r14_h8 a0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds.a + vis_r14_gemm_off(wn + rl, c8));
-  const vis_r14_h8 a1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds.a + vis_r14_gemm_off(wn + 16u + rl, c8));
-  const vis_r14_h8 w0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds.w + vis_r14_gemm_off(wm + rl, c8));
-  const vis_r14_h8 w1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds.w + vis_r14_gemm_off(wm + 16u + rl, c8));
+  const vis_r14_h8 a0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[buf].a + vis_r14_gemm_off(wn + rl, c8));
+  const vis_r14_h8 a1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[buf].a + vis_r14_gemm_off(wn + 16u + rl, c8));
+  const vis_r14_h8 w0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[buf].w + vis_r14_gemm_off(wm + rl, c8));
+  const vis_r14_h8 w1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[buf].w + vis_r14_gemm_off(wm + 16u + rl, c8));
   __builtin_amdgcn_sched_barrier(0);
   acc[0][0] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(w0, a0, acc[0][0]);
   acc[0][1] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(w1, a0, acc[0][1]);
@@ -300,40 +301,49 @@ KERNEL ie_vis_gemm_wmma_f16(
     vis_r14_u4 pa = a_ok ? vis_r14_ld_u4_a4(a_row) : (vis_r14_u4)(0u);
     vis_r14_u4 pw0 = w0_ok ? vis_r14_ld_u4_a4(w0_row) : (vis_r14_u4)(0u);
     vis_r14_u4 pw1 = w1_ok ? vis_r14_ld_u4_a4(w1_row) : (vis_r14_u4)(0u);
+    *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[0].a + la_off) = pa;
+    *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[0].w + lw0_off) = pw0;
+    *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[0].w + lw1_off) = pw1;
+    lbarrier();
 
 #pragma clang loop unroll(disable)
     for (u32 kb = 0u; kb < n32; kb++) {
-      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.a + la_off) = pa;
-      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.w + lw0_off) = pw0;
-      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.w + lw1_off) = pw1;
-      lbarrier();
-
-      const u32 kn = (kb + 1u) << 5u;
-      if (kb + 1u < n32) {
+      const u32 cur = kb & 1u;
+      const u32 nxt = cur ^ 1u;
+      const int has_next = (kb + 1u < n32);
+      if (has_next) {
+        const u32 kn = (kb + 1u) << 5u;
         pa = a_ok ? vis_r14_ld_u4_a4(a_row + kn) : (vis_r14_u4)(0u);
         pw0 = w0_ok ? vis_r14_ld_u4_a4(w0_row + kn) : (vis_r14_u4)(0u);
         pw1 = w1_ok ? vis_r14_ld_u4_a4(w1_row + kn) : (vis_r14_u4)(0u);
       }
 
-      vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 0u);
-      vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 1u);
-      lbarrier();
+      vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 0u, cur);
+      vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 1u, cur);
+
+      if (has_next) {
+        *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[nxt].a + la_off) = pa;
+        *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[nxt].w + lw0_off) = pw0;
+        *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[nxt].w + lw1_off) = pw1;
+        lbarrier();
+      }
     }
   }
 
   /* Optional K%32 == 16 tail (e.g. Inkling-2 v.patch_embd K=1200, Saluki ffn_down K=4304). */
   if ((K & 16u) != 0u) {
     const u32 kt = n32 << 5u;
+    const u32 tb = n32 & 1u;
     if (ca8 < 2u) {
-      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.a + la_off) =
+      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[tb].a + la_off) =
           a_ok ? vis_r14_ld_u4_a4(a_row + kt) : (vis_r14_u4)(0u);
-      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.w + lw0_off) =
+      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[tb].w + lw0_off) =
           w0_ok ? vis_r14_ld_u4_a4(w0_row + kt) : (vis_r14_u4)(0u);
-      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.w + lw1_off) =
+      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[tb].w + lw1_off) =
           w1_ok ? vis_r14_ld_u4_a4(w1_row + kt) : (vis_r14_u4)(0u);
     }
     lbarrier();
-    vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 0u);
+    vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 0u, tb);
   }
 
   vis_r14_gemm_epilogue(acc, bias, ls, res, C, n0, m0, N, M, act, out_f16);
@@ -345,16 +355,17 @@ KERNEL ie_vis_gemm_wmma_f16(
  *   Raw GGUF Q8_0: 34 B/block (f16 d + 32 x i8). K must be a multiple of 32.
  *   Grid:  ((M + 127) / 128, (N + 63) / 64, 1), Block: (256, 1, 1)
  * ========================================================================== */
-static inline __attribute__((always_inline)) vis_r14_h8 vis_r14_deq8_h8(u32 w0, u32 w1, float d) {
-  const float f0 = (float)(i8)(w0 & 0xFFu) * d;
-  const float f1 = (float)(i8)((w0 >> 8u) & 0xFFu) * d;
-  const float f2 = (float)(i8)((w0 >> 16u) & 0xFFu) * d;
-  const float f3 = (float)(i8)(w0 >> 24u) * d;
-  const float f4 = (float)(i8)(w1 & 0xFFu) * d;
-  const float f5 = (float)(i8)((w1 >> 8u) & 0xFFu) * d;
-  const float f6 = (float)(i8)((w1 >> 16u) & 0xFFu) * d;
-  const float f7 = (float)(i8)(w1 >> 24u) * d;
-  return (vis_r14_h8){(f16)f0, (f16)f1, (f16)f2, (f16)f3, (f16)f4, (f16)f5, (f16)f6, (f16)f7};
+/* Unpack 8 signed int8 bytes in (w0, w1) directly to 8 scaled fp16 values via
+ * v_perm_b32 + packed f16 sub/mul (exact al_i8_to_h8 pattern). */
+static inline __attribute__((always_inline)) vis_r14_h8 vis_r14_deq8_h8(u32 w0, u32 w1, f16 d) {
+  const u32 mg = 0x64646464u, x0 = w0 ^ 0x80808080u, x1 = w1 ^ 0x80808080u;
+  const vis_r14_h2 bias = {(f16)1152.0f, (f16)1152.0f};
+  const vis_r14_h2 sc = {d, d};
+  const vis_r14_h2 q0 = (__builtin_bit_cast(vis_r14_h2, __builtin_amdgcn_perm(mg, x0, 0x04010400u)) - bias) * sc;
+  const vis_r14_h2 q1 = (__builtin_bit_cast(vis_r14_h2, __builtin_amdgcn_perm(mg, x0, 0x04030402u)) - bias) * sc;
+  const vis_r14_h2 q2 = (__builtin_bit_cast(vis_r14_h2, __builtin_amdgcn_perm(mg, x1, 0x04010400u)) - bias) * sc;
+  const vis_r14_h2 q3 = (__builtin_bit_cast(vis_r14_h2, __builtin_amdgcn_perm(mg, x1, 0x04030402u)) - bias) * sc;
+  return (vis_r14_h8){q0[0], q0[1], q1[0], q1[1], q2[0], q2[1], q3[0], q3[1]};
 }
 
 KERNEL ie_vis_gemm_wmma_q8(
@@ -398,17 +409,17 @@ KERNEL ie_vis_gemm_wmma_q8(
   vis_r14_u4 pa = a_ok ? vis_r14_ld_u4_a4(a_row) : (vis_r14_u4)(0u);
   f16 wd = w_ok ? *(const G f16 *)w_row : (f16)0.0f;
   vis_r14_u4 wq = w_ok ? vis_r14_ld_u4_a2(w_row + q_byte_off) : (vis_r14_u4)(0u);
+  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[0].a + la_off) = pa;
+  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[0].w + lw0_off) = vis_r14_deq8_h8(wq.x, wq.y, wd);
+  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[0].w + lw1_off) = vis_r14_deq8_h8(wq.z, wq.w, wd);
+  lbarrier();
 
 #pragma clang loop unroll(disable)
   for (u32 kb = 0u; kb < nb; kb++) {
-    const float df = (float)wd;
-    const u32 q0 = wq.x, q1 = wq.y, q2 = wq.z, q3 = wq.w;
-    *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds.a + la_off) = pa;
-    *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds.w + lw0_off) = vis_r14_deq8_h8(q0, q1, df);
-    *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds.w + lw1_off) = vis_r14_deq8_h8(q2, q3, df);
-    lbarrier();
-
-    if (kb + 1u < nb) {
+    const u32 cur = kb & 1u;
+    const u32 nxt = cur ^ 1u;
+    const int has_next = (kb + 1u < nb);
+    if (has_next) {
       const u32 kbn = kb + 1u;
       pa = a_ok ? vis_r14_ld_u4_a4(a_row + (kbn << 5u)) : (vis_r14_u4)(0u);
       const G u8 *bn = w_row + (vis_r14_u64)kbn * 34ull;
@@ -416,9 +427,15 @@ KERNEL ie_vis_gemm_wmma_q8(
       wq = w_ok ? vis_r14_ld_u4_a2(bn + q_byte_off) : (vis_r14_u4)(0u);
     }
 
-    vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 0u);
-    vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 1u);
-    lbarrier();
+    vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 0u, cur);
+    vis_r14_gemm_mma_ks(acc, wn, wm, rl, hl, 1u, cur);
+
+    if (has_next) {
+      *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_gemm_lds[nxt].a + la_off) = pa;
+      *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[nxt].w + lw0_off) = vis_r14_deq8_h8(wq.x, wq.y, wd);
+      *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_gemm_lds[nxt].w + lw1_off) = vis_r14_deq8_h8(wq.z, wq.w, wd);
+      lbarrier();
+    }
   }
 
   vis_r14_gemm_epilogue(acc, bias, ls, res, C, n0, m0, N, M, act, out_f16);
@@ -443,8 +460,8 @@ typedef struct {
   f16 vt[64u * 64u]; /* 8,192 B: V^T[64_d, 64_k] XOR-swizzled */
 } vis_r14_attn_lds_t;
 
-static LDS vis_r14_attn_lds_t vis_r14_attn_lds __attribute__((aligned(16)));
-_Static_assert(sizeof(vis_r14_attn_lds_t) == 16384u, "vis_r14_attn_lds_t must be 16,384 B (4 WGs/CU)");
+static LDS vis_r14_attn_lds_t vis_r14_attn_lds[2] __attribute__((aligned(16)));
+_Static_assert(sizeof(vis_r14_attn_lds) == 32768u, "vis_r14_attn_lds must be 32,768 B (2 WGs/CU)");
 
 static inline __attribute__((always_inline)) u32 vis_r14_attn_k_off(u32 r, u32 c8) {
   return (r << 6u) + ((c8 ^ (r & 7u)) << 3u);
@@ -522,13 +539,13 @@ static inline __attribute__((always_inline)) void vis_r14_t8_f16(const u32 k[8],
 
 static inline __attribute__((always_inline)) void vis_r14_attn_load_kv(
     const G f16 *k_base, const G f16 *v_base, vis_r14_u64 row_stride,
-    u32 k0, u32 N_pos, u32 gw, int check_bounds) {
+    u32 k0, u32 N_pos, u32 gw, int check_bounds, u32 buf) {
   u32 t = tid();
   __asm__ volatile("" : "+v"(t));
   const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(t >> 5u));
   const u32 l = t & 31u;
 
-  /* Load K[64, 64] -> apply inline 2D Axial RoPE -> 0-conflict lds.k */
+  /* Load K[64, 64] -> apply inline 2D Axial RoPE -> 0-conflict lds[buf].k */
   const u32 rk = t >> 2u;
   const u32 qk = t & 3u;
   const u32 gk = k0 + rk;
@@ -548,11 +565,11 @@ static inline __attribute__((always_inline)) void vis_r14_attn_load_kv(
       k_hi = vis_r14_rope_h8_q(k_hi, pos, hi8, 1u, 1.0f);
     }
   }
-  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.k + vis_r14_attn_k_off(rk, (qk << 1u) + 0u)) = k_lo;
-  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.k + vis_r14_attn_k_off(rk, (qk << 1u) + 1u)) = k_hi;
+  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(rk, (qk << 1u) + 0u)) = k_lo;
+  *(VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(rk, (qk << 1u) + 1u)) = k_hi;
   __builtin_amdgcn_sched_barrier(0);
 
-  /* Load V[64, 64] (coalesced 128 B/wave per row) -> transpose8 -> 0-conflict lds.vt */
+  /* Load V[64, 64] (coalesced 128 B/wave per row) -> transpose8 -> 0-conflict lds[buf].vt */
   u32 vr[8];
   const u32 kv0 = k0 + (w << 3u);
   const G f16 *vp_base = v_base + (l << 1u);
@@ -568,22 +585,22 @@ static inline __attribute__((always_inline)) void vis_r14_attn_load_kv(
   vis_r14_u4 ev, od;
   vis_r14_t8_f16(vr, &ev, &od);
   const u32 d0 = l << 1u;
-  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_attn_lds.vt + vis_r14_attn_vt_off(d0 + 0u, w)) = ev;
-  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_attn_lds.vt + vis_r14_attn_vt_off(d0 + 1u, w)) = od;
+  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(d0 + 0u, w)) = ev;
+  *(VIS_R14_LDSP vis_r14_u4 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(d0 + 1u, w)) = od;
 }
 
 static inline __attribute__((always_inline)) vis_r14_f8 vis_r14_attn_qk16(
-    const vis_r14_h8 qa[4], u32 kb16) {
+    const vis_r14_h8 qa[4], u32 kb16, u32 buf) {
   const u32 l = vis_r14_lane_pin();
   const u32 rl = l & 15u, hl = l >> 4u;
   const u32 r = (kb16 << 4u) + rl;
   vis_r14_f8 sa = (vis_r14_f8)(0.0f);
-  vis_r14_h8 kf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.k + vis_r14_attn_k_off(r, 0u + hl));
-  vis_r14_h8 kf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.k + vis_r14_attn_k_off(r, 2u + hl));
+  vis_r14_h8 kf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(r, 0u + hl));
+  vis_r14_h8 kf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(r, 2u + hl));
   sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(kf0, qa[0], sa);
-  kf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.k + vis_r14_attn_k_off(r, 4u + hl));
+  kf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(r, 4u + hl));
   sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(kf1, qa[1], sa);
-  kf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.k + vis_r14_attn_k_off(r, 6u + hl));
+  kf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].k + vis_r14_attn_k_off(r, 6u + hl));
   sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(kf0, qa[2], sa);
   sa = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(kf1, qa[3], sa);
   __builtin_amdgcn_sched_barrier(0);
@@ -591,26 +608,26 @@ static inline __attribute__((always_inline)) vis_r14_f8 vis_r14_attn_qk16(
 }
 
 static inline __attribute__((always_inline)) void vis_r14_attn_pv16(
-    vis_r14_h8 pb, vis_r14_f8 o[4], u32 kb16) {
+    vis_r14_h8 pb, vis_r14_f8 o[4], u32 kb16, u32 buf) {
   const u32 l = vis_r14_lane_pin();
   const u32 rl = l & 15u, hl = l >> 4u;
   const u32 c8 = (kb16 << 1u) + hl;
-  vis_r14_h8 vf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.vt + vis_r14_attn_vt_off(0u + rl, c8));
-  vis_r14_h8 vf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.vt + vis_r14_attn_vt_off(16u + rl, c8));
+  vis_r14_h8 vf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(0u + rl, c8));
+  vis_r14_h8 vf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(16u + rl, c8));
   o[0] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vf0, pb, o[0]);
-  vf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.vt + vis_r14_attn_vt_off(32u + rl, c8));
+  vf0 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(32u + rl, c8));
   o[1] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vf1, pb, o[1]);
-  vf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds.vt + vis_r14_attn_vt_off(48u + rl, c8));
+  vf1 = *(const VIS_R14_LDSP vis_r14_h8 *)(vis_r14_attn_lds[buf].vt + vis_r14_attn_vt_off(48u + rl, c8));
   o[2] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vf0, pb, o[2]);
   o[3] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vf1, pb, o[3]);
   __builtin_amdgcn_sched_barrier(0);
 }
 
-/* Process 16 keys (1 WMMA tile) keeping peak VGPR <= 96 (4 WGs/CU = 16w/SIMD!). */
+/* Process 16 keys (1 WMMA tile) keeping peak VGPR <= 96. */
 static inline __attribute__((always_inline)) void vis_r14_attn_step16(
     const vis_r14_h8 qa[4], vis_r14_f8 o[4], float *m_io, float *ls_io,
-    u32 kb16, u32 rem, int check_mask) {
-  vis_r14_f8 s = vis_r14_attn_qk16(qa, kb16);
+    u32 kb16, u32 rem, int check_mask, u32 buf) {
+  vis_r14_f8 s = vis_r14_attn_qk16(qa, kb16, buf);
 
   if (check_mask) {
     const u32 hl = vis_r14_lane_pin() >> 4u;
@@ -646,7 +663,7 @@ static inline __attribute__((always_inline)) void vis_r14_attn_step16(
       ls += e;
       p[v] = (f16)e;
     }
-    vis_r14_attn_pv16(p, o, kb16);
+    vis_r14_attn_pv16(p, o, kb16, buf);
   }
   *m_io = m;
   *ls_io = ls;
@@ -709,28 +726,45 @@ KERNEL ie_vis_attn_wmma_hd64(
   float m = -__builtin_inff();
   float ls = 0.0f;
 
-  u32 k0 = 0u;
-#pragma clang loop unroll(disable)
-  for (; k0 + 64u <= N_pos; k0 += 64u) {
-    vis_r14_attn_load_kv(k_base, v_base, row_stride, k0, N_pos, gw, 0);
+  u32 buf = 0u;
+  if (N_pos >= 64u) {
+    vis_r14_attn_load_kv(k_base, v_base, row_stride, 0u, N_pos, gw, 0, 0u);
     lbarrier();
+    u32 k0 = 0u;
 #pragma clang loop unroll(disable)
-    for (u32 kb16 = 0u; kb16 < 4u; kb16++) {
-      vis_r14_attn_step16(qa, o, &m, &ls, kb16, 64u, 0);
+    for (; k0 + 64u <= N_pos; k0 += 64u) {
+      const u32 cur = buf;
+#pragma clang loop unroll(disable)
+      for (u32 kb16 = 0u; kb16 < 4u; kb16++) {
+        vis_r14_attn_step16(qa, o, &m, &ls, kb16, 64u, 0, cur);
+      }
+      const u32 kn = k0 + 64u;
+      if (kn + 64u <= N_pos) {
+        buf ^= 1u;
+        vis_r14_attn_load_kv(k_base, v_base, row_stride, kn, N_pos, gw, 0, buf);
+        lbarrier();
+      } else if (kn < N_pos) {
+        buf ^= 1u;
+        vis_r14_attn_load_kv(k_base, v_base, row_stride, kn, N_pos, gw, 1, buf);
+        lbarrier();
+      }
     }
-    lbarrier();
-  }
-
-  if (k0 < N_pos) {
-    const u32 rem = N_pos - k0;
-    const u32 nkb = (rem + 15u) >> 4u;
-    vis_r14_attn_load_kv(k_base, v_base, row_stride, k0, N_pos, gw, 1);
+    if (k0 < N_pos) {
+      const u32 rem = N_pos - k0;
+      const u32 nkb = (rem + 15u) >> 4u;
+#pragma clang loop unroll(disable)
+      for (u32 kb16 = 0u; kb16 < nkb; kb16++) {
+        vis_r14_attn_step16(qa, o, &m, &ls, kb16, rem, 1, buf);
+      }
+    }
+  } else {
+    const u32 nkb = (N_pos + 15u) >> 4u;
+    vis_r14_attn_load_kv(k_base, v_base, row_stride, 0u, N_pos, gw, 1, 0u);
     lbarrier();
 #pragma clang loop unroll(disable)
     for (u32 kb16 = 0u; kb16 < nkb; kb16++) {
-      vis_r14_attn_step16(qa, o, &m, &ls, kb16, rem, 1);
+      vis_r14_attn_step16(qa, o, &m, &ls, kb16, N_pos, 1, 0u);
     }
-    lbarrier();
   }
 
   const u32 l_out = vis_r14_lane_pin();
@@ -784,6 +818,63 @@ KERNEL ie_vis_layernorm_f16(
     }
     if (y_f32) {
       ((G vis_r14_f4 *)(y_f32 + (vis_r14_u64)n * 1024ull))[t] = o;
+    }
+    return;
+  }
+
+  if (D <= 2048u && (D & 3u) == 0u) {
+    const u32 nv4 = D >> 2u;
+    const u32 i0 = t;
+    const u32 i1 = t + NT;
+    const int has0 = (i0 < nv4);
+    const int has1 = (i1 < nv4);
+    vis_r14_f4 v0 = (vis_r14_f4)(0.0f);
+    vis_r14_f4 v1 = (vis_r14_f4)(0.0f);
+    if (in_f16) {
+      const G vis_r14_h4 *xh = (const G vis_r14_h4 *)((const G f16 *)x + (vis_r14_u64)n * (vis_r14_u64)D);
+      if (has0) {
+        const vis_r14_h4 vh = xh[i0];
+        v0 = (vis_r14_f4){(float)vh.x, (float)vh.y, (float)vh.z, (float)vh.w};
+      }
+      if (has1) {
+        const vis_r14_h4 vh = xh[i1];
+        v1 = (vis_r14_f4){(float)vh.x, (float)vh.y, (float)vh.z, (float)vh.w};
+      }
+    } else {
+      const G vis_r14_f4 *xf = (const G vis_r14_f4 *)((const G float *)x + (vis_r14_u64)n * (vis_r14_u64)D);
+      if (has0) v0 = xf[i0];
+      if (has1) v1 = xf[i1];
+    }
+    const float inv_d = 1.0f / (float)D;
+    float s = 0.0f;
+    if (has0) s += (v0.x + v0.y) + (v0.z + v0.w);
+    if (has1) s += (v1.x + v1.y) + (v1.z + v1.w);
+    const float mu = wg_sum(s) * inv_d;
+    vis_r14_f4 d0 = (vis_r14_f4)(0.0f);
+    vis_r14_f4 d1 = (vis_r14_f4)(0.0f);
+    float vv = 0.0f;
+    if (has0) {
+      d0 = v0 - mu;
+      vv += (d0.x * d0.x + d0.y * d0.y) + (d0.z * d0.z + d0.w * d0.w);
+    }
+    if (has1) {
+      d1 = v1 - mu;
+      vv += (d1.x * d1.x + d1.y * d1.y) + (d1.z * d1.z + d1.w * d1.w);
+    }
+    const float inv = 1.0f / __builtin_sqrtf(wg_sum(vv) * inv_d + eps);
+    const G vis_r14_f4 *w4 = (const G vis_r14_f4 *)w;
+    const G vis_r14_f4 *b4 = (const G vis_r14_f4 *)b;
+    G vis_r14_h4 *yh = y_f16 ? (G vis_r14_h4 *)(y_f16 + (vis_r14_u64)n * (vis_r14_u64)D) : (G vis_r14_h4 *)0;
+    G vis_r14_f4 *yf = y_f32 ? (G vis_r14_f4 *)(y_f32 + (vis_r14_u64)n * (vis_r14_u64)D) : (G vis_r14_f4 *)0;
+    if (has0) {
+      const vis_r14_f4 o0 = d0 * (inv * w4[i0]) + b4[i0];
+      if (yh) yh[i0] = (vis_r14_h4){(f16)o0.x, (f16)o0.y, (f16)o0.z, (f16)o0.w};
+      if (yf) yf[i0] = o0;
+    }
+    if (has1) {
+      const vis_r14_f4 o1 = d1 * (inv * w4[i1]) + b4[i1];
+      if (yh) yh[i1] = (vis_r14_h4){(f16)o1.x, (f16)o1.y, (f16)o1.z, (f16)o1.w};
+      if (yf) yf[i1] = o1;
     }
     return;
   }

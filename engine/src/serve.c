@@ -180,6 +180,8 @@ typedef struct job {
   size_t tcs_vs;       /* its text start (after a first newline; 0: not known yet) */
   size_t tcs_ve;       /* string value: sent up to here */
   sbuf tcs_sent[16];   /* the arguments text sent per call */
+  char sse_pfx[384];   /* pre-formatted constant SSE chunk prefix */
+  size_t sse_pfx_n;
 } job;
 
 static pthread_mutex_t QM = PTHREAD_MUTEX_INITIALIZER;
@@ -251,10 +253,28 @@ static int is_stop(uint32_t t) {
 }
 /* every chunk also carries n_tokens, the output tokens so far (other clients ignore it; the lab's Open WebUI speed
  * filter turns it into tokens per second while the answer streams) */
-static void sse_begin(sbuf *b, const job *j) {
-  sb_printf(b, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%ld,\"model\":", j->id, j->created);
-  sb_json_str(b, MODEL_ID, strlen(MODEL_ID));
-  sb_printf(b, ",\"n_tokens\":%u", j->n_tok);
+static void sse_begin(sbuf *b, job *j) {
+  if (!j->sse_pfx_n) {
+    sbuf tmp = {0};
+    sb_printf(&tmp, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%ld,\"model\":", j->id, j->created);
+    sb_json_str(&tmp, MODEL_ID, strlen(MODEL_ID));
+    sb_puts(&tmp, ",\"n_tokens\":");
+    if (tmp.n <= sizeof j->sse_pfx) {
+      memcpy(j->sse_pfx, tmp.p, tmp.n);
+      j->sse_pfx_n = tmp.n;
+    }
+    sb_free(&tmp);
+  }
+  if (j->sse_pfx_n) {
+    sb_add(b, j->sse_pfx, j->sse_pfx_n);
+    char nbuf[16];
+    const int nn = snprintf(nbuf, sizeof nbuf, "%u", j->n_tok);
+    if (nn > 0) sb_add(b, nbuf, (size_t)nn);
+  } else {
+    sb_printf(b, "data: {\"id\":\"%s\",\"object\":\"chat.completion.chunk\",\"created\":%ld,\"model\":", j->id, j->created);
+    sb_json_str(b, MODEL_ID, strlen(MODEL_ID));
+    sb_printf(b, ",\"n_tokens\":%u", j->n_tok);
+  }
 }
 /* ---- paced streaming (IE_STREAM_PACE, default 1): each output token is its own chunk, and a sender thread spreads
  * the tokens of one decoding step (MTP: several come at once) over the time a step takes, so the text arrives one
@@ -336,7 +356,7 @@ static int pace_first_fast(void) {
 }
 static void sse_send(job *j, sbuf *b) {
   if (PACE) { /* the sender thread writes it (takes the buffer) */
-    if (pace_first_fast() && PACE_DUE == 0.0) {
+    if (pace_first_fast() && PACE_DUE == 0.0 && j->n_tok <= 1u) {
       pthread_mutex_lock(&PM);
       const int empty = (!PH && !PBUSY);
       pthread_mutex_unlock(&PM);
@@ -863,7 +883,7 @@ static int on_tokens(void *ctx, const uint32_t *t, uint32_t n) {
     sb_add(&j->all, s, len);
     free(s);
     j->n_tok++;
-    if (pace) PACE_DUE = (pace_first_fast() && i == 0u) ? 0.0 : (t0 + gap * i), flush_text(j, 0); /* one chunk per token */
+    if (pace) PACE_DUE = (pace_first_fast() && j->n_tok == 1u) ? 0.0 : (t0 + gap * i), flush_text(j, 0); /* one chunk per token */
   }
   PACE_DUE = 0;
   if (!pace) flush_text(j, 0);
@@ -1102,7 +1122,7 @@ static void job_free(job *j) {
 /* ---- disk thread: writes the disk cache's files (gen_disk_write), so the next request does not wait for them ---- */
 static pthread_mutex_t DCM = PTHREAD_MUTEX_INITIALIZER, DKM = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t DKC = PTHREAD_COND_INITIALIZER;
-static int DK_KICK;
+static int DK_KICK, DK_PREWARM;
 static void disk_lock(int on) {
   if (on) pthread_mutex_lock(&DCM);
   else pthread_mutex_unlock(&DCM);
@@ -1111,10 +1131,32 @@ static void *disk_main(void *arg) {
   (void)arg;
   for (;;) {
     pthread_mutex_lock(&DKM);
-    while (!DK_KICK) pthread_cond_wait(&DKC, &DKM);
+    while (!DK_KICK && !DK_PREWARM) pthread_cond_wait(&DKC, &DKM);
+    const int kick = DK_KICK;
+    const int prewarm = DK_PREWARM;
     DK_KICK = 0;
     pthread_mutex_unlock(&DKM);
-    gen_disk_write(&GC);
+    if (kick) gen_disk_write(&GC);
+    if (prewarm && GC.dc) {
+      pthread_mutex_lock(&QM);
+      const int active = BUSY || QN > 0;
+      pthread_mutex_unlock(&QM);
+      if (active) {
+#ifdef _WIN32
+        Sleep(20);
+#else
+        struct timespec ts = {0, 20000000};
+        nanosleep(&ts, NULL);
+#endif
+      } else {
+        const int more = dc_prewarm_step(&GC, 16u << 20);
+        if (more <= 0) {
+          pthread_mutex_lock(&DKM);
+          DK_PREWARM = 0;
+          pthread_mutex_unlock(&DKM);
+        }
+      }
+    }
   }
   return NULL;
 }
@@ -1306,21 +1348,19 @@ static void *engine_main(void *arg) {
    * each request */
   const char *ie = getenv("IE_DISK_IDLE_S");
   const double idle_s = ie && ie[0] ? atof(ie) : 10.0;
-  /* R83 (H50, IE_DISK_PREWARM promoted default ON; =0 opts out): warm <= 16 MiB per idle tick while QH == NULL. */
+  /* R83 (H50, IE_DISK_PREWARM promoted default ON; =0 opts out): warm <= 16 MiB per tick on disk_main while idle. */
   const char *pwe = getenv("IE_DISK_PREWARM");
   const int prewarm_on = !(pwe && pwe[0] == '0');
-  int prewarm_more = prewarm_on && GC.dc != NULL;
+  if (prewarm_on && GC.dc != NULL) {
+    pthread_mutex_lock(&DKM);
+    DK_PREWARM = 1;
+    pthread_cond_signal(&DKC);
+    pthread_mutex_unlock(&DKM);
+  }
   struct timespec dl = {0, 0}; /* the end of the idle time; tv_sec 0: not running */
   for (;;) {
     pthread_mutex_lock(&QM);
     while (!QH) {
-      if (prewarm_more && GC.dc) {
-        pthread_mutex_unlock(&QM);
-        const int more = dc_prewarm_step(&GC, 16u << 20);
-        pthread_mutex_lock(&QM);
-        if (more <= 0) prewarm_more = 0;
-        continue;
-      }
       if (!((GC.dc && idle_s > 0 && gen_disk_pending(&GC) > 0) || HIT_WIN[0] > 0)) { /* nothing to do when idle */
         dl.tv_sec = 0;
         pthread_cond_wait(&QC, &QM);
@@ -1551,23 +1591,49 @@ static void tok_encode_seg(const tokenizer *t, const char *text, size_t len, int
  * (a user cannot write <|im_start|> into the prompt). Also where the messages are (token positions, 0: none or not
  * known): *sys_end, the closing token of the first message when that is the system message; *last_user, the start of
  * the last message with the role user (a tool result is one). gen_run puts checkpoints there. */
-/* BPE can merge across a text boundary. Count only tokens that also occur at the
- * same position in the full segment, without changing its tokenization. */
-static uint32_t prefix_tokens(const char *text, size_t n, const tok_ids *out, uint32_t start) {
-  tok_ids before = {0};
-  tok_encode_seg(TK, text, n, 0, &before);
-  uint32_t i = 0;
-  while (i < before.n && start + i < out->n && before.v[i] == out->v[start + i]) i++;
-  tok_ids_free(&before);
-  return start + i;
+/* Decoded byte length of one vocabulary token (O(len(token)) without malloc for GPT2 byte-level BPE). */
+static size_t tok_byte_len(uint32_t t) {
+  if (t >= M.n_tokens) return 0;
+  const char *s = M.tokens[t];
+  if (M.tok_gpt2) {
+    size_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+      if ((*p & 0xC0u) != 0x80u) n++;
+    return n;
+  }
+  uint32_t len = 0;
+  char *d = model_detok(&M, t, &len);
+  free(d);
+  return len;
 }
 
-static uint32_t prefix_boundary(const char *text, size_t len, const char *marker, int after,
-                                const tok_ids *out, uint32_t start) {
+static size_t prefix_boundary_off(const char *text, size_t len, const char *marker, int after) {
   const char *at = strstr(text, marker);
   if (!at || at >= text + len) return 0;
   const size_t n = (size_t)(at - text) + (after ? strlen(marker) : 0);
-  return n <= len ? prefix_tokens(text, n, out, start) : 0;
+  return n <= len ? n : 0;
+}
+
+/* Resolve multiple byte-offset boundaries in one linear pass over out->v[start .. out->n),
+ * avoiding 4x redundant BPE re-tokenization of the system prompt. */
+static void prefix_resolve_all(const tok_ids *out, uint32_t start, const size_t *offs, uint32_t **dsts, int n_marks) {
+  if (n_marks <= 0) return;
+  int left = n_marks;
+  size_t bpos = 0;
+  for (uint32_t k = start; k < out->n && left > 0; k++) {
+    const size_t tlen = tok_byte_len(out->v[k]);
+    for (int m = 0; m < n_marks; m++) {
+      if (!dsts[m]) continue;
+      if (bpos == offs[m] || (bpos < offs[m] && bpos + tlen > offs[m])) {
+        *dsts[m] = k;
+        dsts[m] = NULL;
+        left--;
+      }
+    }
+    bpos += tlen;
+  }
+  for (int m = 0; m < n_marks; m++)
+    if (dsts[m] && bpos >= offs[m]) *dsts[m] = out->n;
 }
 
 static void prompt_tokens(const chat_prompt *p, tok_ids *out, gen_params *gp, int agent, uint32_t *img_slots) {
@@ -1619,17 +1685,27 @@ static void prompt_tokens(const chat_prompt *p, tok_ids *out, gen_params *gp, in
       const uint32_t start = out->n;
       const char *text = p->text.p + s->off;
       tok_encode_seg(TK, text, s->n, 0, out);
-      if (prefix && in_sys && p->tools_end > s->off && p->tools_end <= s->off + s->n)
-        gp->tools_end = prefix_tokens(text, p->tools_end - s->off, out, start);
-      if (prefix && in_sys && s->n > 1024) {
-        if (agent == AGENT_OPENCODE) {
-          if (!prefix[0]) prefix[0] = prefix_boundary(text, s->n, "</available_skills>", 1, out, start);
-          if (!prefix[1]) prefix[1] = prefix_boundary(text, s->n, "\n<env>", 0, out, start);
-        } else {
-          if (!prefix[0]) prefix[0] = prefix_boundary(text, s->n, "\n<skills>", 0, out, start);
-          if (!prefix[1]) prefix[1] = prefix_boundary(text, s->n, "\n<project-context>", 0, out, start);
-          if (!prefix[2]) prefix[2] = prefix_boundary(text, s->n, "\n<memories>", 0, out, start);
+      if (prefix && in_sys) {
+        size_t offs[4];
+        uint32_t *dsts[4];
+        int nm = 0;
+        if (p->tools_end > s->off && p->tools_end <= s->off + s->n) {
+          offs[nm] = p->tools_end - s->off;
+          dsts[nm++] = &gp->tools_end;
         }
+        if (s->n > 1024) {
+          if (agent == AGENT_OPENCODE) {
+            size_t o;
+            if (!prefix[0] && (o = prefix_boundary_off(text, s->n, "</available_skills>", 1))) offs[nm] = o, dsts[nm++] = &prefix[0];
+            if (!prefix[1] && (o = prefix_boundary_off(text, s->n, "\n<env>", 0))) offs[nm] = o, dsts[nm++] = &prefix[1];
+          } else {
+            size_t o;
+            if (!prefix[0] && (o = prefix_boundary_off(text, s->n, "\n<skills>", 0))) offs[nm] = o, dsts[nm++] = &prefix[0];
+            if (!prefix[1] && (o = prefix_boundary_off(text, s->n, "\n<project-context>", 0))) offs[nm] = o, dsts[nm++] = &prefix[1];
+            if (!prefix[2] && (o = prefix_boundary_off(text, s->n, "\n<memories>", 0))) offs[nm] = o, dsts[nm++] = &prefix[2];
+          }
+        }
+        if (nm) prefix_resolve_all(out, start, offs, dsts, nm);
       }
     }
   }

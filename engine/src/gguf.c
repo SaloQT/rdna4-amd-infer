@@ -150,6 +150,55 @@ const char *ggml_type_name(uint32_t type) {
   }
 }
 
+typedef struct {
+  const gguf_file *g;
+  uint64_t n_tensors;
+  uint32_t mask;
+  uint32_t *slots; /* 1-based tensor index; 0 = empty */
+} gguf_ht;
+
+#define GGUF_HT_MAX 16
+static gguf_ht GGUF_HTS[GGUF_HT_MAX];
+
+static uint64_t gguf_name_hash(const char *s) {
+  uint64_t h = 14695981039346656037ULL;
+  for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+    h ^= (uint64_t)*p;
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+static void gguf_ht_free(const gguf_file *g) {
+  for (int k = 0; k < GGUF_HT_MAX; k++) {
+    if (GGUF_HTS[k].g == g) {
+      free(GGUF_HTS[k].slots);
+      memset(&GGUF_HTS[k], 0, sizeof GGUF_HTS[k]);
+      return;
+    }
+  }
+}
+
+static void gguf_ht_build(const gguf_file *g) {
+  gguf_ht_free(g);
+  if (!g->n_tensors || g->n_tensors > 0x3FFFFFFFULL) return;
+  int slot = -1;
+  for (int k = 0; k < GGUF_HT_MAX; k++)
+    if (!GGUF_HTS[k].g) { slot = k; break; }
+  if (slot < 0) return;
+  uint32_t cap = 16u;
+  while ((uint64_t)cap < g->n_tensors * 2u) cap <<= 1;
+  uint32_t *slots = calloc(cap, sizeof *slots);
+  if (!slots) return;
+  const uint32_t mask = cap - 1u;
+  for (uint64_t i = 0; i < g->n_tensors; i++) {
+    uint32_t idx = (uint32_t)gguf_name_hash(g->t[i].name) & mask;
+    while (slots[idx]) idx = (idx + 1u) & mask;
+    slots[idx] = (uint32_t)(i + 1u);
+  }
+  GGUF_HTS[slot] = (gguf_ht){g, g->n_tensors, mask, slots};
+}
+
 void gguf_open(gguf_file *g, const char *path) {
   memset(g, 0, sizeof *g);
   int fd = open(path, O_RDONLY);
@@ -207,6 +256,7 @@ void gguf_open(gguf_file *g, const char *path) {
       ie_die("%s: tensor %s is outside the file", path, t->name);
     t->data = (const uint8_t *)g->map + g->data_off + t->offset;
   }
+  gguf_ht_build(g);
 }
 
 /* IE_TENSOR_OVERLAY=FILE: replace tensors of a model with raw tensor files, for quantisation experiments that
@@ -257,6 +307,7 @@ void gguf_overlay(gguf_file *g) {
 }
 
 void gguf_close(gguf_file *g) {
+  gguf_ht_free(g);
   for (uint64_t i = 0; i < g->n_kv; i++) {
     free(g->kv[i].key);
     free(g->kv[i].arr_str);
@@ -305,6 +356,19 @@ char *gguf_get_str(const gguf_file *g, const char *key) {
 }
 
 const gguf_tensor *gguf_tensor_find(const gguf_file *g, const char *name) {
+  for (int k = 0; k < GGUF_HT_MAX; k++) {
+    const gguf_ht *ht = &GGUF_HTS[k];
+    if (ht->g == g && ht->n_tensors == g->n_tensors && ht->slots) {
+      uint32_t idx = (uint32_t)gguf_name_hash(name) & ht->mask;
+      for (;;) {
+        const uint32_t v = ht->slots[idx];
+        if (!v) return NULL;
+        const gguf_tensor *t = &g->t[v - 1u];
+        if (strcmp(t->name, name) == 0) return t;
+        idx = (idx + 1u) & ht->mask;
+      }
+    }
+  }
   for (uint64_t i = 0; i < g->n_tensors; i++)
     if (strcmp(g->t[i].name, name) == 0) return &g->t[i];
   return NULL;

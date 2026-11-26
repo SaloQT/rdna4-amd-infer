@@ -12,7 +12,7 @@ shift
 B=build
 O=$B/var/$NAME
 ARCH=gfx1201
-LLVM_BIN=${LLVM_BIN:-$ROOT/../../.rocm-venv/Lib/site-packages/_rocm_sdk_core/lib/llvm/bin}
+LLVM_BIN=${LLVM_BIN:-$ROOT/../.rocm-venv/Lib/site-packages/_rocm_sdk_core/lib/llvm/bin}
 CLANG=$(command -v cygpath >/dev/null && cygpath -m "$LLVM_BIN/amdclang.exe" || echo "$LLVM_BIN/amdclang.exe")
 LINK=$(command -v cygpath >/dev/null && cygpath -m "$LLVM_BIN/ld.lld.exe" || echo "$LLVM_BIN/ld.lld.exe")
 GPU_CFLAGS="-x c -std=c11 -Wall -Wextra --target=amdgcn-amd-amdhsa -mcpu=$ARCH -nogpulib -O3"

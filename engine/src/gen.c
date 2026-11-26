@@ -258,8 +258,10 @@ uint32_t sample_cands(sampler *sp, float *v, uint32_t *id, uint32_t n) {
  * 1 if done (cv, ci: n * K entries), 0 if the backend cannot (then the
  * host reads the rows and selects). */
 int gpu_cands(const sampler *sp, backend *b, const graph *g, uint32_t r0, uint32_t n, uint32_t V, float *cv, uint32_t *ci) {
+  static int host_topk_env = -1;
+  if (host_topk_env < 0) host_topk_env = getenv("IE_HOST_TOPK") != NULL;
   const uint32_t K = sample_k(sp, V);
-  if (!b->topk || K >= V || getenv("IE_HOST_TOPK")) return 0;
+  if (!b->topk || K >= V || host_topk_env) return 0;
   return b->topk(b, g->logits, r0, n, V, K, cv, ci);
 }
 uint32_t sample(sampler *sp, const float *lg, uint32_t V) {
@@ -934,6 +936,30 @@ static uint32_t lookup_draft(const uint32_t *t, uint32_t n, uint32_t D, uint32_t
 /* DFlash: drafts for the block [t(P), mask...] at P (the drafter context
  * is up to date): the block run, the top-k candidates of rows 1 .. n, and
  * the selector's path from the anchor t(P) (greedy). Returns n. */
+static float *g_df_hp = NULL, *g_df_pc = NULL, *g_df_sc = NULL;
+static size_t g_df_hp_cap = 0, g_df_r_cap = 0;
+
+static float *g_spec_lg = NULL;
+static size_t g_spec_lg_cap = 0;
+static int g_spec_first_emitted = 0;
+
+static float *spec_lg_ensure(size_t bytes) {
+  if (bytes > g_spec_lg_cap) {
+    float *p = realloc(g_spec_lg, bytes);
+    if (!p) ie_die("spec_generate: out of memory");
+    g_spec_lg = p;
+    g_spec_lg_cap = bytes;
+  }
+  return g_spec_lg;
+}
+
+static void gen_scratch_free(void) {
+  free(g_df_hp); g_df_hp = NULL; g_df_hp_cap = 0;
+  free(g_df_pc); g_df_pc = NULL;
+  free(g_df_sc); g_df_sc = NULL; g_df_r_cap = 0;
+  free(g_spec_lg); g_spec_lg = NULL; g_spec_lg_cap = 0;
+}
+
 static uint32_t df_draft(backend *b, const model *m, const graph *g, sampler *sp, uint32_t tP, uint32_t P, uint32_t n, uint32_t *d,
                          float pmin) {
   const dflash *df = m->df;
@@ -966,8 +992,21 @@ static uint32_t df_draft(backend *b, const model *m, const graph *g, sampler *sp
     nstride = s ? atoi(s) : 1;
     if (nstride < 1) nstride = 1;
   }
-  float *hp = nosel ? NULL : malloc((size_t)n * ss * 4), *pc = nosel ? NULL : malloc((size_t)R * 4),
-        *sc = nosel ? NULL : malloc((size_t)R * 4);
+  float *hp = NULL, *pc = NULL, *sc = NULL;
+  if (!nosel) {
+    const size_t hp_need = (size_t)n * ss * 4u, r_need = (size_t)R * 4u;
+    if (hp_need > g_df_hp_cap) {
+      float *p = realloc(g_df_hp, hp_need);
+      if (!p) ie_die("df_draft: out of memory");
+      g_df_hp = p; g_df_hp_cap = hp_need;
+    }
+    if (r_need > g_df_r_cap) {
+      float *p1 = realloc(g_df_pc, r_need), *p2 = realloc(g_df_sc, r_need);
+      if (!p1 || !p2) ie_die("df_draft: out of memory");
+      g_df_pc = p1; g_df_sc = p2; g_df_r_cap = r_need;
+    }
+    hp = g_df_hp; pc = g_df_pc; sc = g_df_sc;
+  }
   for (int pass = 0; pass < npass; pass++) {
     b->run(b, 3, bt, B, P, 0, NULL, NULL);
     if (!b->topk(b, g->df_logits, 1, n, m->df_head.rows ? m->df_head.rows : m->vocab, K, uv, ci))
@@ -1001,7 +1040,6 @@ static uint32_t df_draft(backend *b, const model *m, const graph *g, sampler *sp
       for (uint32_t j = 1; j <= (uint32_t)nfill; j++)
         if ((int)((j - 1) % (uint32_t)nstride) == 0) bt[j] = d[j];
   }
-  free(hp), free(pc), free(sc);
   /* Keep the drafts while the drafter's probability of each (softmax over
    * its top K logits) is at least pmin, as the MTP drafts. */
   uint32_t nd = 0;
@@ -1312,17 +1350,20 @@ static void mtp_draft_tree(backend *b, const model *m, const graph *g, const sam
   if (mp_env < 0) mp_env = !(getenv("IE_ATTN_LONG_MP") && getenv("IE_ATTN_LONG_MP")[0] == '0');
   const int mp_q8 = mp_env && m->hd == 256u && (m->n_kv ? m->n_head / m->n_kv : 6u) == 6u &&
                     b->kv_rowb == (uint64_t)m->n_kvl * m->n_kv * (m->hd + (m->hd >> 4)) * 2u;
+  static int has_t16_env = -1, has_par1_env = -1;
+  if (has_t16_env < 0) has_t16_env = getenv("IE_MTP_TIER16_P") != NULL;
+  if (has_par1_env < 0) has_par1_env = getenv("IE_MTP_PAR1_P") != NULL;
   /* When ie_attn_long_mp is active (hd=256, grp=6, Q8 KV), nt <= 8 runs _tr8 + 1-pass ie_attn_long_mp
    * whereas nt >= 9 jumps to _tr16 + 4..6-pass ie_attn_long; keep pure MTP trees inside nt <= 8. */
-  const uint32_t mtp_cap = (mp_q8 && max_tn > 8u && !getenv("IE_MTP_TIER16_P") && max_d_env <= 0) ? 8u : max_tn;
+  const uint32_t mtp_cap = (mp_q8 && max_tn > 8u && !has_t16_env && max_d_env <= 0) ? 8u : max_tn;
 
   const int samp = (sp && sp->temp > 0.0f);
   const float p_keep = samp ? pmin * (P >= 8192u ? 0.68f : 0.80f) : pmin;
   const float p_deep_eff = samp ? (P >= 8192u ? 0.24f : 0.32f) : p_deep;
   /* At short context (< 8K) nf=1 avoids WDDM H2D table copies unless root is genuinely split;
    * at long context (>= 8K), verify KV cost dominates so nf=2 2-branch expansion wins */
-  const float p_par_eff = getenv("IE_MTP_PAR1_P") ? p_par1
-                                                  : (samp ? (P >= 8192u ? 0.16f : 2.0f) : (P >= 8192u ? p_par1 : 0.28f));
+  const float p_par_eff = has_par1_env ? p_par1
+                                       : (samp ? (P >= 8192u ? 0.16f : 2.0f) : (P >= 8192u ? p_par1 : 0.28f));
   const float p_br_eff = samp ? (p_branch < 0.05f ? p_branch : 0.05f) : p_branch;
   const float p_ch_eff = samp ? (p_child < 0.04f ? p_child : 0.04f) : p_child;
 
@@ -1847,10 +1888,14 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
    * token is drawn once from the model's exact distribution given the tokens
    * before it (with incremental dry_commit at every depth). Allocate 16 rows
    * so tree and lookup verify runs (up to 16 nodes) never overflow lg. */
+  const int first_already_emitted = g_spec_first_emitted;
+  g_spec_first_emitted = 0;
   if (m && m->vocab_unpadded && V > m->vocab_unpadded) V = m->vocab_unpadded;
   if (stop && eos < 0 && m && m->arch == ARCH_INKLING2 && V > 200006u) eos = 200006;
   const uint32_t lg_rows = D + 1u > 16u ? D + 1u : 16u;
-  float *lg = sp->temp > 0.0f ? malloc((size_t)lg_rows * g->bufs[g->logits].stride) : NULL;
+  const int do_samp = sp->temp > 0.0f;
+  const size_t lg_bytes = (size_t)lg_rows * g->bufs[g->logits].stride;
+  float *lg = NULL;
   double sample_ms = 0; /* host time of the sampling (with the reads of the logits or of the top K) */
   uint32_t a[16], d[16], tk[16];
   /* the prompt is done (prefill): the model and the MTP KV cache for
@@ -1927,7 +1972,7 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
   uint8_t tpar[16], tpath[16];
   mtp_qdist qnode[16];
   const char *reje = getenv("IE_SPEC_REJ");
-  const int rej_on = lg != NULL && !(reje && reje[0] == '0') && sample_k(sp, V) <= 1024u;
+  const int rej_on = do_samp && !(reje && reje[0] == '0') && sample_k(sp, V) <= 1024u;
   uint64_t drng = (sp->rng ^ 0x9E3779B97F4A7C15ull) | 1ull;
   /* IE_TREE_DUMP=FILE (debug, with --dflash and IE_DFLASH_AUTO=0): each step also runs the whole MTP chain (D drafts,
    * no pmin cut) and writes both drafters' candidates: "S P tP", "M d p ..." (the MTP chain and its probabilities),
@@ -2034,7 +2079,7 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
   out[n++] = tP;
   commit_output_token(sp, tP);
   /* out[n_prompt .. sent) went to emit; a nonzero return ends the loop */
-  uint32_t sent = n_prompt;
+  uint32_t sent = first_already_emitted ? (n_prompt + 1u) : n_prompt;
   int ended = 0;
 #define SPEC_EMIT() (emit && !ended && n > sent ? (emit(ectx, out + sent, n - sent) ? (ended = 1) : (sent = n, 0)) : 0)
   const double t0 = now_ms();
@@ -2453,34 +2498,37 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
                    * each accepted token into DRY history BEFORE evaluating depth + 1 (100% draft=0 equivalence) */
       static int host_topk_tr = -1;
       if (host_topk_tr < 0) host_topk_tr = getenv("IE_HOST_TOPK") != NULL;
-      b->sample_k = lg && b->topk && sample_k(sp, V) < V && !host_topk_tr ? sample_k(sp, V) : 0;
+      b->sample_k = do_samp && b->topk && sample_k(sp, V) < V && !host_topk_tr ? sample_k(sp, V) : 0;
       b->tree_par = tpar;
       b->run(b, 0, tk, tree_n, P, 0, a, NULL);
       b->sample_k = 0;
       if (stime) t_verify += now_ms() - tq;
       const double ts1 = now_ms();
-      const uint32_t KS = lg ? sample_k(sp, V) : 0u;
-      const int cands = lg && gpu_cands(sp, b, g, 0, tree_n, V, sp->cv, sp->ci);
-      if (lg && !cands) b->read_rows(b, g->logits, 0, tree_n, lg);
+      const uint32_t KS = do_samp ? sample_k(sp, V) : 0u;
+      const int cands = do_samp && gpu_cands(sp, b, g, 0, tree_n, V, sp->cv, sp->ci);
+      if (do_samp && !cands) {
+        if (!lg) lg = spec_lg_ensure(lg_bytes);
+        b->read_rows(b, g->logits, 0, tree_n, lg);
+      }
       uint32_t cur = 0, kk = 0, pt[17];
       const uint32_t lst = g->bufs[g->logits].stride / 4u;
       tpath[0] = 0;
       for (;;) {
         uint32_t tok = a[cur], c = 0;
         const int force_end = reasoning_exhausted(sp);
-        if (lg && rej_on && !force_end) {
+        if (do_samp && rej_on && !force_end) {
           uint32_t ctok[16], cnode[16], nc = 0;
           for (uint32_t y = cur + 1u; y < tree_n; y++)
             if (tpar[y] == cur) ctok[nc] = tk[y], cnode[nc] = y, nc++;
           tok = spec_rej_step(sp, sp->cv + (size_t)cur * KS, sp->ci + (size_t)cur * KS, KS, cands,
-                              lg ? lg + (size_t)cur * lst : NULL, V, &qnode[cur], ctok, cnode, nc, &c);
+                              (!cands && lg) ? lg + (size_t)cur * lst : NULL, V, &qnode[cur], ctok, cnode, nc, &c);
           commit_output_token(sp, tok);
           int st = (stop && (int64_t)tok == eos) || (n + kk + 1u >= total);
           for (uint32_t s = 0; s < n_stops; s++) st |= stops[s] >= 0 && (int64_t)tok == stops[s];
           if (st) c = 0;
         } else {
           if (force_end) tok = sp->reasoning_end_plus_one - 1u;
-          else if (lg) {
+          else if (do_samp) {
             tok = cands ? sample_cands(sp, sp->cv + (size_t)cur * KS, sp->ci + (size_t)cur * KS, KS)
                         : sample(sp, lg + (size_t)cur * lst, V);
           }
@@ -2506,7 +2554,7 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
     /* sampling from the top K on the GPU (gpu_cands below): the verify run takes that top K itself, in its one wait */
     static int host_topk_ver = -1;
     if (host_topk_ver < 0) host_topk_ver = getenv("IE_HOST_TOPK") != NULL;
-    b->sample_k = lg && b->topk && sample_k(sp, V) < V && !host_topk_ver ? sample_k(sp, V) : 0;
+    b->sample_k = do_samp && b->topk && sample_k(sp, V) < V && !host_topk_ver ? sample_k(sp, V) : 0;
     const double t_ver0 = (dsm && adap_d_env) ? now_ms() : 0.0;
     b->run(b, 0, tk, nd + 1, P, 0, a, NULL);
     b->sample_k = 0;
@@ -2514,22 +2562,25 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
     if (stime) t_verify += now_ms() - tq;
     const double ts0 = now_ms();
     {
-      const uint32_t KS = lg ? sample_k(sp, V) : 0u;
-      const int cands = lg && gpu_cands(sp, b, g, 0, nd + 1, V, sp->cv, sp->ci);
+      const uint32_t KS = do_samp ? sample_k(sp, V) : 0u;
+      const int cands = do_samp && gpu_cands(sp, b, g, 0, nd + 1, V, sp->cv, sp->ci);
       const uint32_t lst = g->bufs[g->logits].stride / 4u;
-      if (lg && !cands) b->read_rows(b, g->logits, 0, nd + 1, lg);
+      if (do_samp && !cands) {
+        if (!lg) lg = spec_lg_ensure(lg_bytes);
+        b->read_rows(b, g->logits, 0, nd + 1, lg);
+      }
       k = 0;
       for (uint32_t j = 0; j <= nd; j++) {
         uint32_t acc_c = 0;
         if (reasoning_exhausted(sp)) {
           a[j] = sp->reasoning_end_plus_one - 1u;
           acc_c = (j < nd && a[j] == d[j + 1]) ? (j + 1u) : 0u;
-        } else if (lg && rej_on) {
+        } else if (do_samp && rej_on) {
           const uint32_t ctok = j < nd ? d[j + 1] : 0u;
           const uint32_t cid1 = j + 1u;
           a[j] = spec_rej_step(sp, sp->cv + (size_t)j * KS, sp->ci + (size_t)j * KS, KS, cands,
-                               lg ? lg + (size_t)j * lst : NULL, V, &qnode[j], &ctok, &cid1, j < nd ? 1u : 0u, &acc_c);
-        } else if (lg) {
+                               (!cands && lg) ? lg + (size_t)j * lst : NULL, V, &qnode[j], &ctok, &cid1, j < nd ? 1u : 0u, &acc_c);
+        } else if (do_samp) {
           a[j] = cands ? sample_cands(sp, sp->cv + (size_t)j * KS, sp->ci + (size_t)j * KS, KS)
                        : sample(sp, lg + (size_t)j * lst, V);
           acc_c = (j < nd && a[j] == d[j + 1]) ? (j + 1u) : 0u;
@@ -2547,14 +2598,19 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
     *n_drafted += nd;
     if (ie_spec_nk && nd <= 8u && k <= 8u) ie_spec_nk[nd * 9u + k]++;
   commit_step: /* (4) accept */
-    if (getenv("IE_SPEC_TRACE")) {
-      const uint32_t show = tree_n ? k : nd;
-      fprintf(stderr, "step P=%u t=%u%s drafts", P, tP, tree_n ? " (tree)" : "");
-      for (uint32_t j = 1; j <= show; j++) fprintf(stderr, " %u", d[j]);
-      fprintf(stderr, " model");
-      for (uint32_t j = 0; j <= k; j++) fprintf(stderr, " %u", a[j]);
-      fprintf(stderr, " -> k=%u\n", k);
+    {
+      static int spec_trace_env = -1;
+      if (spec_trace_env < 0) spec_trace_env = getenv("IE_SPEC_TRACE") != NULL;
+      if (spec_trace_env) {
+        const uint32_t show = tree_n ? k : nd;
+        fprintf(stderr, "step P=%u t=%u%s drafts", P, tP, tree_n ? " (tree)" : "");
+        for (uint32_t j = 1; j <= show; j++) fprintf(stderr, " %u", d[j]);
+        fprintf(stderr, " model");
+        for (uint32_t j = 0; j <= k; j++) fprintf(stderr, " %u", a[j]);
+        fprintf(stderr, " -> k=%u\n", k);
+      }
     }
+    const uint32_t n_prev = n;
     for (uint32_t j = 1; j <= k && n < total; j++) out[n++] = d[j];
     if (n < total) out[n++] = a[k];
     if (dsm && b->ds_note_tokens) b->ds_note_tokens(b, &a[k], 1u);
@@ -2603,7 +2659,7 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
       adap_steps++;
     }
     if (stop)
-      for (uint32_t j = n_prompt; j < n; j++)
+      for (uint32_t j = n_prev; j < n; j++)
         if ((int64_t)out[j] == eos) { n = j + 1; break; }
   }
   SPEC_EMIT(); /* the last step's tokens (the result does not matter now) */
@@ -2633,10 +2689,9 @@ uint32_t spec_generate(backend *b, const model *m, const graph *g, uint32_t *out
   if (stime && *n_steps)
     fprintf(stderr, "spec time: drafts %.2f ms/step, verify %.2f ms/step (%u steps)\n", t_draft / *n_steps, t_verify / *n_steps, *n_steps);
   *gen_ms = now_ms() - t0;
-  if (lg) fprintf(stderr, "sampling: %.1f ms in all (%.3f ms per step)\n", sample_ms, *n_steps ? sample_ms / *n_steps : 0.0);
+  if (do_samp) fprintf(stderr, "sampling: %.1f ms in all (%.3f ms per step)\n", sample_ms, *n_steps ? sample_ms / *n_steps : 0.0);
   if (sam_p_owned) psam_free(sam_p);
   sam_free(&sam);
-  free(lg);
   return n;
 }
 /* ---- one request (ie-serve) ---- */
@@ -2658,10 +2713,14 @@ void gen_init(gen_ctx *c, backend *b, const model *m, const graph *g) {
   c->nl = calloc(m->vocab, 1);
   if (!c->sp.idx || !c->sp.pr || !c->sp.cv || !c->sp.ci || !c->logits || !c->nl) ie_die("gen_init: out of memory");
   for (uint32_t t = 0; t < V && t < m->n_tokens; t++) {
-    uint32_t len;
-    char *s = model_detok(m, t, &len);
-    c->nl[t] = memchr(s, '\n', len) != NULL;
-    free(s);
+    const char *s = m->tokens[t];
+    if (!s || !*s) continue;
+    if (m->tok_gpt2) {
+      for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if (p[0] == 0xC4u && p[1] == 0x8Au) { c->nl[t] = 1; break; }
+    } else {
+      c->nl[t] = (strchr(s, '\n') != NULL) || !strcmp(s, "<0x0A>") || !strcmp(s, "<0x0a>");
+    }
   }
 }
 
@@ -2670,6 +2729,7 @@ void gen_free(gen_ctx *c) {
   free(c->sp.dry_h), free(c->sp.dry_bits), free(c->sp.dry_head), free(c->sp.dry_prev), free(c->kv_imgs);
   psam_free(c->sam_p);
   dc_free(c->dc);
+  gen_scratch_free();
   memset(c, 0, sizeof *c);
 }
 
@@ -3048,6 +3108,8 @@ typedef struct dcache {
   uint32_t w_n;       /* checkpoints written since the queue was last empty (the log line) */
   uint64_t w_bytes;
   double w_t0;
+  struct { uint64_t hash; uint32_t hits; } touch_q[16];
+  uint32_t touch_n;
 #ifdef _WIN32
   HANDLE ev_pool[64];
   uint32_t ev_pool_n;
@@ -4482,8 +4544,26 @@ static int dc_write_one(dcache *d) {
   return 1;
 }
 void gen_disk_write(gen_ctx *c) {
-  if (c->dc)
-    while (dc_write_one(c->dc)) {}
+  if (!c->dc) return;
+  dcache *d = c->dc;
+  while (dc_write_one(d)) {}
+  if (d->dir[0]) {
+    struct { uint64_t hash; uint32_t hits; } tq[16];
+    uint32_t tn = 0;
+    dc_lk(d, 1);
+    tn = d->touch_n;
+    if (tn) {
+      memcpy(tq, d->touch_q, tn * sizeof tq[0]);
+      d->touch_n = 0;
+    }
+    dc_lk(d, 0);
+    for (uint32_t i = 0; i < tn; i++) {
+      char path[1200];
+      dc_path(d, path, sizeof path, 'e', tq[i].hash, NULL);
+      dc_hit_write(path, tq[i].hits);
+      dc_touch(path);
+    }
+  }
 }
 /* Wave 15 R83 (H50): warm unwarmed .iec blocks from disk into Host-RAM Radix L2 up to max_bytes. */
 int dc_prewarm_step(gen_ctx *c, size_t max_bytes) {
@@ -4571,10 +4651,9 @@ static void dc_nap(void) {
  * kind and has_h; 0 if none */
 /* checkpoint i (whose tokens the prompt starts with) and the blocks before it: 1 all written, 0 one is still queued or
  * being written, -1 one is missing (locked) */
-static int dc_state_l(const dcache *d, uint32_t i, const uint32_t *prompt, uint64_t *ch) {
+static int dc_state_l(const dcache *d, uint32_t i, const uint64_t *ch) {
   const uint32_t nb = d->f[i].pos / d->block;
   int ready = !d->f[i].pending;
-  dc_chain(d, prompt, nb, ch);
   for (uint32_t k = 0; k < nb; k++) {
     const int j = dc_find(d, 'k', ch[k]);
     if (j < 0) return -1;
@@ -4584,11 +4663,10 @@ static int dc_state_l(const dcache *d, uint32_t i, const uint32_t *prompt, uint6
 }
 /* the furthest written checkpoint past S, at most at lim, whose tokens the prompt starts with; *later: a further one
  * still being written, or -1 (locked) */
-static int dc_scan_l(const dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, int need_h, uint64_t *ch, int *later) {
+static int dc_scan_l(const dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, int need_h, const uint64_t *ch, int *later) {
   int best = -1;
   *later = -1;
   const uint32_t pnb = lim / d->block;
-  if (pnb > 0u) dc_chain(d, prompt, pnb, ch);
   for (uint32_t i = 0; i < d->n; i++) {
     const dc_file *f = &d->f[i];
     const uint32_t bp = best >= 0 ? d->f[best].pos : 0, lp = *later >= 0 ? d->f[*later].pos : 0;
@@ -4597,8 +4675,7 @@ static int dc_scan_l(const dcache *d, const uint32_t *prompt, uint32_t lim, uint
     const uint32_t fnb = f->pos / d->block;
     if (fnb > 0u && fnb <= pnb && f->blk_hash && f->blk_nb == fnb && f->blk_hash[fnb - 1u] != ch[fnb - 1u]) continue;
     if (memcmp(f->tok, prompt, (size_t)f->pos * 4)) continue;
-    const int s = dc_state_l(d, i, prompt, ch);
-    if (pnb > 0u && fnb < pnb) dc_chain(d, prompt, pnb, ch);
+    const int s = dc_state_l(d, i, ch);
     if (s > 0) best = (int)i;
     else if (!s) *later = (int)i;
   }
@@ -4633,9 +4710,11 @@ static uint32_t dc_prefix_divergence_l(const dcache *d, const uint32_t *prompt, 
  * starts with and whose blocks are all there (with need_h, one that holds the MTP h input): 1 and its hash, position,
  * kind and has_h; 0 if none. When the furthest is still being written (a quick return to the conversation the last
  * request left), the engine thread writes the queue too until its files are on disk. */
-static int dc_best(dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, int need_h, uint64_t *eh, uint32_t *pos,
-                   uint32_t *kind, uint32_t *has_h, uint32_t sys_end, uint32_t *learned) {
+static int dc_best_ch(dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, int need_h, uint64_t *eh, uint32_t *pos,
+                      uint32_t *kind, uint32_t *has_h, uint32_t sys_end, uint32_t *learned, uint64_t **ch_out) {
   uint64_t *ch = dc_alloc((size_t)d->max_nb * 8);
+  const uint32_t pnb = lim / d->block;
+  if (pnb > 0u) dc_chain(d, prompt, pnb, ch);
   int best = -1, later = -1;
   uint64_t lh = 0;
   uint32_t lpos = 0;
@@ -4656,14 +4735,19 @@ static int dc_best(dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, 
     for (int s = 0; !s && now_ms() - t0 < 60000.0;) {
       dc_lk(d, 1);
       const int i = dc_find(d, 'e', lh);
-      s = i < 0 ? -1 : dc_state_l(d, (uint32_t)i, prompt, ch);
+      s = i < 0 ? -1 : dc_state_l(d, (uint32_t)i, ch);
       dc_lk(d, 0);
       if (!s && !dc_write_one(d)) dc_nap(); /* the queue is empty: the disk thread is writing the last of them */
     }
     fprintf(stderr, "disk cache: waited %.0f ms for the files of the checkpoint at %u\n", now_ms() - t0, lpos);
   }
-  free(ch);
+  if (best >= 0 && ch_out) *ch_out = ch;
+  else free(ch);
   return best >= 0;
+}
+static int __attribute__((unused)) dc_best(dcache *d, const uint32_t *prompt, uint32_t lim, uint32_t S, int need_h, uint64_t *eh,
+                                           uint32_t *pos, uint32_t *kind, uint32_t *has_h, uint32_t sys_end, uint32_t *learned) {
+  return dc_best_ch(d, prompt, lim, S, need_h, eh, pos, kind, has_h, sys_end, learned, NULL);
 }
 static void dc_drop(dcache *d, uint64_t eh) {
   dc_lk(d, 1);
@@ -4781,15 +4865,16 @@ static int dc_push_rows(dcache *d, backend *b, const dc_mem *img, char type, uin
 }
 /* read checkpoint eh (at pos) into snapshot slot and the KV rows before it: 0, or -1 (nothing changed) or -2 (the KV
  * rows were partly overwritten) if a file is missing or damaged */
-static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt, int slot) {
+static int dc_load_ch(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt, int slot, const uint64_t *ch_in) {
   dcache *d = c->dc;
   backend *b = c->b;
   const double t0 = now_ms();
   const uint32_t nb = pos / d->block, tail = pos - nb * d->block;
-  uint64_t *ch = dc_alloc((size_t)(nb + 1) * 8);
+  uint64_t *ch_own = ch_in ? NULL : dc_alloc((size_t)(nb + 1) * 8);
+  const uint64_t *ch = ch_in ? ch_in : ch_own;
   dc_item *it = calloc(nb + 1, sizeof *it);
   if (!it) ie_die("disk cache: out of memory");
-  dc_chain(d, prompt, nb, ch);
+  if (ch_own) dc_chain(d, prompt, nb, ch_own);
   int r = 0;
   uint32_t nbusy = 0, from_ram = 0;
   uint64_t read_bytes = 0;
@@ -5026,15 +5111,29 @@ static int dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt
   dc_lk(d, 0);
   if (!r) {
     if (d->dir[0]) {
-      char path[1200];
-      dc_path(d, path, sizeof path, 'e', eh, NULL);
-      dc_hit_write(path, hits);
-      dc_touch(path);
+      if (d->lock && c->disk_kick) {
+        dc_lk(d, 1);
+        if (d->touch_n < 16u) {
+          d->touch_q[d->touch_n].hash = eh;
+          d->touch_q[d->touch_n].hits = hits;
+          d->touch_n++;
+        }
+        dc_lk(d, 0);
+        c->disk_kick();
+      } else {
+        char path[1200];
+        dc_path(d, path, sizeof path, 'e', eh, NULL);
+        dc_hit_write(path, hits);
+        dc_touch(path);
+      }
     }
     fprintf(stderr, "disk cache: %u of %u files from RAM, %.0f MB from the disk, %.0f ms\n", from_ram, nb + 1, read_bytes / 1e6, now_ms() - t0);
   }
-  free(ch), free(it);
+  free(ch_own), free(it);
   return r;
+}
+static int __attribute__((unused)) dc_load(gen_ctx *c, uint64_t eh, uint32_t pos, const uint32_t *prompt, int slot) {
+  return dc_load_ch(c, eh, pos, prompt, slot, NULL);
 }
 /* ==== END disk cache storage ==== */
 
@@ -5419,8 +5518,9 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
   const double t_sw = now_ms();
   const uint32_t learn_end = p->prefix_client ? p->sys_end : 0;
   const uint32_t dc_lim = p->n_imgs && p->imgs[0].pos < n_prompt - 1 ? p->imgs[0].pos : n_prompt - 1;
+  uint64_t *dc_ch = NULL;
   const int dfound = cache_run && c->dc && dc_lim > S &&
-                     dc_best(c->dc, prompt, dc_lim, S, mtp, &deh, &P, &kind, &has_h, learn_end, &learned);
+                     dc_best_ch(c->dc, prompt, dc_lim, S, mtp, &deh, &P, &kind, &has_h, learn_end, &learned, &dc_ch);
   if (L > learned && L < learn_end && L < c->kv_n) learned = L;
   const double t_best = now_ms();
   if (dfound) {
@@ -5430,7 +5530,9 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
       if (c->ck[r].pos <= L) c->ck[w++] = c->ck[r];
     c->n_ck = w;
     const int i = ck_slot(c, P), added = c->n_ck > w;
-    const int r = dc_load(c, deh, P, prompt, c->ck[i].slot);
+    const int r = dc_load_ch(c, deh, P, prompt, c->ck[i].slot, dc_ch);
+    free(dc_ch);
+    dc_ch = NULL;
     if (!r) {
       c->ck[i].pos = P, c->ck[i].kind = (int)kind, c->ck[i].used = ++c->tick, c->ck[i].disk = 1, c->ck[i].h = (uint8_t)has_h;
       use = i, S = P, st->cache_hit = GEN_CK_DISK, st->disk_ms = now_ms() - t0;
@@ -5497,7 +5599,7 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
         ck_save(c, mk[i], mkind[i], hbuf);
         from = mk[i];
       }
-      const int defer_prompt_ck = c->m->arch == ARCH_INKLING2 && !mtp && !p->n_imgs &&
+      const int defer_prompt_ck = c->m->arch == ARCH_INKLING2 && !mtp &&
                                   ie_defer_cksave_mode() >= 1 && n_prompt >= 2u &&
                                   from < n_prompt - 1u && ck_at(c, n_prompt - 1u) < 0;
       if (defer_prompt_ck) {
@@ -5559,6 +5661,36 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
   st->prefill_ms = now_ms() - t0;
 
   if (p->draft) { /* MTP: the same loop as ie-run --draft */
+    /* Emit Token 1 immediately before psam_sync_prompt, ds_set_shortlist, and out[] malloc/memcpy
+     * to remove 10-30 ms of host setup from TTFT. */
+    const int stop0 = dck.pending ? defer_ck_emit(&dck, &first, 1u)
+                                  : (p->emit ? p->emit(p->ctx, &first, 1u) : 0);
+    if (stop0 || p->max_new <= 1u) {
+      commit_output_token(sp, first);
+      st->n_out = 1u;
+      st->dry_hits = sp->dry_hits;
+      st->reasoning_limited = sp->reasoning_limited;
+      if (ephem) {
+        uint32_t max_w = n_prompt + spec_room(p->draft) + 2u;
+        if (max_w <= stash_n) {
+          const double tr = now_ms();
+          if (ephem_gpu && b->kv_ephem_copy) b->kv_ephem_copy(b, 0, stash_n);
+          else b->kv_io(b, 0, 0, stash_n, stash_buf);
+          fprintf(stderr, "cache: ephemeral side request (%u+%u tok) preserved %u-token prefix (%u ckpts, %u rows in %.1f ms%s)\n",
+                  n_prompt, st->n_out, c->kv_n, c->n_ck, stash_n, stash_ms + (now_ms() - tr),
+                  ephem_gpu ? ", gpu-stash" : "");
+        } else {
+          c->n_ck = 0, c->kv_n = 0;
+          if (b->kv_trim) b->kv_trim(b, c->kv_n);
+        }
+        free(stash_buf);
+        st->n_ck = c->n_ck;
+        return;
+      }
+      dp_save_prefixes(c, p->prefix_client, mk, mkind, nm, learned);
+      st->n_ck = c->n_ck;
+      return;
+    }
     const uint32_t total = n_prompt + p->max_new;
     uint32_t *out = malloc((size_t)total * 4);
     if (!out) ie_die("gen_run: out of memory");
@@ -5581,9 +5713,10 @@ void gen_run(gen_ctx *c, const uint32_t *prompt, uint32_t n_prompt, const gen_pa
       }
     }
     uint32_t done = 0, hr = 0;
+    g_spec_first_emitted = 1;
     const uint32_t n = spec_generate(b, c->m, g, out, n_prompt, total, p->draft, -1, 0, first, hrow, sp, V, &st->gen_ms,
                                      &st->steps, &st->acc, p->pmin, &st->drafted,
-                                     dck.pending ? defer_ck_emit : p->emit, dck.pending ? (void *)&dck : p->ctx,
+                                     p->emit, p->ctx,
                                      p->stops, p->n_stops, &done, &hr);
     g_sam_p_cur = NULL;
     if (dck.pending) {

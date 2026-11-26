@@ -146,23 +146,25 @@ static inline __attribute__((always_inline)) void ink_r9_wt_row_q8_t8(
     if (ok_c) {
       const u32 bo_bytes = b_c << 5u;
       const G u8 *xj = xq_base;
-#pragma clang loop unroll(disable)
-      for (u32 j = 0u; j < tc; j++) {
-        const u32 ju = (u32)__builtin_amdgcn_readfirstlane((int)j);
-        const u32x4 xv0 = ink_r9_wt_ld4(xj + bo_bytes);
-        const u32x4 xv1 = ink_r9_wt_ld4(xj + bo_bytes + 16u);
-        const float da = ((const G float *)(xj + x_sc_off))[b_c];
-        const float term = (sw_c * da) * (float)ink_r9_wt_dot8(w0_c, w1_c, xv0, xv1);
-        if (ju == 0u) a0 = a0 + term;
-        else if (ju == 1u) a1 = a1 + term;
-        else if (ju == 2u) a2 = a2 + term;
-        else if (ju == 3u) a3 = a3 + term;
-        else if (ju == 4u) a4 = a4 + term;
-        else if (ju == 5u) a5 = a5 + term;
-        else if (ju == 6u) a6 = a6 + term;
-        else a7 = a7 + term;
-        xj += xs;
-      }
+#define INK_R9_WT_T8_STEP(IDX, ACC) do { \
+        if (tc > (IDX)) { \
+          const u32x4 xv0 = ink_r9_wt_ld4(xj + bo_bytes); \
+          const u32x4 xv1 = ink_r9_wt_ld4(xj + bo_bytes + 16u); \
+          const float da = ((const G float *)(xj + x_sc_off))[b_c]; \
+          const float term = (sw_c * da) * (float)ink_r9_wt_dot8(w0_c, w1_c, xv0, xv1); \
+          (ACC) = (ACC) + term; \
+          xj += xs; \
+        } \
+      } while (0)
+      INK_R9_WT_T8_STEP(0u, a0);
+      INK_R9_WT_T8_STEP(1u, a1);
+      INK_R9_WT_T8_STEP(2u, a2);
+      INK_R9_WT_T8_STEP(3u, a3);
+      INK_R9_WT_T8_STEP(4u, a4);
+      INK_R9_WT_T8_STEP(5u, a5);
+      INK_R9_WT_T8_STEP(6u, a6);
+      INK_R9_WT_T8_STEP(7u, a7);
+#undef INK_R9_WT_T8_STEP
     }
     __builtin_amdgcn_sched_barrier(0);
     b_c = b_n; ok_c = ok_n; w0_c = w0_n; w1_c = w1_n; sw_c = sw_n;

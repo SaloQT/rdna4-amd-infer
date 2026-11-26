@@ -49,7 +49,7 @@ GPU_CFLAGS="-x c -std=c11 -Wall -Wextra --target=amdgcn-amd-amdhsa -mcpu=$ARCH -
 # The attribute amdgpu_flat_work_group_size cannot be written in C, so the IR
 # gets it (Makefile): every kernel runs with 256 threads.
 SED_ATTR='/^attributes #[0-9]+ = \{.*"target-cpu"/ s/"target-cpu"/"amdgpu-flat-work-group-size"="256,256" "target-cpu"/'
-HOST_CFLAGS="-std=c11 -O2 -g -Wall -Wextra -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function -I$B"
+HOST_CFLAGS="-std=c11 -O3 -march=native -Wall -Wextra -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function -I$B"
 HOST_SRC="src/common.c src/gguf.c src/model.c src/plan.c src/cpu.c src/hip.c src/gen.c prof/sm_profiler.c src/main.c"
 
 [ -x "$LLVM_BIN/amdclang.exe" ] || {

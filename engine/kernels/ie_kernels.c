@@ -231,25 +231,35 @@ static inline float wave_max_pos(float v) {
 /* The sum of a wave, in every lane. */
 static inline float wave_sum_all(float v) { return I2F(__builtin_amdgcn_readlane(F2I(wave_tree_f(v)), 0)); }
 
+/* The wave maximum (any sign; v of every lane), in every lane: DPP inside
+ * each row of 16 (a lane past the row keeps its own value), then the two rows. */
+static inline float wave_max_any(float v) {
+  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x108, 0xF, 0xF, false)));
+  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x104, 0xF, 0xF, false)));
+  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x102, 0xF, 0xF, false)));
+  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x101, 0xF, 0xF, false)));
+  return __builtin_fmaxf(I2F(__builtin_amdgcn_readlane(F2I(v), 0)), I2F(__builtin_amdgcn_readlane(F2I(v), 16)));
+}
+
 /* Workgroup sum (all 256 threads); every thread gets the result. */
 static LDS float red_sum[8];
 static inline float wg_sum(float v) {
   v = wave_tree_f(v);
   if (lane() == 0u) red_sum[tid() >> 5] = v;
-  barrier();
+  lbarrier();
   float s = 0.0f;
   for (u32 w = 0; w < 8u; w++) s += red_sum[w];
-  barrier();
+  lbarrier();
   return s;
 }
 static LDS float red_max[8];
 static inline float wg_max(float v) {
-  for (u32 m = 16u; m >= 1u; m >>= 1) v = __builtin_fmaxf(v, shfl_xor_f(v, m));
+  v = wave_max_any(v);
   if (lane() == 0u) red_max[tid() >> 5] = v;
-  barrier();
+  lbarrier();
   float s = red_max[0];
   for (u32 w = 1; w < 8u; w++) s = __builtin_fmaxf(s, red_max[w]);
-  barrier();
+  lbarrier();
   return s;
 }
 
@@ -693,7 +703,7 @@ _Pragma("unroll") \
 _Pragma("unroll") \
     for (u32 q = 0; q < QR; q++) { \
       const u32 r = r0 + q < rows ? r0 + q : r0; /* a row past the end: row r0 again, not stored */ \
-      const u32x4 w4 = __builtin_nontemporal_load((const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb))); \
+      const u32x4 w4 = *(const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb)); \
       const u32 x4[4] = {w4.x, w4.y, w4.z, w4.w}; \
 _Pragma("unroll") \
       for (u32 k = 0; k < 4u; k++) wv[q][2u * k] = ie_q4k_lo(x4[k]), wv[q][2u * k + 1u] = ie_q4k_hi(x4[k]); /* once per block */ \
@@ -766,7 +776,7 @@ _Pragma("unroll") \
 _Pragma("unroll") \
     for (u32 q = 0; q < QR; q++) { \
       const u32 r = r0 + q < rows ? r0 + q : r0; /* a row past the end: row r0 again, not stored */ \
-      const u32x4 w4 = __builtin_nontemporal_load((const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb))); \
+      const u32x4 w4 = *(const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb)); \
       const u32 x4[4] = {w4.x, w4.y, w4.z, w4.w}; \
 _Pragma("unroll") \
       for (u32 k = 0; k < 4u; k++) wv[q][2u * k] = ie_q4k_lo(x4[k]), wv[q][2u * k + 1u] = ie_q4k_hi(x4[k]); /* once per block */ \
@@ -920,10 +930,10 @@ KERNEL ie_gemv_q6kq8(const G u32 *qw, const G u16 *qs, const G u8 *xq, G float *
     float s0[QR], s1[QR]; \
     _Pragma("unroll") for (u32 q = 0; q < QR; q++) { \
       const u32 r = r0 + q < rows ? r0 + q : r0; /* a row past the end: row r0 again, not stored */ \
-      const u32x4 w4 = __builtin_nontemporal_load((const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb))); \
+      const u32x4 w4 = *(const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb)); \
       const u32 x4[4] = {w4.x, w4.y, w4.z, w4.w}; \
       const u32 hb = ie_q6k_hw(rows, r, b, 0u, nb); \
-      const u32 hq[2] = {__builtin_nontemporal_load(qw + hb), __builtin_nontemporal_load(qw + hb + 1u)}; \
+      const u32 hq[2] = {qw[hb], qw[hb + 1u]}; \
       _Pragma("unroll") for (u32 hh = 0; hh < 2u; hh++) \
         _Pragma("unroll") for (u32 k = 0; k < 4u; k++) sv[q][hh][k] = ie_q6k_sw(x4[k], hq[hh], hh, k); \
       const u32 sc = qs[ie_q6k_sc(r, b, nb)]; \
@@ -1002,10 +1012,10 @@ KERNEL_HEAVY ie_gemv_q6kq8_tr8(const G u32 *qw, const G u16 *qs, const G u8 *xq,
     float s0[QR], s1[QR]; \
     _Pragma("unroll") for (u32 q = 0; q < QR; q++) { \
       const u32 r = r0 + q < rows ? r0 + q : r0; /* a row past the end: row r0 again, not stored */ \
-      const u32x4 w4 = __builtin_nontemporal_load((const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb))); \
+      const u32x4 w4 = *(const G u32x4 *)(qw + ie_q4_dst_word(r, b, 0u, nb)); \
       const u32 x4[4] = {w4.x, w4.y, w4.z, w4.w}; \
       const u32 hb = ie_q6k_hw(rows, r, b, 0u, nb); \
-      const u32 hq[2] = {__builtin_nontemporal_load(qw + hb), __builtin_nontemporal_load(qw + hb + 1u)}; \
+      const u32 hq[2] = {qw[hb], qw[hb + 1u]}; \
       _Pragma("unroll") for (u32 hh = 0; hh < 2u; hh++) \
         _Pragma("unroll") for (u32 k = 0; k < 4u; k++) sv[q][hh][k] = ie_q6k_sw(x4[k], hq[hh], hh, k); \
       const u32 sc = qs[ie_q6k_sc(r, b, nb)]; \
@@ -1223,7 +1233,7 @@ KERNEL ie_gemv_q8q8_ts(const G u32 *qw, const G f16 *qs, const G u8 *xq, G float
 #define GEMV_R 4u
 #endif
 #ifndef TR_NT
-#define TR_NT 1
+#define TR_NT 0
 #endif
 KERNEL_HEAVY ie_gemv_q8q8_tr(const G u32 *qw, const G f16 *qs, const G u8 *xq, G float *y, u32 rows, u32 nb,
                        const G float *bias, const G float *res, u32 T, u32 xs, u32 ys, u32 rs) {
@@ -1250,13 +1260,8 @@ KERNEL_HEAVY ie_gemv_q8q8_tr(const G u32 *qw, const G f16 *qs, const G u8 *xq, G
     for (u32 q = 0; q < GEMV_R; q++) {
       const u32 r = r0 + q < rows ? r0 + q : r0; /* a row past the end: row r0 again, not stored */
       const G u32 *wp = qw + ie_q8_dst_word(r, b, 0u, nb);
-      if (TR_NT) { /* weights are read once: keep them out of the caches the activations live in */
-        w0[q] = __builtin_nontemporal_load((const G u32x4 *)wp);
-        w1[q] = __builtin_nontemporal_load((const G u32x4 *)(wp + 4u));
-      } else {
-        w0[q] = *(const G u32x4 *)wp;
-        w1[q] = *(const G u32x4 *)(wp + 4u);
-      }
+      w0[q] = *(const G u32x4 *)wp;
+      w1[q] = *(const G u32x4 *)(wp + 4u);
       sw[q] = (float)qs[ie_q8_dst_scale(r, b, nb)];
     }
 #pragma unroll
@@ -1401,7 +1406,7 @@ KERNEL ie_gemm_q8(const G u32 *qw, const G f16 *qs, const G u8 *xq, G float *y, 
   } while (0)
   GM_FETCH(0u);
   GM_STORE(0u, 0u);
-  barrier();
+  lbarrier();
   u32 bf = 0;
   for (u32 kb0 = 0; kb0 < nb; kb0 += GM_KB) {
     const u32 nk = nb - kb0 < GM_KB ? nb - kb0 : GM_KB;
@@ -1447,12 +1452,12 @@ KERNEL ie_gemm_q8(const G u32 *qw, const G f16 *qs, const G u8 *xq, G float *y, 
     }
     if (GM_NBUF == 2u) {
       if (more) GM_STORE(bf ^ 1u, kb0 + GM_KB); /* the other buffer: nobody reads it in this chunk */
-      barrier();
+      lbarrier();
       bf ^= 1u;
     } else {
-      barrier(); /* the tiles are read before the next chunk overwrites them */
+      lbarrier(); /* the tiles are read before the next chunk overwrites them */
       if (more) GM_STORE(0u, kb0 + GM_KB);
-      barrier();
+      lbarrier();
     }
   }
 #pragma unroll
@@ -2551,7 +2556,7 @@ KERNEL ie_gemm_h(const G u32 *qw, const G f16 *qs, const G u8 *xq, G float *y, u
       *(LDSP h8 *)(gh_x + tk * GH_LS + pc * 16u) = lo;
       *(LDSP h8 *)(gh_x + tk * GH_LS + pc * 16u + 8u) = hi;
     }
-    barrier();
+    lbarrier();
     for (u32 ks = 0; ks < GH_K; ks += 16u) {
       h8 a[2], bb[2];
       for (u32 i = 0; i < 2u; i++) {
@@ -2561,7 +2566,7 @@ KERNEL ie_gemm_h(const G u32 *qw, const G f16 *qs, const G u8 *xq, G float *y, u
       for (u32 i = 0; i < 2u; i++)
         for (u32 j = 0; j < 2u; j++) acc[i][j] = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a[i], bb[j], acc[i][j]);
     }
-    barrier();
+    lbarrier();
   }
   for (u32 i = 0; i < 2u; i++)
     for (u32 j = 0; j < 2u; j++) {
@@ -2660,7 +2665,7 @@ KERNEL ie_gemm_f32_s(const G float *w, const G float *x, G float *y, u32 rows, u
       const u32 i = tid() + NT * n, t = i / GS_C, c = i % GS_C, tk = t0 + t < T ? t0 + t : T - 1u;
       gs_x[t][c] = c < nc ? ((const G float *)((const G u8 *)x + (unsigned long)tk * xs))[c0 + c] : 0.0f;
     }
-    barrier();
+    lbarrier();
 #pragma unroll
     for (u32 k = 0; k < GS_C / 32u; k++) {
       const u32 c = l + 32u * k;
@@ -2668,7 +2673,7 @@ KERNEL ie_gemm_f32_s(const G float *w, const G float *x, G float *y, u32 rows, u
 #pragma unroll
       for (u32 t = 0; t < GS_T; t++) acc[t] += wk * gs_x[t][c];
     }
-    barrier();
+    lbarrier();
   }
 #pragma unroll
   for (u32 t = 0; t < GS_T; t++) {
@@ -6449,15 +6454,6 @@ KERNEL ie_moe_sort(const G u32 *route, u32 rst, u32 T, u32 K, u32 n_exp, G u32 *
  * s_k / (sum of the K s + 1e-20) * scale, the sum in the order of the choice
  * (as moe_route in cpu.c). Lane l owns the experts l + 32 j (bit j of its
  * used mask); each round computes their sigmoids again; lane k keeps choice k. */
-/* The wave maximum (any sign; v of every lane), in every lane: DPP inside
- * each row of 16 (a lane past the row keeps its own value), then the two rows. */
-static inline float wave_max_any(float v) {
-  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x108, 0xF, 0xF, false)));
-  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x104, 0xF, 0xF, false)));
-  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x102, 0xF, 0xF, false)));
-  v = __builtin_fmaxf(v, I2F(__builtin_amdgcn_update_dpp(F2I(v), F2I(v), 0x101, 0xF, 0xF, false)));
-  return __builtin_fmaxf(I2F(__builtin_amdgcn_readlane(F2I(v), 0)), I2F(__builtin_amdgcn_readlane(F2I(v), 16)));
-}
 static inline u32 wave_min_u(u32 v) {
   u32 t;
   t = (u32)__builtin_amdgcn_update_dpp((int)v, (int)v, 0x108, 0xF, 0xF, false), v = t < v ? t : v;

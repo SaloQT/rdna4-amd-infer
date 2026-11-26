@@ -887,16 +887,22 @@ KERNEL ie_inkling_c1_sconv_vclip_glob_q4_store_r16(
       !va || !vv || !ring_v || !kc_q4 || !vc_q4)
     return;
 
+  const u32 ng = (u32)__builtin_amdgcn_readfirstlane((int)(__builtin_amdgcn_grid_size_x() / 256u));
+  const u32 g = (u32)__builtin_amdgcn_readfirstlane((int)wgid());
+  if (g >= 2u) return;
+  const u32 kv_beg = (ng >= 2u) ? g : 0u;
+  const u32 kv_end = (ng >= 2u) ? (g + 1u) : 2u;
+
   const u32 i4 = tid();
   const u32 i0 = i4 << 2u;
   const u32 h = (u32)__builtin_amdgcn_readfirstlane((int)(i4 >> 5u));
   const u32 l = lane();
   const u32 p0 = pos0 % kv_len;
 
-  /* Unified 2-pass loop (kv=0: K + L2 vclip + kc_q4, kv=1: V + RMSNorm vclip + vc_q4).
-   * Tap-by-tap exact non-FMA shortconv + serialized Q4 divider keeps <= 64 VGPR (4 WGs/CU). */
+  /* Parallel 2-WG (Grid=(2,1,1): WG0=K, WG1=V) or fallback 1-WG 2-pass loop.
+   * Hoist v_w loads once per kv; tap-by-tap exact non-FMA shortconv + serialized Q4 divider. */
 #pragma clang loop unroll(disable)
-  for (u32 kv = 0u; kv < 2u; kv++) {
+  for (u32 kv = kv_beg; kv < kv_end; kv++) {
     const G u8 *src_a = (const G u8 *)(kv == 0u ? ka : va);
     const G float *v_w = (kv == 0u) ? vk : vv;
     const G u8 *c_p = (const G u8 *)(kv == 0u ? ck : cv);
@@ -906,6 +912,13 @@ KERNEL ie_inkling_c1_sconv_vclip_glob_q4_store_r16(
     const u32 a_s = (kv == 0u) ? kas : vas;
     const u32 c_s = (kv == 0u) ? cks : cvs;
     const u32 do_rot = (rot_flags >> kv) & 1u;
+
+    const G f32x4 *v4 = (const G f32x4 *)v_w + i0;
+    const f32x4 vw0 = v4[0u], vw1 = v4[1u], vw2 = v4[2u], vw3 = v4[3u];
+    const f32x4 sw0 = {vw0.w, vw1.w, vw2.w, vw3.w};
+    const f32x4 sw1 = {vw0.z, vw1.z, vw2.z, vw3.z};
+    const f32x4 sw2 = {vw0.y, vw1.y, vw2.y, vw3.y};
+    const f32x4 sw3 = {vw0.x, vw1.x, vw2.x, vw3.x};
 
     u32 p = p0;
 #pragma clang loop unroll(disable)
@@ -938,16 +951,16 @@ KERNEL ie_inkling_c1_sconv_vclip_glob_q4_store_r16(
       f32x4 y;
       {
 #pragma clang fp contract(off)
-        const f32x4 w0 = ink_r16_c1_load_w_tap(v_w, i0, 3u, ct.x);
+        const f32x4 w0 = sw0 + (f32x4){ct.x, ct.x, ct.x, ct.x};
         y = x0 * w0;
         const f32x4 x1 = ink_r16_c1_load_tap(src_a, a_s, ring_p, i4, i0, pos0, i1);
-        const f32x4 w1 = ink_r16_c1_load_w_tap(v_w, i0, 2u, ct.y);
+        const f32x4 w1 = sw1 + (f32x4){ct.y, ct.y, ct.y, ct.y};
         y = y + x1 * w1;
         const f32x4 x2 = ink_r16_c1_load_tap(src_a, a_s, ring_p, i4, i0, pos0, i2);
-        const f32x4 w2 = ink_r16_c1_load_w_tap(v_w, i0, 1u, ct.z);
+        const f32x4 w2 = sw2 + (f32x4){ct.z, ct.z, ct.z, ct.z};
         y = y + x2 * w2;
         const f32x4 x3 = ink_r16_c1_load_tap(src_a, a_s, ring_p, i4, i0, pos0, i3);
-        const f32x4 w3 = ink_r16_c1_load_w_tap(v_w, i0, 0u, ct.w);
+        const f32x4 w3 = sw3 + (f32x4){ct.w, ct.w, ct.w, ct.w};
         y = y + x3 * w3;
         y = (x0 + y) * sc_escale;
       }

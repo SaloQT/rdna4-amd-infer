@@ -1451,6 +1451,8 @@ static inline __attribute__((always_inline)) void ink_r17_iq4_run_wj(
   for (u32 kb0 = 0u; kb0 < nb; kb0 += INK_R17_IQ4_KB) {
     const u32 kb_n = (u32)__builtin_amdgcn_readfirstlane((int)(kb0 + INK_R17_IQ4_KB));
     const int more = (kb_n < nb);
+    /* Force wa[0..1] ready before issuing rx0/rx1 so s_wait_loadcnt does not stall k=0 on rx0/rx1. */
+    __asm__ volatile("" : : "v"(wa[0]), "v"(wa[1]));
     if (more) {
       const G u8 *X_n = rq_ptr_u(X_u + (ink_r17_u64)kb_n * 32ull);
       if (ld_lo) rx0 = ink_r17_ld4(X_n + xoff0);

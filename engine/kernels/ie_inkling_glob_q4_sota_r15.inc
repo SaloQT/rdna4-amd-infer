@@ -170,11 +170,20 @@ static inline __attribute__((always_inline)) f32x4 ink_r15_deq4n_f4(u32 w16, u16
                  s * (float)((int)((w16 >> 12u) & 15u) - 8)};
 }
 
+/* Scalar wave-uniform load of 4xf16 Q4_0 scales (s_load_b64 via SGPR -> cuts VMEM loads 2x!). */
+static inline __attribute__((always_inline)) u16 ink_r15_ld_scale_sgpr(const G u8 *rec, u32 blk_l) {
+  const G u32 *sp = (const G u32 *)rq_ptr_u(rec + 64u);
+  const u32 s_lo = sp[0];
+  const u32 s_hi = sp[1];
+  const u32 sw = (blk_l & 2u) ? s_hi : s_lo;
+  return (u16)((blk_l & 1u) ? (sw >> 16u) : (sw & 0xFFFFu));
+}
+
 /* ============================================================================
  * 1. ie_inkling_rel_attn_ver_glob_q4_wmma_r15
  *    Single-pass T<=8 FP16 WMMA Global Q4_0+FWHT-128 Verify Attention +
  *    optional fused OP_GATE(sigmoid)+Q8_0.
- *    Grid: (n_kv * nsplit, 1, 1), NT=256, 15,360 B LDS, <= 120 VGPR (3 WG/CU).
+ *    Grid: (n_kv * nsplit, 1, 1), NT=256, 21,504 B LDS, <= 120 VGPR (3 WG/CU).
  *    Counter: count[kh] (1 per KV head, self-reset to 0 by last arriving WG).
  * ========================================================================== */
 
@@ -182,7 +191,7 @@ typedef union {
   struct {
     f16 q[32u * 128u] __attribute__((aligned(16)));         /* 8,192 B: 2x16 queries x 128 f16 (XOR-swizzled) */
     f16 r[32u * 16u] __attribute__((aligned(16)));          /* 1,024 B: 2x16 queries x 16 f16 (near-field R) */
-    f16 p_tile[2u][2u][256u] __attribute__((aligned(16)));  /* 2,048 B: double-buffered 2-pg 16x16 f16 P */
+    f16 p_tile[8u][2u][256u] __attribute__((aligned(16)));  /* 8,192 B: 8-slot 2-pg 16x16 f16 P (0 barriers in PV!) */
     union {
       u32 v_sc[8u][128u] __attribute__((aligned(16)));      /* 4,096 B: 8 waves x 512 B 0-conflict V^T / rb */
       struct {
@@ -190,18 +199,18 @@ typedef union {
         float ls[2u][128u];                                 /* 1,024 B: 2 pg x 8 waves x 16 queries sum */
       } red;
     } scratch;                                              /* 4,096 B */
-  } kv;                                                     /* 15,360 B */
+  } kv;                                                     /* 21,504 B */
   struct {
     float o_stg[8u][128u] __attribute__((aligned(16)));     /* 4,096 B: Phase-4 coalesced f32x4 staging */
     float m[32u];                                           /*   128 B: per-query split M (natural log) */
     float l[32u];                                           /*   128 B: per-query split L */
     float wt[8u][128u] __attribute__((aligned(16)));        /* 4,096 B: last-WG per-wave merge weights */
     u32   is_last;                                          /*     4 B */
-  } ph4;                                                    /* 8,452 B <= 15,360 B */
+  } ph4;                                                    /* 8,452 B <= 21,504 B */
 } ink_r15_gw_lds_t;
 
 static LDS ink_r15_gw_lds_t ink_r15_gw_lds __attribute__((aligned(16)));
-_Static_assert(sizeof(ink_r15_gw_lds_t) == 15360u, "ink_r15_gw_lds_t must be 15,360 B (<= 16 KiB)");
+_Static_assert(sizeof(ink_r15_gw_lds_t) == 21504u, "ink_r15_gw_lds_t must be 21,504 B (<= 21.5 KiB = 3 WG/CU)");
 
 static inline __attribute__((always_inline)) u32 ink_r15_gw_q_off(u32 row, u32 c8) {
   return (row << 7u) + ((c8 ^ (row & 15u)) << 3u);
@@ -540,7 +549,8 @@ KERNEL ie_inkling_rel_attn_ver_glob_q4_wmma_r15(
         }
       }
 
-      if (!far_chunk) lbarrier();
+      /* Synchronize prior chunk's Phase-3 v_sc / near-field before writing red.mx and p_tile[w]. */
+      lbarrier();
 
       /* 2-barrier online softmax across the 128-key chunk with conditional rescale skip! */
       float mx0 = sp0[0];
@@ -607,11 +617,10 @@ KERNEL ie_inkling_rel_attn_ver_glob_q4_wmma_r15(
         if (hl_s == 0u) ink_r15_gw_lds.kv.scratch.red.ls[1][(w << 4u) + rl_s] = lc1;
       }
 
+      /* All 8 waves publish ph0/ph1 once into 8-slot p_tile[w] (eliminates 7 barriers/chunk!). */
       const u32 p_off = ink_r15_gw_p_off(rl_s, hl_s);
-      if (w == 0u) {
-        *(LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[0][0] + p_off) = ph0;
-        if (npg > 1u) *(LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[0][1] + p_off) = ph1;
-      }
+      *(LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[w][0] + p_off) = ph0;
+      if (npg > 1u) *(LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[w][1] + p_off) = ph1;
       lbarrier();
 
       float sum_l0 = ink_r15_gw_lds.kv.scratch.red.ls[0][rl_s];
@@ -626,7 +635,7 @@ KERNEL ie_inkling_rel_attn_ver_glob_q4_wmma_r15(
       }
       lbarrier();
 
-      /* Phase 3: Double-buffered p_tile + raw Q4_0 V prefetch + 0-conflict V^T + WMMA PV. */
+      /* Phase 3: 8-slot p_tile + raw Q4_0 V prefetch + 0-conflict V^T + WMMA PV (0 barriers in loop!). */
       LDSP u32 *v_sc_w = ink_r15_gw_lds.kv.scratch.v_sc[w];
 #pragma clang loop unroll(disable)
       for (u32 kt = 0u; kt < 8u; kt++) {
@@ -647,18 +656,12 @@ KERNEL ie_inkling_rel_attn_ver_glob_q4_wmma_r15(
 
         const h8 vh = ink_r15_deq8n_h8(vq0, (float)__builtin_bit_cast(f16, vs0));
         const h8 vt_a = ink_r15_gw_v_transpose(vh, v_sc_w, hl_s, rl_s);
-        const h8 pt0 = *(const LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[kt & 1u][0] + p_off);
+        const h8 pt0 = *(const LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[kt][0] + p_off);
         acc0 = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vt_a, pt0, acc0);
         if (npg > 1u) {
-          const h8 pt1 = *(const LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[kt & 1u][1] + p_off);
+          const h8 pt1 = *(const LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[kt][1] + p_off);
           acc1 = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vt_a, pt1, acc1);
         }
-
-        if (has_nxt && w == kt + 1u) {
-          *(LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[(kt + 1u) & 1u][0] + p_off) = ph0;
-          if (npg > 1u) *(LDSP h8 *)(ink_r15_gw_lds.kv.p_tile[(kt + 1u) & 1u][1] + p_off) = ph1;
-        }
-        lbarrier();
         vq0 = vq_n;
         vs0 = vs_n;
       }
@@ -867,9 +870,9 @@ KERNEL ie_inkling_rel_attn_dec_glob_q4_fast_r15(
       const G u8 *rk1 = rk0 + 8ull * row_step;
       const G u8 *rv1 = rv0 + 8ull * row_step;
       u32 kq0 = (u32)((const G u16 *)rk0)[l], vq0 = (u32)((const G u16 *)rv0)[l];
-      u16 ks0 = ((const G u16 *)(rk0 + 64u))[blk_l], vs0 = ((const G u16 *)(rv0 + 64u))[blk_l];
+      u16 ks0 = ink_r15_ld_scale_sgpr(rk0, blk_l), vs0 = ink_r15_ld_scale_sgpr(rv0, blk_l);
       u32 kq1 = (u32)((const G u16 *)rk1)[l], vq1 = (u32)((const G u16 *)rv1)[l];
-      u16 ks1 = ((const G u16 *)(rk1 + 64u))[blk_l], vs1 = ((const G u16 *)(rv1 + 64u))[blk_l];
+      u16 ks1 = ink_r15_ld_scale_sgpr(rk1, blk_l), vs1 = ink_r15_ld_scale_sgpr(rv1, blk_l);
 
 #pragma clang loop unroll(disable)
       for (;;) {
@@ -881,16 +884,16 @@ KERNEL ie_inkling_rel_attn_dec_glob_q4_fast_r15(
           const G u8 *nrk0 = kc_h + (ink_r15_u64)kp_n0 * row_step;
           const G u8 *nrv0 = vc_h + (ink_r15_u64)kp_n0 * row_step;
           nkq0 = (u32)((const G u16 *)nrk0)[l];
-          nks0 = ((const G u16 *)(nrk0 + 64u))[blk_l];
+          nks0 = ink_r15_ld_scale_sgpr(nrk0, blk_l);
           nvq0 = (u32)((const G u16 *)nrv0)[l];
-          nvs0 = ((const G u16 *)(nrv0 + 64u))[blk_l];
+          nvs0 = ink_r15_ld_scale_sgpr(nrv0, blk_l);
           if (kp_n1 < p_far) {
             const G u8 *nrk1 = nrk0 + 8ull * row_step;
             const G u8 *nrv1 = nrv0 + 8ull * row_step;
             nkq1 = (u32)((const G u16 *)nrk1)[l];
-            nks1 = ((const G u16 *)(nrk1 + 64u))[blk_l];
+            nks1 = ink_r15_ld_scale_sgpr(nrk1, blk_l);
             nvq1 = (u32)((const G u16 *)nrv1)[l];
-            nvs1 = ((const G u16 *)(nrv1 + 64u))[blk_l];
+            nvs1 = ink_r15_ld_scale_sgpr(nrv1, blk_l);
           }
         }
         __builtin_amdgcn_sched_barrier(0);
@@ -910,7 +913,7 @@ KERNEL ie_inkling_rel_attn_dec_glob_q4_fast_r15(
       const G u8 *rk0 = kc_h + (ink_r15_u64)kp * row_step;
       const G u8 *rv0 = vc_h + (ink_r15_u64)kp * row_step;
       const u32 kq0 = (u32)((const G u16 *)rk0)[l], vq0 = (u32)((const G u16 *)rv0)[l];
-      const u16 ks0 = ((const G u16 *)(rk0 + 64u))[blk_l], vs0 = ((const G u16 *)(rv0 + 64u))[blk_l];
+      const u16 ks0 = ink_r15_ld_scale_sgpr(rk0, blk_l), vs0 = ink_r15_ld_scale_sgpr(rv0, blk_l);
       INK_R15_DEC_PROC_FAR(kq0, ks0, vq0, vs0);
     }
   }

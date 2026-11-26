@@ -188,23 +188,27 @@ static inline __attribute__((always_inline)) u32 ink_r16_er_grid_barrier(
         __scoped_atomic_store_n(&sync[1u], next_sense, __ATOMIC_RELAXED, __MEMORY_SCOPE_DEVICE);
       } else {
         const ink_r16_er_u64 t0 = (ink_r16_er_u64)__builtin_amdgcn_s_sendmsg_rtnl(0x83);
-        for (;;) {
+        for (u32 spin = 0u; ; spin++) {
           const u32 cur = __scoped_atomic_load_n(&sync[1u], __ATOMIC_RELAXED, __MEMORY_SCOPE_DEVICE);
           if ((int)(cur - next_sense) >= 0) break;
           if (__scoped_atomic_load_n(&sync[2u], __ATOMIC_RELAXED, __MEMORY_SCOPE_DEVICE) != 0u) {
             poisoned = 1u;
             break;
           }
-          const ink_r16_er_u64 now = (ink_r16_er_u64)__builtin_amdgcn_s_sendmsg_rtnl(0x83);
-          if ((now - t0) > bar_lim || (now - k_t0) > krn_lim) {
-            __scoped_atomic_fetch_or(&sync[2u], 1u, __ATOMIC_RELAXED, __MEMORY_SCOPE_DEVICE);
-            poisoned = 1u;
-            break;
+          if ((spin & 15u) == 15u) {
+            const ink_r16_er_u64 now = (ink_r16_er_u64)__builtin_amdgcn_s_sendmsg_rtnl(0x83);
+            if ((now - t0) > bar_lim || (now - k_t0) > krn_lim) {
+              __scoped_atomic_fetch_or(&sync[2u], 1u, __ATOMIC_RELAXED, __MEMORY_SCOPE_DEVICE);
+              poisoned = 1u;
+              break;
+            }
           }
           __builtin_amdgcn_s_sleep(2);
         }
-        const ink_r16_er_u64 dt_k = ((ink_r16_er_u64)__builtin_amdgcn_s_sendmsg_rtnl(0x83) - t0) / 1000ull;
+#ifdef IE_INK_ER_TRACE
+        const ink_r16_er_u64 dt_k = ((ink_r16_er_u64)__builtin_amdgcn_s_sendmsg_rtnl(0x83) - t0) >> 10u;
         __scoped_atomic_fetch_max(&sync[3u], (u32)dt_k, __ATOMIC_RELAXED, __MEMORY_SCOPE_DEVICE);
+#endif
       }
     }
     *lds_poison = poisoned;
@@ -941,7 +945,7 @@ typedef union {
   struct {
     f16 q[32u * 128u] __attribute__((aligned(16)));
     f16 r[32u * 16u] __attribute__((aligned(16)));
-    f16 p_tile[2u][2u][256u] __attribute__((aligned(16)));
+    f16 p_tile[8u][2u][256u] __attribute__((aligned(16)));
     union {
       u32 v_sc[8u][128u] __attribute__((aligned(16)));
       struct {
@@ -960,7 +964,7 @@ typedef union {
 } ink_r16_er_sw_lds_t;
 
 static LDS ink_r16_er_sw_lds_t ink_r16_er_sw_lds __attribute__((aligned(16)));
-_Static_assert(sizeof(ink_r16_er_sw_lds_t) == 15360u, "ink_r16_er_sw_lds_t must be 15,360 B");
+_Static_assert(sizeof(ink_r16_er_sw_lds_t) == 21504u, "ink_r16_er_sw_lds_t must be 21,504 B (<= 21.5 KiB = 3 WGs/CU)");
 
 static inline __attribute__((always_inline)) u32 ink_r16_er_sw_q_off(u32 row, u32 c8) {
   return row * 128u + 8u * (c8 ^ (row & 15u));
@@ -1280,8 +1284,10 @@ KERNEL ie_inkling_rel_attn_ver_swa_wmma_exact_r16(
 #pragma unroll
       for (u32 x = 1u; x < 8u; x++) mc0 = __builtin_fmaxf(mc0, ink_r16_er_sw_lds.kv.scratch.red.mx[0][16u * x + rl]);
       const float mn0 = __builtin_fmaxf(m0, mc0);
-      const float rs0 = (ls0 > 0.0f && mn0 > -1e30f) ? __builtin_amdgcn_exp2f(m0 - mn0) : 0.0f;
-      acc0 *= rs0; ls0 *= rs0; m0 = mn0;
+      if (mn0 != m0) {
+        const float rs0 = (ls0 > 0.0f && mn0 > -1e30f) ? __builtin_amdgcn_exp2f(m0 - mn0) : 0.0f;
+        acc0 *= rs0; ls0 *= rs0; m0 = mn0;
+      }
 
       h8 ph0 = (h8)(0.0f);
       float lc0 = 0.0f;
@@ -1302,8 +1308,10 @@ KERNEL ie_inkling_rel_attn_ver_swa_wmma_exact_r16(
 #pragma unroll
         for (u32 x = 1u; x < 8u; x++) mc1 = __builtin_fmaxf(mc1, ink_r16_er_sw_lds.kv.scratch.red.mx[1][16u * x + rl]);
         const float mn1 = __builtin_fmaxf(m1, mc1);
-        const float rs1 = (ls1 > 0.0f && mn1 > -1e30f) ? __builtin_amdgcn_exp2f(m1 - mn1) : 0.0f;
-        acc1 *= rs1; ls1 *= rs1; m1 = mn1;
+        if (mn1 != m1) {
+          const float rs1 = (ls1 > 0.0f && mn1 > -1e30f) ? __builtin_amdgcn_exp2f(m1 - mn1) : 0.0f;
+          acc1 *= rs1; ls1 *= rs1; m1 = mn1;
+        }
 
         float lc1 = 0.0f;
         if (mn1 > -1e30f) {
@@ -1318,10 +1326,9 @@ KERNEL ie_inkling_rel_attn_ver_swa_wmma_exact_r16(
         if (hl == 0u) ink_r16_er_sw_lds.kv.scratch.red.ls[1][16u * w + rl] = lc1;
       }
 
-      if (w == 0u) {
-        *(LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[0][0] + p_off) = ph0;
-        if (npg > 1u) *(LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[0][1] + p_off) = ph1;
-      }
+      /* All 8 waves publish ph0/ph1 once into 8-slot p_tile[w] (eliminates 8 barriers/chunk in Phase 3!). */
+      *(LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[w][0] + p_off) = ph0;
+      if (npg > 1u) *(LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[w][1] + p_off) = ph1;
       lbarrier();
 
       float sum_l0 = ink_r16_er_sw_lds.kv.scratch.red.ls[0][rl];
@@ -1352,18 +1359,12 @@ KERNEL ie_inkling_rel_attn_ver_swa_wmma_exact_r16(
         __builtin_amdgcn_sched_barrier(0);
 
         const h8 vt_a = ink_r16_er_sw_v_transpose(vr0, v_sc_w, hl, rl);
-        const h8 pt0 = *(const LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[kt & 1u][0] + p_off);
+        const h8 pt0 = *(const LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[kt][0] + p_off);
         acc0 = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vt_a, pt0, acc0);
         if (npg > 1u) {
-          const h8 pt1 = *(const LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[kt & 1u][1] + p_off);
+          const h8 pt1 = *(const LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[kt][1] + p_off);
           acc1 = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(vt_a, pt1, acc1);
         }
-
-        if (has_nxt && w == kt + 1u) {
-          *(LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[(kt + 1u) & 1u][0] + p_off) = ph0;
-          if (npg > 1u) *(LDSP h8 *)(ink_r16_er_sw_lds.kv.p_tile[(kt + 1u) & 1u][1] + p_off) = ph1;
-        }
-        lbarrier();
         vr0 = vr_nxt;
       }
     }

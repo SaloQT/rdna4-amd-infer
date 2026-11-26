@@ -73,6 +73,10 @@ static inline __attribute__((always_inline)) float ink_r7_fh_cap(float v, float 
   return (cap > 0.0f) ? (cap * ie_tanhf_s(v / cap)) : v;
 }
 
+static inline __attribute__((always_inline)) float ink_r7_fh_cap_inv(float v, float cap, float inv_cap) {
+  return (cap > 0.0f) ? (cap * ie_tanhf_s(v * inv_cap)) : v;
+}
+
 static inline __attribute__((always_inline)) int ink_r7_fh_better(float v, u32 i, float bv, u32 bi) {
   return (v > bv) || (v == bv && i < bi);
 }
@@ -820,11 +824,12 @@ KERNEL ie_inkling_ds_cap_sample_idmap_zsync_r7(
 
   /* Mode A: Greedy (temp <= 0.0f) with canonical id_map[s] tie-breaking! */
   if (temp <= 0.0f) {
+    const float inv_cap = (cap > 0.0f) ? (1.0f / cap) : 0.0f;
     float bv = -__builtin_inff();
     u32 bi = 0xFFFFFFFFu;
     float se = 0.0f;
     for (u32 s = g * NT + t; s < n_act; s += ng * NT) {
-      const float fv = ink_r7_fh_cap(logits[s], cap);
+      const float fv = ink_r7_fh_cap_inv(logits[s], cap, inv_cap);
       const u32 tok = id_map ? id_map[s] : s;
       if (fv > bv) {
         se = se * __builtin_expf(bv - fv) + 1.0f;
@@ -903,16 +908,16 @@ KERNEL ie_inkling_ds_cap_sample_idmap_zsync_r7(
     const u32 base = i0 + (vidx << 2u);
     if (vidx < nvec && base + 4u <= n_act) {
       const f32x4 v4 = ((const G struct ink_r7_fh_f32x4p *)(logits + base))->v;
-      rv[4u * q + 0u] = ink_r7_fh_cap(v4.x, cap);
-      rv[4u * q + 1u] = ink_r7_fh_cap(v4.y, cap);
-      rv[4u * q + 2u] = ink_r7_fh_cap(v4.z, cap);
-      rv[4u * q + 3u] = ink_r7_fh_cap(v4.w, cap);
+      rv[4u * q + 0u] = v4.x;
+      rv[4u * q + 1u] = v4.y;
+      rv[4u * q + 2u] = v4.z;
+      rv[4u * q + 3u] = v4.w;
       in_bounds |= (0xFu << (4u * q));
     } else if (vidx < nvec && base < n_act) {
 #pragma unroll
       for (u32 e = 0u; e < 4u; e++) {
         const u32 ok = (base + e < n_act);
-        rv[4u * q + e] = ok ? ink_r7_fh_cap(logits[base + e], cap) : -__builtin_inff();
+        rv[4u * q + e] = ok ? logits[base + e] : -__builtin_inff();
         if (ok) in_bounds |= (1u << (4u * q + e));
       }
     } else {
@@ -998,7 +1003,7 @@ KERNEL ie_inkling_ds_cap_sample_idmap_zsync_r7(
             if (m4 & (1u << e)) {
               if (off < need) {
                 const u32 sl = base + e;
-                const float val = ink_r7_fh_cap(logits[sl], cap);
+                const float val = logits[sl];
                 const u32 tok = id_map ? id_map[sl] : sl;
                 if (ng > 1u) { seg_v[total_gt + off] = val; seg_i[total_gt + off] = tok; }
                 else { ink_r7_fh_dlds.fv[total_gt + off] = val; ink_r7_fh_dlds.fi[total_gt + off] = tok; }
@@ -1172,9 +1177,11 @@ KERNEL ie_inkling_ds_cap_sample_idmap_zsync_r7(
   if (t < 32u) {
     const u32 c = t;
     const u32 ci = (c < K) ? ink_r7_fh_dlds.fi[c] : 0xFFFFFFFFu;
-    const float cv = (c < K) ? ink_r7_fh_dlds.fv[c] : -__builtin_inff();
-    const float v0 = ink_r7_fh_dlds.fv[0u];
-    const u32 valid = (c < K && ci != 0xFFFFFFFFu && cv == cv && v0 == v0) ? 1u : 0u;
+    const float cv_raw = (c < K) ? ink_r7_fh_dlds.fv[c] : -__builtin_inff();
+    const float v0_raw = ink_r7_fh_dlds.fv[0u];
+    const u32 valid = (c < K && ci != 0xFFFFFFFFu && cv_raw == cv_raw && v0_raw == v0_raw) ? 1u : 0u;
+    const float cv = valid ? ink_r7_fh_cap(cv_raw, cap) : -__builtin_inff();
+    const float v0 = (v0_raw == v0_raw) ? ink_r7_fh_cap(v0_raw, cap) : v0_raw;
 
     const float wc = valid ? __builtin_expf((cv - v0) / temp) : 0.0f;
     const float z = wave_sum_all(wc);

@@ -563,40 +563,43 @@ static inline __attribute__((always_inline)) float ink_r6_4c_pn_wg_sum_1b(float 
   return s;
 }
 
-/* Exact quant_wave that broadcasts the already-quantized block to 1..4 Q8_0 destinations. */
+/* Exact quant_wave that broadcasts the already-quantized block to 1..4 Q8_0 destinations
+ * using packed 32-bit global_store_b32 writes (4x fewer store ops vs byte stores). */
 static inline __attribute__((always_inline)) void ink_r6_4c_quant_wave_n(
     float v, u32 b, G u8 *d0, G u8 *d1, G u8 *d2, G u8 *d3, u32 n_dst, u32 nb_tot) {
   const u32 j = lane();
   const float amax = wave_max_pos(__builtin_fabsf(v));
   const float d = amax / 127.0f;
   const int qi = d != 0.0f ? (int)__builtin_roundf(v / d) : 0;
-  const i8 qb = (i8)qi;
+  const u32 b0 = (u32)(u8)(i8)qi;
+  const u32 p2 = b0 | ((u32)shl_i((int)b0, 1) << 8u);
+  const u32 p4 = p2 | ((u32)shl_i((int)p2, 2) << 16u);
   const u32 s = wave_tree_u((u32)qi);
-  const u32 q_off = b * 32u + j;
+  const u32 q_off4 = b * 8u + (j >> 2u);
   const u32 d_off = 32u * nb_tot;
   const u32 s_off = 36u * nb_tot;
 
-  ((G i8 *)d0)[q_off] = qb;
+  if ((j & 3u) == 0u) ((G u32 *)d0)[q_off4] = p4;
   if (j == 0u) {
     ((G float *)(d0 + d_off))[b] = d;
     ((G u32 *)(d0 + s_off))[b] = s;
   }
   if (n_dst > 1u && d1) {
-    ((G i8 *)d1)[q_off] = qb;
+    if ((j & 3u) == 0u) ((G u32 *)d1)[q_off4] = p4;
     if (j == 0u) {
       ((G float *)(d1 + d_off))[b] = d;
       ((G u32 *)(d1 + s_off))[b] = s;
     }
   }
   if (n_dst > 2u && d2) {
-    ((G i8 *)d2)[q_off] = qb;
+    if ((j & 3u) == 0u) ((G u32 *)d2)[q_off4] = p4;
     if (j == 0u) {
       ((G float *)(d2 + d_off))[b] = d;
       ((G u32 *)(d2 + s_off))[b] = s;
     }
   }
   if (n_dst > 3u && d3) {
-    ((G i8 *)d3)[q_off] = qb;
+    if ((j & 3u) == 0u) ((G u32 *)d3)[q_off4] = p4;
     if (j == 0u) {
       ((G float *)(d3 + d_off))[b] = d;
       ((G u32 *)(d3 + s_off))[b] = s;

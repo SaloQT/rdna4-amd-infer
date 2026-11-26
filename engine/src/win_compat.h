@@ -83,8 +83,9 @@ static int ie_win_munmap(void *p) { return UnmapViewOfFile(p) ? 0 : -1; }
 /* MinGW's clock_gettime resolves to clock_gettime64, which the import libs do
  * not export. Same semantics from QPC. */
 static int ie_win_clock_gettime(struct timespec *ts) {
-  LARGE_INTEGER f, c;
-  if (!QueryPerformanceFrequency(&f) || !QueryPerformanceFrequency(&f)) return -1;
+  static LARGE_INTEGER f;
+  LARGE_INTEGER c;
+  if (!f.QuadPart && !QueryPerformanceFrequency(&f)) return -1;
   QueryPerformanceCounter(&c);
   ts->tv_sec = (time_t)(c.QuadPart / f.QuadPart);
   ts->tv_nsec = (long)((c.QuadPart % f.QuadPart) * 1000000000LL / f.QuadPart);

@@ -91,6 +91,10 @@ struct vision_ctx {
   /* LRU cache of encoded images */
   vis_cache_ent cache[VIS_CACHE_N];
   uint64_t tick;
+#ifdef _WIN32
+  IWICImagingFactory *wic_fac;
+  int wic_co;
+#endif
 };
 
 static size_t align256(size_t x) { return (x + 255u) & ~(size_t)255u; }
@@ -453,6 +457,10 @@ vision_ctx *vision_open(const char *mmproj_path, const char *hsaco_hint, uint32_
 
 void vision_close(vision_ctx *vc) {
   if (!vc) return;
+#ifdef _WIN32
+  if (vc->wic_fac) IWICImagingFactory_Release(vc->wic_fac);
+  if (vc->wic_co) CoUninitialize();
+#endif
   for (int i = 0; i < VIS_CACHE_N; i++) free(vc->cache[i].embd);
   for (int i = 0; i < 2; i++) {
     if (vc->ev_h2d[i]) gpu_vis_event_destroy(vc->ev_h2d[i]);
@@ -569,30 +577,27 @@ int vision_validate_url(const char *url, size_t len, char *err, size_t errn) {
 }
 
 #ifdef _WIN32
-static uint8_t *decode_image_rgb(const uint8_t *data, size_t nbytes, uint32_t *ow, uint32_t *oh, char *err, size_t errn) {
-  HRESULT hr_co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-  const int did_co = (hr_co == S_OK || hr_co == S_FALSE);
-  IWICImagingFactory *fac = NULL;
+static uint8_t *decode_image_rgb(vision_ctx *vc, const uint8_t *data, size_t nbytes, uint32_t *ow, uint32_t *oh, char *err, size_t errn) {
+  if (nbytes > 0xFFFFFFFFu) { snprintf(err, errn, "image too large for WIC"); return NULL; }
+  if (!vc->wic_fac) {
+    HRESULT hr_co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    vc->wic_co = (hr_co == S_OK || hr_co == S_FALSE);
+    HRESULT hr_f = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&vc->wic_fac);
+    if (FAILED(hr_f)) { snprintf(err, errn, "WIC init failed (0x%lx)", (unsigned long)hr_f); return NULL; }
+  }
+  IWICImagingFactory *fac = vc->wic_fac;
   IWICBitmapDecoder *dec = NULL;
   IWICBitmapFrameDecode *frm = NULL;
   IWICFormatConverter *conv = NULL;
-  IStream *stm = NULL;
-  HGLOBAL hmem = NULL;
+  IWICStream *stm = NULL;
   uint8_t *rgb = NULL;
 
-  HRESULT hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&fac);
-  if (FAILED(hr)) { snprintf(err, errn, "WIC init failed (0x%lx)", (unsigned long)hr); goto done; }
+  HRESULT hr = IWICImagingFactory_CreateStream(fac, &stm);
+  if (FAILED(hr)) { snprintf(err, errn, "WIC CreateStream failed"); goto done; }
+  hr = IWICStream_InitializeFromMemory(stm, (BYTE *)(uintptr_t)data, (DWORD)nbytes);
+  if (FAILED(hr)) { snprintf(err, errn, "WIC InitializeFromMemory failed"); goto done; }
 
-  hmem = GlobalAlloc(GMEM_MOVEABLE, nbytes);
-  if (!hmem) { snprintf(err, errn, "out of memory decoding image"); goto done; }
-  void *mp = GlobalLock(hmem);
-  memcpy(mp, data, nbytes);
-  GlobalUnlock(hmem);
-  hr = CreateStreamOnHGlobal(hmem, TRUE, &stm);
-  if (FAILED(hr)) { GlobalFree(hmem); snprintf(err, errn, "WIC stream failed"); goto done; }
-  hmem = NULL; /* owned by stm */
-
-  hr = IWICImagingFactory_CreateDecoderFromStream(fac, stm, NULL, WICDecodeMetadataCacheOnDemand, &dec);
+  hr = IWICImagingFactory_CreateDecoderFromStream(fac, (IStream *)stm, NULL, WICDecodeMetadataCacheOnDemand, &dec);
   if (FAILED(hr)) { snprintf(err, errn, "WIC cannot decode image (0x%lx)", (unsigned long)hr); goto done; }
   hr = IWICBitmapDecoder_GetFrame(dec, 0, &frm);
   if (FAILED(hr)) { snprintf(err, errn, "WIC GetFrame failed"); goto done; }
@@ -616,14 +621,12 @@ done:
   if (conv) IWICFormatConverter_Release(conv);
   if (frm) IWICBitmapFrameDecode_Release(frm);
   if (dec) IWICBitmapDecoder_Release(dec);
-  if (stm) IStream_Release(stm);
-  if (fac) IWICImagingFactory_Release(fac);
-  if (did_co) CoUninitialize();
+  if (stm) IWICStream_Release(stm);
   return rgb;
 }
 #else
-static uint8_t *decode_image_rgb(const uint8_t *data, size_t nbytes, uint32_t *ow, uint32_t *oh, char *err, size_t errn) {
-  (void)data; (void)nbytes; (void)ow; (void)oh;
+static uint8_t *decode_image_rgb(vision_ctx *vc, const uint8_t *data, size_t nbytes, uint32_t *ow, uint32_t *oh, char *err, size_t errn) {
+  (void)vc; (void)data; (void)nbytes; (void)ow; (void)oh;
   snprintf(err, errn, "image decoding requires Windows WIC");
   return NULL;
 }
@@ -672,29 +675,39 @@ static uint8_t *resize_rgb_bicubic(const uint8_t *rgb, uint32_t iw, uint32_t ih,
   if (!tmp) ie_die("vision: out of memory");
   const float sx = (float)iw / (float)ow;
   const float sy = (float)ih / (float)oh;
+  int *px_lut = malloc((size_t)ow * 4u * sizeof(int));
+  float *wx_lut = malloc((size_t)ow * 4u * sizeof(float));
+  if (!px_lut || !wx_lut) ie_die("vision: out of memory");
+  for (uint32_t x = 0; x < ow; x++) {
+    const float cx = ((float)x + 0.5f) * sx - 0.5f;
+    const int ix = (int)floorf(cx);
+    float ws = 0.0f;
+    for (int k = 0; k < 4; k++) {
+      int px = ix + k - 1;
+      if (px < 0) px = 0;
+      if (px >= (int)iw) px = (int)iw - 1;
+      px_lut[x * 4u + k] = px * 3;
+      const float w = cubic_w(cx - (float)(ix + k - 1));
+      wx_lut[x * 4u + k] = w;
+      ws += w;
+    }
+    const float inv = ws != 0.0f ? 1.0f / ws : 1.0f;
+    for (int k = 0; k < 4; k++) wx_lut[x * 4u + k] *= inv;
+  }
   for (uint32_t y = 0; y < ih; y++) {
     const uint8_t *row = rgb + (size_t)y * iw * 3u;
     float *dst = tmp + (size_t)y * ow * 3u;
     for (uint32_t x = 0; x < ow; x++) {
-      const float cx = ((float)x + 0.5f) * sx - 0.5f;
-      const int ix = (int)floorf(cx);
-      float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, ws = 0.0f;
-      for (int k = -1; k <= 2; k++) {
-        int px = ix + k;
-        if (px < 0) px = 0;
-        if (px >= (int)iw) px = (int)iw - 1;
-        const float w = cubic_w(cx - (float)(ix + k));
-        ws += w;
-        s0 += w * (float)row[px * 3 + 0];
-        s1 += w * (float)row[px * 3 + 1];
-        s2 += w * (float)row[px * 3 + 2];
-      }
-      const float inv = ws != 0.0f ? 1.0f / ws : 1.0f;
-      dst[x * 3u + 0] = s0 * inv;
-      dst[x * 3u + 1] = s1 * inv;
-      dst[x * 3u + 2] = s2 * inv;
+      const int *px = px_lut + (size_t)x * 4u;
+      const float *wx = wx_lut + (size_t)x * 4u;
+      const uint8_t *p0 = row + px[0], *p1 = row + px[1], *p2 = row + px[2], *p3 = row + px[3];
+      dst[x * 3u + 0] = wx[0] * (float)p0[0] + wx[1] * (float)p1[0] + wx[2] * (float)p2[0] + wx[3] * (float)p3[0];
+      dst[x * 3u + 1] = wx[0] * (float)p0[1] + wx[1] * (float)p1[1] + wx[2] * (float)p2[1] + wx[3] * (float)p3[1];
+      dst[x * 3u + 2] = wx[0] * (float)p0[2] + wx[1] * (float)p1[2] + wx[2] * (float)p2[2] + wx[3] * (float)p3[2];
     }
   }
+  free(px_lut);
+  free(wx_lut);
   for (uint32_t y = 0; y < oh; y++) {
     const float cy = ((float)y + 0.5f) * sy - 0.5f;
     const int iy = (int)floorf(cy);
@@ -748,29 +761,39 @@ static float *resize_and_norm(const uint8_t *rgb, uint32_t iw, uint32_t ih, uint
   if (!tmp) ie_die("vision: out of memory");
   const float sx = (float)iw / (float)ow;
   const float sy = (float)ih / (float)oh;
+  int *px_lut = malloc((size_t)ow * 4u * sizeof(int));
+  float *wx_lut = malloc((size_t)ow * 4u * sizeof(float));
+  if (!px_lut || !wx_lut) ie_die("vision: out of memory");
+  for (uint32_t x = 0; x < ow; x++) {
+    const float cx = ((float)x + 0.5f) * sx - 0.5f;
+    const int ix = (int)floorf(cx);
+    float ws = 0.0f;
+    for (int k = 0; k < 4; k++) {
+      int px = ix + k - 1;
+      if (px < 0) px = 0;
+      if (px >= (int)iw) px = (int)iw - 1;
+      px_lut[x * 4u + k] = px * 3;
+      const float w = cubic_w(cx - (float)(ix + k - 1));
+      wx_lut[x * 4u + k] = w;
+      ws += w;
+    }
+    const float inv = ws != 0.0f ? 1.0f / ws : 1.0f;
+    for (int k = 0; k < 4; k++) wx_lut[x * 4u + k] *= inv;
+  }
   for (uint32_t y = 0; y < ih; y++) {
     const uint8_t *row = rgb + (size_t)y * iw * 3u;
     float *dst = tmp + (size_t)y * ow * 3u;
     for (uint32_t x = 0; x < ow; x++) {
-      const float cx = ((float)x + 0.5f) * sx - 0.5f;
-      const int ix = (int)floorf(cx);
-      float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, ws = 0.0f;
-      for (int k = -1; k <= 2; k++) {
-        int px = ix + k;
-        if (px < 0) px = 0;
-        if (px >= (int)iw) px = (int)iw - 1;
-        const float w = cubic_w(cx - (float)(ix + k));
-        ws += w;
-        s0 += w * (float)row[px * 3 + 0];
-        s1 += w * (float)row[px * 3 + 1];
-        s2 += w * (float)row[px * 3 + 2];
-      }
-      const float inv = ws != 0.0f ? 1.0f / ws : 1.0f;
-      dst[x * 3u + 0] = s0 * inv;
-      dst[x * 3u + 1] = s1 * inv;
-      dst[x * 3u + 2] = s2 * inv;
+      const int *px = px_lut + (size_t)x * 4u;
+      const float *wx = wx_lut + (size_t)x * 4u;
+      const uint8_t *p0 = row + px[0], *p1 = row + px[1], *p2 = row + px[2], *p3 = row + px[3];
+      dst[x * 3u + 0] = wx[0] * (float)p0[0] + wx[1] * (float)p1[0] + wx[2] * (float)p2[0] + wx[3] * (float)p3[0];
+      dst[x * 3u + 1] = wx[0] * (float)p0[1] + wx[1] * (float)p1[1] + wx[2] * (float)p2[1] + wx[3] * (float)p3[1];
+      dst[x * 3u + 2] = wx[0] * (float)p0[2] + wx[1] * (float)p1[2] + wx[2] * (float)p2[2] + wx[3] * (float)p3[2];
     }
   }
+  free(px_lut);
+  free(wx_lut);
   /* Vertical pass -> clamped [0, 255] -> normalized CHW */
   const size_t plane = (size_t)ow * oh;
   for (uint32_t y = 0; y < oh; y++) {
@@ -1835,7 +1858,7 @@ int vision_encode_f32(vision_ctx *vc, const float *rgb_chw, uint32_t w, uint32_t
   out->nx = nx;
   out->ny = ny;
   out->proj_dim = vc->proj_dim;
-  out->hash = fnv1a64(embd, (size_t)n_tok * vc->proj_dim * 4u);
+  out->hash = 0;
   out->owned = 1;
   return 1;
 }
@@ -1846,17 +1869,13 @@ int vision_encode_url(vision_ctx *vc, const char *url, size_t len, vision_emb *o
     vis_cache_ent *e = &vc->cache[i];
     if (e->embd && e->hash == h && e->url_len == len) {
       e->used = ++vc->tick;
-      const size_t bytes = (size_t)e->n_tok * e->proj_dim * 4u;
-      float *cp = malloc(bytes);
-      if (!cp) ie_die("vision: out of memory");
-      memcpy(cp, e->embd, bytes);
-      out->embd = cp;
+      out->embd = e->embd;
       out->n_tok = e->n_tok;
       out->nx = e->nx;
       out->ny = e->ny;
       out->proj_dim = e->proj_dim;
       out->hash = e->hash;
-      out->owned = 1;
+      out->owned = 0;
       fprintf(stderr, "vision: cache hit (%ux%u grid, %u tokens)\n", e->nx, e->ny, e->n_tok);
       return 1;
     }
@@ -1865,7 +1884,7 @@ int vision_encode_url(vision_ctx *vc, const char *url, size_t len, vision_emb *o
   uint8_t *raw = url_to_bytes(url, len, &raw_n, err, errn);
   if (!raw) return 0;
   uint32_t iw = 0, ih = 0;
-  uint8_t *rgb = decode_image_rgb(raw, raw_n, &iw, &ih, err, errn);
+  uint8_t *rgb = decode_image_rgb(vc, raw, raw_n, &iw, &ih, err, errn);
   free(raw);
   if (!rgb) return 0;
 

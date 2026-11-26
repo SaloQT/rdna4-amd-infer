@@ -5,7 +5,7 @@
 
 CC      ?= gcc
 CXX     ?= g++
-CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function
+CFLAGS  ?= -std=c11 -O3 -march=native -Wall -Wextra -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Wno-unused-function
 LDLIBS  = -lm -ldl
 PYTHON  ?= python3
 
