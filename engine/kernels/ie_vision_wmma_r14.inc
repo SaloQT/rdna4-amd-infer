@@ -868,13 +868,13 @@ static inline __attribute__((always_inline)) vis_r14_h8 vis_r14_rope_h8_cs(
 
 static inline __attribute__((always_inline)) void vis_r14_attn_load_kv_r18(
     const G f16 *k_base, const G f16 *v_base, const G float *rope_cs,
-    vis_r14_u64 row_stride, u32 k0, u32 N_pos, u32 gw, int check_bounds, u32 buf) {
+    vis_r14_u64 row_stride, u32 k0, u32 N_pos, u32 gw, int check_bounds, u32 buf, const int k_rot) {
   u32 t = tid();
   __asm__ volatile("" : "+v"(t));
   const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(t >> 5u));
   const u32 l = t & 31u;
 
-  /* Load K[64, 64] -> apply precomputed 2D Axial RoPE -> 0-conflict lds[buf].k */
+  /* Load K[64, 64] -> apply precomputed 2D Axial RoPE (k_rot: the rows hold it already) -> 0-conflict lds[buf].k */
   const u32 rk = t >> 2u;
   const u32 qk = t & 3u;
   const u32 gk = k0 + rk;
@@ -885,7 +885,7 @@ static inline __attribute__((always_inline)) void vis_r14_attn_load_kv_r18(
     const G f16 *kp = k_base + (vis_r14_u64)gk * row_stride + (qk << 4u);
     k_lo = *(const G vis_r14_h8 *)(kp + 0u);
     k_hi = *(const G vis_r14_h8 *)(kp + 8u);
-    if (gw > 0u && gk > 0u) {
+    if (!k_rot && gw > 0u && gk > 0u) {
       if (rope_cs) {
         const G float *csp = rope_cs + (vis_r14_u64)gk * 64ull + (qk << 4u);
         k_lo = vis_r14_rope_h8_cs(k_lo, csp + 0u, 1.0f);
@@ -972,9 +972,9 @@ static inline __attribute__((always_inline)) void vis_r14_attn_step16_r18(
   *ls_io = ls;
 }
 
-KERNEL ie_vis_attn_wmma_hd64_r18(
+static inline __attribute__((always_inline)) void vis_r14_attn_run_r18(
     const G f16 *qkv, G f16 *out, u32 N_pos, u32 nh, u32 gw, float scale,
-    const G float *rope_cs) {
+    const G float *rope_cs, const int k_rot) {
   if (N_pos == 0u || nh == 0u) return;
 
   const u32 q_wg = (u32)__builtin_amdgcn_readfirstlane((int)(wgid_x() << 7u));
@@ -1040,7 +1040,7 @@ KERNEL ie_vis_attn_wmma_hd64_r18(
 
   u32 buf = 0u;
   if (N_pos >= 64u) {
-    vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, 0u, N_pos, gw, 0, 0u);
+    vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, 0u, N_pos, gw, 0, 0u, k_rot);
     lbarrier();
     u32 k0 = 0u;
 #pragma clang loop unroll(disable)
@@ -1053,11 +1053,11 @@ KERNEL ie_vis_attn_wmma_hd64_r18(
       const u32 kn = k0 + 64u;
       if (kn + 64u <= N_pos) {
         buf ^= 1u;
-        vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, kn, N_pos, gw, 0, buf);
+        vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, kn, N_pos, gw, 0, buf, k_rot);
         lbarrier();
       } else if (kn < N_pos) {
         buf ^= 1u;
-        vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, kn, N_pos, gw, 1, buf);
+        vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, kn, N_pos, gw, 1, buf, k_rot);
         lbarrier();
       }
     }
@@ -1071,7 +1071,7 @@ KERNEL ie_vis_attn_wmma_hd64_r18(
     }
   } else {
     const u32 nkb = (N_pos + 15u) >> 4u;
-    vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, 0u, N_pos, gw, 1, 0u);
+    vis_r14_attn_load_kv_r18(k_base, v_base, rope_cs, row_stride, 0u, N_pos, gw, 1, 0u, k_rot);
     lbarrier();
 #pragma clang loop unroll(disable)
     for (u32 kb16 = 0u; kb16 < nkb; kb16++) {
@@ -1093,6 +1093,51 @@ KERNEL ie_vis_attn_wmma_hd64_r18(
           (f16)ov[4], (f16)ov[5], (f16)ov[6], (f16)ov[7]};
     }
   }
+}
+
+KERNEL ie_vis_attn_wmma_hd64_r18(
+    const G f16 *qkv, G f16 *out, u32 N_pos, u32 nh, u32 gw, float scale,
+    const G float *rope_cs) {
+  vis_r14_attn_run_r18(qkv, out, N_pos, nh, gw, scale, rope_cs, 0);
+}
+
+/* ============================================================================
+ * Kernel 3d: ie_vis_rope_k_r18
+ *   Rotates the K third of qkv [N_pos, 3 * D] in place with the 2D-RoPE table,
+ *   once per layer, for ie_vis_attn_wmma_hd64_krot_r18. The attention kernel
+ *   stages every K tile in each of its ((N_pos + 127) / 128) * nh workgroups:
+ *   rotating there repeats the work per workgroup and reads 2 bytes of table
+ *   per byte of K. One thread per 16 dims of one head of one position, with the
+ *   expression of the attention kernel (vis_r14_rope_h8_cs), so the f16 values
+ *   are the same. Position 0 (CLS) is not rotated.
+ *   Grid: ((N_pos * nh * 4 + 255) / 256, 1, 1), Block: (256, 1, 1)
+ * ========================================================================== */
+KERNEL ie_vis_rope_k_r18(G f16 *qkv, u32 N_pos, u32 nh, const G float *rope_cs) {
+  const u32 nq = nh << 2u;
+  const u32 idx = wgid_x() * NT + tid();
+  const u32 p = idx / nq;
+  if (p == 0u || p >= N_pos) return;
+  const u32 hq = idx - p * nq; /* head * 4 + quarter */
+  const u32 qk = hq & 3u;
+  const u32 D = nh << 6u;
+  G f16 *kp = qkv + (vis_r14_u64)p * (vis_r14_u64)(3u * D) + (vis_r14_u64)D + (hq << 4u);
+  const G float *csp = rope_cs + (vis_r14_u64)p * 64ull + (qk << 4u);
+  const vis_r14_h8 k_lo = vis_r14_rope_h8_cs(*(const G vis_r14_h8 *)(kp + 0u), csp + 0u, 1.0f);
+  const vis_r14_h8 k_hi = vis_r14_rope_h8_cs(*(const G vis_r14_h8 *)(kp + 8u), csp + 8u, 1.0f);
+  *(G vis_r14_h8 *)(kp + 0u) = k_lo;
+  *(G vis_r14_h8 *)(kp + 8u) = k_hi;
+}
+
+/* ============================================================================
+ * Kernel 3e: ie_vis_attn_wmma_hd64_krot_r18
+ *   ie_vis_attn_wmma_hd64_r18 for K rows that ie_vis_rope_k_r18 rotated: K is
+ *   staged as stored (Q is still rotated here, once per query).
+ *   Grid:  ((N_pos + 127) / 128, nh, 1), Block: (256, 1, 1)
+ * ========================================================================== */
+KERNEL ie_vis_attn_wmma_hd64_krot_r18(
+    const G f16 *qkv, G f16 *out, u32 N_pos, u32 nh, u32 gw, float scale,
+    const G float *rope_cs) {
+  vis_r14_attn_run_r18(qkv, out, N_pos, nh, gw, scale, rope_cs, 1);
 }
 
 /* ============================================================================
