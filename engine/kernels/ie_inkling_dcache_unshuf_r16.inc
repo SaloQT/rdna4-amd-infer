@@ -62,28 +62,60 @@ KERNEL ie_inkling_dcache_unshuf_q4_r16(
     const G u8 *scl_hi,
     G u8 *dst,
     unsigned long long n_rec) {
+  static LDS u8 ink_r16_dc_q4_lds[4608u] __attribute__((aligned(16)));
   if (!nib_plane || !scl_lo || !dst || n_rec == 0ull) return;
 
   const u32 t = tid();
   const u32 rec_loc = t >> 2u;
   const u32 sub = t & 3u;
-  const unsigned long long rec = (unsigned long long)wgid() * 64ull + (unsigned long long)rec_loc;
-  if (rec >= n_rec) return;
-
-  const unsigned long long nib_off = (rec << 6u) + ((unsigned long long)sub << 4u);
-  const unsigned long long dst_rec = rec * 72ull;
+  const unsigned long long wg_rec0 = (unsigned long long)wgid() * 64ull;
   const unsigned long long ptr_or =
       (unsigned long long)(unsigned long)nib_plane |
       (unsigned long long)(unsigned long)scl_lo |
       (unsigned long long)(unsigned long)scl_hi |
       (unsigned long long)(unsigned long)dst;
 
+  /* Full 64-record aligned WG fast path: stage 64 records (4,608 B) in LDS
+   * using all 256 threads for nibbles and 64 contiguous threads (2 full waves,
+   * 0% lane divergence) for scales, then stream 288 contiguous 128-bit stores. */
+  if (wg_rec0 + 64ull <= n_rec && (ptr_or & 3ull) == 0ull) {
+    const unsigned long long nib_off = ((wg_rec0 + (unsigned long long)rec_loc) << 6u) + ((unsigned long long)sub << 4u);
+    const ink_r16_dc_u32x4_a4 nib = *(const G ink_r16_dc_u32x4_a4 *)(nib_plane + nib_off);
+    *(LDSP ink_r16_dc_u32x4_a4 *)(ink_r16_dc_q4_lds + rec_loc * 72u + (sub << 4u)) = nib;
+
+    if (t < 64u) {
+      const unsigned long long r_s = wg_rec0 + (unsigned long long)t;
+      ink_r16_dc_u32x2_a4 s8;
+      if (scl_hi) {
+        const u32 lo32 = *(const G u32 *)(scl_lo + (r_s << 2u));
+        const u32 hi32 = *(const G u32 *)(scl_hi + (r_s << 2u));
+        s8.x = __builtin_amdgcn_perm(hi32, lo32, 0x05010400u);
+        s8.y = __builtin_amdgcn_perm(hi32, lo32, 0x07030602u);
+      } else {
+        s8 = *(const G ink_r16_dc_u32x2_a4 *)(scl_lo + (r_s << 3u));
+      }
+      *(LDSP ink_r16_dc_u32x2_a4 *)(ink_r16_dc_q4_lds + t * 72u + 64u) = s8;
+    }
+    lbarrier();
+
+    G ink_r16_dc_u32x4_a4 *d16 = (G ink_r16_dc_u32x4_a4 *)(dst + wg_rec0 * 72ull);
+    const LDSP ink_r16_dc_u32x4_a4 *s16 = (const LDSP ink_r16_dc_u32x4_a4 *)ink_r16_dc_q4_lds;
+    d16[t] = s16[t];
+    if (t < 32u) d16[256u + t] = s16[256u + t];
+    return;
+  }
+
+  const unsigned long long rec = wg_rec0 + (unsigned long long)rec_loc;
+  if (rec >= n_rec) return;
+
+  const unsigned long long nib_off = (rec << 6u) + ((unsigned long long)sub << 4u);
+  const unsigned long long dst_rec = rec * 72ull;
+
   if ((ptr_or & 3ull) == 0ull) {
-    /* 100% coalesced 16-B nibble copy: 32 lanes read 512 contiguous bytes. */
+    /* Partial tail WG aligned fast path. */
     const ink_r16_dc_u32x4_a4 nib = *(const G ink_r16_dc_u32x4_a4 *)(nib_plane + nib_off);
     *(G ink_r16_dc_u32x4_a4 *)(dst + dst_rec + ((unsigned long long)sub << 4u)) = nib;
 
-    /* Scale re-interleave (lane sub == 0 handles bytes [64..71] of each 72 B record). */
     if (sub == 0u) {
       ink_r16_dc_u32x2_a4 s8;
       if (scl_hi) {
@@ -133,8 +165,13 @@ KERNEL ie_inkling_dcache_unshuf_f16_r16(
     unsigned long long n_elems) {
   if (!lo_bytes || !hi_bytes || !dst || n_elems == 0ull) return;
 
+  /* 2x unrolled 16 elems/thread via even WGs (128-bit lo/hi loads + 2x 128-bit
+   * stores per thread, preserving exact Grid=((n_elems+2047)>>11, 1, 1) ABI). */
+  const u32 wg = wgid();
+  if ((wg & 1u) != 0u) return;
+
   const unsigned long long base =
-      ((unsigned long long)wgid() * (unsigned long long)NT + (unsigned long long)tid()) << 3u;
+      ((unsigned long long)wg * 2048ull) + ((unsigned long long)tid() << 4u);
   if (base >= n_elems) return;
 
   const unsigned long long ptr_or =
@@ -142,20 +179,26 @@ KERNEL ie_inkling_dcache_unshuf_f16_r16(
       (unsigned long long)(unsigned long)hi_bytes |
       (unsigned long long)(unsigned long)dst;
 
-  if ((ptr_or & 3ull) == 0ull && base + 8ull <= n_elems) {
-    const ink_r16_dc_u32x2_a4 lo = *(const G ink_r16_dc_u32x2_a4 *)(lo_bytes + base);
-    const ink_r16_dc_u32x2_a4 hi = *(const G ink_r16_dc_u32x2_a4 *)(hi_bytes + base);
+  if ((ptr_or & 3ull) == 0ull && base + 16ull <= n_elems) {
+    const ink_r16_dc_u32x4_a4 lo = *(const G ink_r16_dc_u32x4_a4 *)(lo_bytes + base);
+    const ink_r16_dc_u32x4_a4 hi = *(const G ink_r16_dc_u32x4_a4 *)(hi_bytes + base);
     const u32 p0 = __builtin_amdgcn_perm(hi.x, lo.x, 0x05010400u);
     const u32 p1 = __builtin_amdgcn_perm(hi.x, lo.x, 0x07030602u);
     const u32 p2 = __builtin_amdgcn_perm(hi.y, lo.y, 0x05010400u);
     const u32 p3 = __builtin_amdgcn_perm(hi.y, lo.y, 0x07030602u);
-    *(G ink_r16_dc_u32x4_a4 *)((G u8 *)dst + (base << 1u)) = (ink_r16_dc_u32x4_a4){p0, p1, p2, p3};
+    const u32 p4 = __builtin_amdgcn_perm(hi.z, lo.z, 0x05010400u);
+    const u32 p5 = __builtin_amdgcn_perm(hi.z, lo.z, 0x07030602u);
+    const u32 p6 = __builtin_amdgcn_perm(hi.w, lo.w, 0x05010400u);
+    const u32 p7 = __builtin_amdgcn_perm(hi.w, lo.w, 0x07030602u);
+    G ink_r16_dc_u32x4_a4 *d16 = (G ink_r16_dc_u32x4_a4 *)((G u8 *)dst + (base << 1u));
+    d16[0u] = (ink_r16_dc_u32x4_a4){p0, p1, p2, p3};
+    d16[1u] = (ink_r16_dc_u32x4_a4){p4, p5, p6, p7};
     return;
   }
 
-  /* Exact scalar fallback for tail (< 8 elems) or unaligned pointers. */
+  /* Exact scalar fallback for tail (< 16 elems) or unaligned pointers. */
   const unsigned long long rem = n_elems - base;
-  const u32 cnt = (rem < 8ull) ? (u32)rem : 8u;
+  const u32 cnt = (rem < 16ull) ? (u32)rem : 16u;
   for (u32 k = 0u; k < cnt; k++) {
     const u32 lo_b = (u32)lo_bytes[base + (unsigned long long)k];
     const u32 hi_b = (u32)hi_bytes[base + (unsigned long long)k];
