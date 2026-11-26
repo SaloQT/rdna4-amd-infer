@@ -756,6 +756,8 @@ static inline __attribute__((always_inline)) void ink_r7_gw_merge_head(
   ((G f32x4 *)dst_h)[l] = acc * inv;
 }
 
+/* Capped at 120 VGPRs (12 waves per SIMD): unconstrained it takes 121, one over the boundary. */
+__attribute__((amdgpu_waves_per_eu(12, 16)))
 KERNEL ie_inkling_rel_attn_ver_glob_wmma_r7(const G float *q, const G kvt *kc, const G kvt *vc,
                                             const G float *R, const G float *rel_bias, const G float *sink,
                                             G float *part, G float *out, u32 pos0, u32 T, u32 kv_len, u32 hd,
