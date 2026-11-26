@@ -234,69 +234,20 @@ typedef struct {
 static LDS ink_r17_vd_ds_qkv_lds_t ink_r17_vd_ds_lds __attribute__((aligned(16)));
 _Static_assert(sizeof(ink_r17_vd_ds_qkv_lds_t) == 14848u, "ink_r17_vd_ds_qkv_lds_t must be 14,848 B (<= 16 KiB)");
 
-KERNEL ie_inkling_ds_qkv_rope_q4k_r17(
-    const G u32 *wq0, const G u16 *wq1, const G u32 *wk0, const G u16 *wk1,
-    const G u32 *wv0, const G u16 *wv1, const G u8 *xq,
-    const G float *q_norm, const G float *k_norm,
-    const G float *cs, const G float *sn,
-    G float *q_out, G float *k_out, G float *v_out,
-    u32 nh, u32 nkv, u32 hd, u32 nrot, u32 nb, u32 B,
-    u32 xqs, u32 qs, u32 kvs, float eps) {
+/* 4 passes x 32 rows = all 128 rows of head h across bt <= 4 tokens (exact Q4_K order).
+ * use_lds_x is a literal at each call site. Chosen inside the token loop instead, the LDS and
+ * global activation loads share destination registers, and the compiler then drains the next
+ * super-block's weight prefetch before the first dot of every super-block. */
+static inline __attribute__((always_inline)) void ink_r17_vd_ds_qkv_passes(
+    const int use_lds_x, const G u32 *qw, const G u16 *qm, const G u8 *xq_t0, G float *v_out,
+    const u32 mat_rows, const u32 head_r0, const u32 nb, const u32 bt, const u32 xqs, const u32 kvs,
+    const u32 t0, const int is_v, const u32 row_in_pass, const u32 sub) {
 #pragma clang fp contract(off)
-  const u32 g = wgid();
-  const u32 t0 = tokid() << 2u;
-  if (g >= nh + 2u * nkv || t0 >= B || hd != INK_R17_VD_HD || nrot > INK_R17_VD_HD ||
-      (nrot & 1u) != 0u || nb == 0u || (nb & 7u) != 0u || !xq)
-    return;
-
-  const u32 bt = (B - t0 < 4u) ? (B - t0) : 4u;
-  const int is_v = (g >= nh + nkv);
-  const int is_k = (!is_v && g >= nh);
-  const u32 h = is_v ? (g - nh - nkv) : (is_k ? (g - nh) : g);
-  const u32 mat_rows = is_v ? (nkv * hd) : (is_k ? (nkv * hd) : (nh * hd));
-  const G u32 *qw = is_v ? wv0 : (is_k ? wk0 : wq0);
-  const G u16 *qm = is_v ? wv1 : (is_k ? wk1 : wq1);
-  if (!qw || !qm) return;
-  if (is_v) {
-    if (!v_out) return;
-  } else {
-    if (!(is_k ? k_out : q_out) || !(is_k ? k_norm : q_norm)) return;
-    if (nrot > 0u && (!cs || !sn)) return;
-  }
-
-  const u32 th = tid();
-  const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(th >> 5u));
-  const u32 l = lane();
-  const u32 sub = l & 7u;
-  const u32 row_in_pass = (w << 2u) + (l >> 3u); /* 0..31 */
-  const u32 head_r0 = h * INK_R17_VD_HD;
   const u32 nsb = nb >> 3u;
   const u32 da_base = nb << 5u;
   const u32 as_base = nb * 36u;
-
-  const G u8 *xq_t0 = xq + (ink_r17_vd_u64)t0 * (ink_r17_vd_u64)xqs;
-  const int use_lds_x = (nb <= INK_R17_VD_DS_MAXNB);
-
-  /* Cooperatively stage bt <= 4 Q8_0 tokens into LDS once for all 4 row passes. */
-  if (use_lds_x) {
-    const u32 n_v4 = nb << 1u;
-#pragma clang loop unroll(disable)
-    for (u32 j = 0u; j < bt; j++) {
-      const G u8 *xj = xq_t0 + (ink_r17_vd_u64)j * (ink_r17_vd_u64)xqs;
-      for (u32 idx = th; idx < n_v4; idx += NT) {
-        ((LDSP u32x4 *)ink_r17_vd_ds_lds.xq_i8[j])[idx] = ink_r17_vd_ld4(xj + ((ink_r17_vd_u64)idx << 4u));
-      }
-      for (u32 idx = th; idx < nb; idx += NT) {
-        ink_r17_vd_ds_lds.xq_da[j][idx] = ((const G float *)(xj + da_base))[idx];
-        ink_r17_vd_ds_lds.xq_as[j][idx] = (int)((const G u32 *)(xj + as_base))[idx];
-      }
-    }
-    lbarrier();
-  }
-
   const G u32 *dd_base = (const G u32 *)(qm + (ink_r17_vd_u64)mat_rows * (ink_r17_vd_u64)nb);
 
-  /* 4 passes x 32 rows = all 128 rows of head h across bt <= 4 tokens (exact Q4_K order). */
 #pragma clang loop unroll(disable)
   for (u32 pass = 0u; pass < 4u; pass++) {
     const u32 loc_r = (pass << 5u) + row_in_pass; /* 0..127 */
@@ -400,6 +351,70 @@ KERNEL ie_inkling_ds_qkv_rope_q4k_r17(
         }
       }
     }
+  }
+}
+
+KERNEL ie_inkling_ds_qkv_rope_q4k_r17(
+    const G u32 *wq0, const G u16 *wq1, const G u32 *wk0, const G u16 *wk1,
+    const G u32 *wv0, const G u16 *wv1, const G u8 *xq,
+    const G float *q_norm, const G float *k_norm,
+    const G float *cs, const G float *sn,
+    G float *q_out, G float *k_out, G float *v_out,
+    u32 nh, u32 nkv, u32 hd, u32 nrot, u32 nb, u32 B,
+    u32 xqs, u32 qs, u32 kvs, float eps) {
+#pragma clang fp contract(off)
+  const u32 g = wgid();
+  const u32 t0 = tokid() << 2u;
+  if (g >= nh + 2u * nkv || t0 >= B || hd != INK_R17_VD_HD || nrot > INK_R17_VD_HD ||
+      (nrot & 1u) != 0u || nb == 0u || (nb & 7u) != 0u || !xq)
+    return;
+
+  const u32 bt = (B - t0 < 4u) ? (B - t0) : 4u;
+  const int is_v = (g >= nh + nkv);
+  const int is_k = (!is_v && g >= nh);
+  const u32 h = is_v ? (g - nh - nkv) : (is_k ? (g - nh) : g);
+  const u32 mat_rows = is_v ? (nkv * hd) : (is_k ? (nkv * hd) : (nh * hd));
+  const G u32 *qw = is_v ? wv0 : (is_k ? wk0 : wq0);
+  const G u16 *qm = is_v ? wv1 : (is_k ? wk1 : wq1);
+  if (!qw || !qm) return;
+  if (is_v) {
+    if (!v_out) return;
+  } else {
+    if (!(is_k ? k_out : q_out) || !(is_k ? k_norm : q_norm)) return;
+    if (nrot > 0u && (!cs || !sn)) return;
+  }
+
+  const u32 th = tid();
+  const u32 w = (u32)__builtin_amdgcn_readfirstlane((int)(th >> 5u));
+  const u32 l = lane();
+  const u32 sub = l & 7u;
+  const u32 row_in_pass = (w << 2u) + (l >> 3u); /* 0..31 */
+  const u32 head_r0 = h * INK_R17_VD_HD;
+
+  const G u8 *xq_t0 = xq + (ink_r17_vd_u64)t0 * (ink_r17_vd_u64)xqs;
+
+  if (nb <= INK_R17_VD_DS_MAXNB) {
+    /* Cooperatively stage bt <= 4 Q8_0 tokens into LDS once for all 4 row passes. */
+    const u32 n_v4 = nb << 1u;
+    const u32 da_base = nb << 5u;
+    const u32 as_base = nb * 36u;
+#pragma clang loop unroll(disable)
+    for (u32 j = 0u; j < bt; j++) {
+      const G u8 *xj = xq_t0 + (ink_r17_vd_u64)j * (ink_r17_vd_u64)xqs;
+      for (u32 idx = th; idx < n_v4; idx += NT) {
+        ((LDSP u32x4 *)ink_r17_vd_ds_lds.xq_i8[j])[idx] = ink_r17_vd_ld4(xj + ((ink_r17_vd_u64)idx << 4u));
+      }
+      for (u32 idx = th; idx < nb; idx += NT) {
+        ink_r17_vd_ds_lds.xq_da[j][idx] = ((const G float *)(xj + da_base))[idx];
+        ink_r17_vd_ds_lds.xq_as[j][idx] = (int)((const G u32 *)(xj + as_base))[idx];
+      }
+    }
+    lbarrier();
+    ink_r17_vd_ds_qkv_passes(1, qw, qm, xq_t0, v_out, mat_rows, head_r0, nb, bt, xqs, kvs, t0, is_v,
+                             row_in_pass, sub);
+  } else {
+    ink_r17_vd_ds_qkv_passes(0, qw, qm, xq_t0, v_out, mat_rows, head_r0, nb, bt, xqs, kvs, t0, is_v,
+                             row_in_pass, sub);
   }
 
   if (is_v) return;
