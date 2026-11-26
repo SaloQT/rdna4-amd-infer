@@ -24,19 +24,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RX 9070 XT Local LLM Benchmarks (RDNA4 / gfx1201): Inkling-2-Mini &amp; Saluki-27B | rdna4-amd-infer</title>
-<meta name="description" content="AMD Radeon RX 9070 XT (RDNA4 / gfx1201) C11 LLM inference engine with 258 custom AMDGPU kernels (171 zero-spill Inkling-2-Mini + 81 Saluki-27B + 6 ViT). No ROCm install on Windows. Up to 256K context + DSpark in 16GB VRAM.">
+<meta name="description" content="AMD Radeon RX 9070 XT (RDNA4 / gfx1201) C11 LLM inference engine with 315 custom AMDGPU kernels (218 zero-spill Inkling-2-Mini + 81 Saluki-27B + 16 ViT). No ROCm install on Windows. Up to 256K context + DSpark in 16GB VRAM.">
 <meta name="keywords" content="RX 9070 XT LLM, AMD RDNA4 LLM, gfx1201, Inkling-2-Mini 26B IQ3_XXS benchmark, Qwen3.8 27B 16GB VRAM, Saluki 27B IQ2-mix, local LLM Windows no ROCm, GGUF inference engine, DSpark speculative decoding, AMDGPU WMMA, wave32 kernels, 256K context 16GB">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://saloqt.github.io/rdna4-amd-infer/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="rdna4-amd-infer">
 <meta property="og:title" content="RX 9070 XT Local LLM Engine (RDNA4 / gfx1201): Inkling-2-Mini IQ3_XXS &amp; Saluki-27B IQ2-mix">
-<meta property="og:description" content="258 custom AMDGPU kernels for AMD RX 9070 XT (16GB VRAM). Pure C11, no Windows ROCm install, 52-round Inkling-2-Mini telemetry (6,135 tok/s 4K prefill, 256K context + DSpark) and Saluki-27B benchmarks.">
+<meta property="og:description" content="315 custom AMDGPU kernels for AMD RX 9070 XT (16GB VRAM). Pure C11, no Windows ROCm install, 89-round Inkling-2-Mini telemetry (6,135 tok/s 4K prefill, 256K context + DSpark) and Saluki-27B benchmarks.">
 <meta property="og:url" content="https://saloqt.github.io/rdna4-amd-infer/">
 <meta property="og:image" content="https://saloqt.github.io/rdna4-amd-infer/progress-chart.svg">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="rdna4-amd-infer: RX 9070 XT (RDNA4) Local LLM Engine &amp; 52-Round Telemetry">
-<meta name="twitter:description" content="258 custom gfx1201 kernels on RX 9070 XT 16GB Windows: Inkling-2-Mini IQ3_XXS (6,135 tok/s prefill, 256K ctx + DSpark) and Saluki-27B IQ2-mix benchmarks. No system ROCm required.">
+<meta name="twitter:title" content="rdna4-amd-infer: RX 9070 XT (RDNA4) Local LLM Engine &amp; 89-Round Telemetry">
+<meta name="twitter:description" content="315 custom gfx1201 kernels on RX 9070 XT 16GB Windows: Inkling-2-Mini IQ3_XXS (6,135 tok/s prefill, 256K ctx + DSpark) and Saluki-27B IQ2-mix benchmarks. No system ROCm required.">
 <meta name="twitter:image" content="https://saloqt.github.io/rdna4-amd-infer/progress-chart.svg">
 <script type="application/ld+json">
 {
@@ -45,7 +45,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     {
       "@type": "SoftwareSourceCode",
       "name": "rdna4-amd-infer",
-      "description": "Pure C11 + AMDGPU gfx1201 local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4) with 258 custom kernels, DSpark/MTP speculative decoding, 256K context in 16GB VRAM, and no system ROCm install required on Windows.",
+      "description": "Pure C11 + AMDGPU gfx1201 local LLM inference engine for AMD Radeon RX 9070 XT (RDNA4) with 315 custom kernels, DSpark/MTP speculative decoding, 256K context in 16GB VRAM, and no system ROCm install required on Windows.",
       "url": "https://saloqt.github.io/rdna4-amd-infer/",
       "codeRepository": "https://github.com/SaloQT/rdna4-amd-infer",
       "programmingLanguage": ["C", "AMDGPU Assembly", "Python"],
@@ -69,7 +69,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           "name": "How fast does Inkling-2-Mini (26B IQ3_XXS) run on an AMD RX 9070 XT 16GB?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "On a single RX 9070 XT 16GB on Windows WDDM, rdna4-amd-infer reaches 6,135 tok/s at 4K prefill (5,716 tok/s at 16K), 126.6 tok/s plain T=1 decode, 319.3 tok/s short code peak with DSpark, 191.2 tok/s live greedy ie-serve, 90.2 tok/s at filled 128K context, and 54.5 tok/s at filled 256K context with DSpark."
+            "text": "On a single RX 9070 XT 16GB on Windows WDDM, rdna4-amd-infer reaches 6,135 tok/s at 4K prefill (5,716 tok/s at 16K), 127.3 tok/s plain T=1 decode, 320.0 tok/s short code peak with DSpark, 191.2 tok/s live greedy ie-serve, 90.2 tok/s at filled 128K context, and 107.5 tok/s greedy (137.0 sampled) at filled 256K context with DSpark."
           }
         },
         {
@@ -120,7 +120,7 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 .wrap {
-  max-width: 1580px;
+  max-width: 2400px;
   margin: 0 auto;
   padding: 20px 24px 48px;
 }
@@ -343,6 +343,78 @@ html, body {
   gap: 6px;
 }
 .kpi-sub strong { color: var(--muted); font-weight: 600; }
+
+/* 256K Filled-Context Campaign Strip */
+.strip-256k {
+  background: linear-gradient(180deg, #14171f 0%, #101218 100%);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px 15px;
+  margin-bottom: 18px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+}
+.strip-256k-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 11px;
+}
+.strip-256k-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.strip-256k-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.kpi-256k-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 1240px) { .kpi-256k-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .kpi-256k-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.kpi-256k-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  position: relative;
+  overflow: hidden;
+}
+.kpi-256k-card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--accent, var(--cyan));
+  opacity: 0.9;
+}
+.kpi-256k-card .kpi-val { font-size: 20px; }
+.badge-256k {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 9.8px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  white-space: nowrap;
+}
+.badge-256k.ok {
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.38);
+}
 
 /* Historical Collapsible Strip */
 .hist-box {
@@ -699,6 +771,9 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
 .m-sub.neg { color: #fda4af; }
 .m-sub.dim { color: var(--dim); }
 .hyp-cell { max-width: 280px; color: var(--muted); font-size: 11.8px; }
+@media (max-width: 2000px) { .hyp-cell { max-width: 170px; } }
+.hyp-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+tr.main-row.open .hyp-clamp { display: block; -webkit-line-clamp: unset; line-clamp: unset; }
 .name-cell { min-width: 185px; }
 .name-cell .rname { font-weight: 600; color: var(--text); display: block; }
 .sha-mini { font-family: var(--font-mono); font-size: 10px; color: var(--dim); display: block; margin-top: 3px; }
@@ -745,7 +820,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   <header class="hero">
     <div class="hero-top">
       <div>
-        <h1 class="hero-title"><span class="live-dot" id="liveDot"></span><span id="campaignTitle">Inkling-2-Mini 40-Round Optimization Campaign</span></h1>
+        <h1 class="hero-title"><span class="live-dot" id="liveDot"></span><span id="campaignTitle">Inkling-2-Mini Optimization Campaign</span></h1>
         <p class="hero-sub" id="campaignSub"></p>
       </div>
       <div class="hero-pills" id="heroPills"></div>
@@ -756,7 +831,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         <div class="progress-fill-prom" id="progProm" style="width:0%"></div>
         <div class="progress-fill-rej" id="progRej" style="width:0%"></div>
       </div>
-      <div class="progress-label" id="progLabel">0 / 40 rounds</div>
+      <div class="progress-label" id="progLabel">0 rounds</div>
     </div>
   </header>
 
@@ -771,6 +846,17 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
 
   <section class="kpi-grid" id="kpiGrid"></section>
 
+  <section class="strip-256k" id="strip256k">
+    <div class="strip-256k-head">
+      <div class="strip-256k-title">
+        <span>256K Filled-Context Campaign Frontier (pos = 261,632 &middot; since the R52 certified baseline)</span>
+        <span class="pill cy" id="pill256kState">R52 CERT BASELINE</span>
+      </div>
+      <span class="strip-256k-sub" id="sub256k">q4rot global KV + 8K DSpark ring + OTF RoPE + H38 SLRU &middot; 16 GiB WDDM (&gt;= 512 MiB reserve gate)</span>
+    </div>
+    <div class="kpi-256k-grid" id="kpi256kGrid"></div>
+  </section>
+
   <details class="hist-box" id="histBox">
     <summary>
       <span class="hist-title"><span class="hist-chev">&#9656;</span> Historical Pre-Campaign Milestones (First Impl v0 &rarr; R1-R4 &rarr; Phase 5 &rarr; Phase 6 &rarr; Phase 7 Ref)</span>
@@ -782,9 +868,9 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   </details>
 
   <div class="section-bar">
-    <div class="section-title"><span id="frontiersTitle">Telemetry Frontiers (R00 Phase 7 Baseline &rarr; R52)</span> <span class="pill" id="chartHint">Solid step-line = Promoted Frontier &middot; Green = Promoted &middot; Amber = Rejected</span></div>
+    <div class="section-title"><span id="frontiersTitle">Telemetry Frontiers</span> <span class="pill" id="chartHint">Solid step-line = Promoted Frontier &middot; Green = Promoted &middot; Amber = Rejected</span></div>
     <div class="seg-ctrl" id="axisToggle">
-      <button class="seg-btn active" data-axis="full" id="fullAxisBtn">Full R00-R52 Axis</button>
+      <button class="seg-btn active" data-axis="full" id="fullAxisBtn">Full Axis</button>
       <button class="seg-btn" data-axis="fit">Zoom Populated</button>
     </div>
   </div>
@@ -827,6 +913,30 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     </div>
   </section>
 
+  <div class="section-bar">
+    <div class="section-title"><span id="frontiers256kTitle">256K-First Campaign Progress</span> <span class="pill cy">pos = 261,632 &middot; q4rot + DSpark + H38</span></div>
+  </div>
+
+  <section class="charts-grid">
+    <div class="chart-card">
+      <div class="chart-head">
+        <span class="chart-title">5. 256K Filled Decode Throughput (tok/s)</span>
+        <span class="chart-sub">Higher is better &middot; Plain T=1, DS5 ie-run &amp; DCache DS5 at pos = 261,632</span>
+      </div>
+      <div class="chart-legend" id="leg-256k-dec"></div>
+      <div class="chart-svg-wrap" id="chart-256k-dec"></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-head">
+        <span class="chart-title">6. 256K Verify, inc256 &amp; Prefill Latency (ms)</span>
+        <span class="chart-sub">Lower is better &middot; VBench T=6/T=8 (left) &middot; inc256 &amp; pf512/pf1024 (right)</span>
+      </div>
+      <div class="chart-legend" id="leg-256k-lat"></div>
+      <div class="chart-svg-wrap" id="chart-256k-lat"></div>
+    </div>
+  </section>
+
   <section class="ledger-card">
     <div class="ledger-controls">
       <div class="filter-pills" id="filterPills"></div>
@@ -851,6 +961,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
             <th class="num">PF 4K</th>
             <th class="num">PF 16K</th>
             <th class="num">TTFT (ms)</th>
+            <th class="num">256K Fast</th>
             <th class="num">Sys / Serve</th>
           </tr>
         </thead>
@@ -874,7 +985,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   const HIST = DATA.historical_milestones || [];
   const CAMP = DATA.campaign || {};
   const MAX_RECORDED_ROUND = ROUNDS.length ? Math.max.apply(null, ROUNDS.map((r) => r.round || 0)) : 0;
-  const TARGET_ROUNDS = Math.max(CAMP.target_rounds || 52, MAX_RECORDED_ROUND);
+  const TARGET_ROUNDS = Math.max(CAMP.target_rounds || 0, MAX_RECORDED_ROUND);
   const MAX_ROUND_LABEL = "R" + String(TARGET_ROUNDS).padStart(2, "0");
 
   // Historical anchors from verified baselines
@@ -884,6 +995,30 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   const PHASE7_REF = HIST.find((h) => h.id === "phase7_ref") || {};
   const R00 = ROUNDS.find((r) => r.round === 0) || null;
   const BASE_M = R00 ? (R00.metrics || {}) : PHASE7_REF;
+
+  // Certified 256K R52 baseline (pos = 261,632, q4rot + DSpark + H38)
+  const CERT_256K_R52 = {
+    cold_256k_s: 227.0,
+    inc256_256k_ms: 600.0,
+    t1_256k_tok_s: 37.37,
+    t1_256k_serve_tok_s: 38.30,
+    ds5_256k_tok_s: 46.50,
+    dc256k_tok_s: 54.50,
+    vb256k_t6_ms: 50.95,
+    reserve_256k_mib: 870.4
+  };
+  const KEYS_256K = [
+    "t1_256k_tok_s", "ds5_256k_tok_s", "vb256k_t1_ms", "vb256k_t6_ms", "vb256k_t8_ms", "vb256k_t16_ms",
+    "inc256_256k_ms", "pf512_256k_ms", "pf1024_256k_ms", "ds5_256k_reserve_mib", "t1_256k_reserve_mib",
+    "dc256k_restore_ms", "dc256k_inc256_ms", "dc256k_tok_s", "dc256k_reserve_mib", "cold_256k_s"
+  ];
+  function has256kMetrics(m) {
+    if (!m) return false;
+    for (const k of KEYS_256K) {
+      if (typeof m[k] === "number" && Number.isFinite(m[k])) return true;
+    }
+    return false;
+  }
 
   const STATE = {
     axisMode: "full",
@@ -1010,6 +1145,59 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   }
   for (const k of Object.keys(METRIC_SPECS)) FRONTIER[k] = computeBest(k);
 
+  // Build 256K-first campaign rounds (seeded R52 certified anchor + live R>=53 rounds with 256K metrics)
+  const ROUNDS_256K_LIVE = ROUNDS.filter((r) => r.round >= 53 && has256kMetrics(r.metrics));
+  const R52_ANCHOR_256K = {
+    round: 52,
+    wave: "10",
+    name: "R52 Certified 256K Baseline (q4rot + DSpark + H38)",
+    target: "All",
+    status: "baseline",
+    hypothesis: "Certified 256K (261,632 tok) starting baseline: 227.0 s cold prefill, 600 ms inc256, 37.4 T=1, 46.5/54.5 DS5, +870.4 MiB DXGI reserve, 3/3 needles.",
+    parity: { status: "EXACT" },
+    metrics: {
+      cold_256k_s: CERT_256K_R52.cold_256k_s,
+      inc256_256k_ms: CERT_256K_R52.inc256_256k_ms,
+      t1_256k_tok_s: CERT_256K_R52.t1_256k_tok_s,
+      ds5_256k_tok_s: CERT_256K_R52.ds5_256k_tok_s,
+      dc256k_tok_s: CERT_256K_R52.dc256k_tok_s,
+      vb256k_t6_ms: CERT_256K_R52.vb256k_t6_ms,
+      ds5_256k_reserve_mib: CERT_256K_R52.reserve_256k_mib
+    }
+  };
+  const ROUNDS_256K = [R52_ANCHOR_256K].concat(ROUNDS_256K_LIVE);
+
+  function best256k(keys, lower, fallbackVal) {
+    let bestVal = null;
+    let bestRound = null;
+    for (const r of ROUNDS_256K_LIVE) {
+      if (!isAcceptedStatus(r.status)) continue;
+      const m = r.metrics || {};
+      for (const k of keys) {
+        const v = m[k];
+        if (!isNum(v)) continue;
+        if (bestVal === null || (lower ? v < bestVal : v > bestVal)) {
+          bestVal = v;
+          bestRound = r.round;
+        }
+      }
+    }
+    if (bestVal === null) return { val: fallbackVal, round: 52, live: false };
+    return { val: bestVal, round: bestRound, live: true };
+  }
+
+  function latest256k(keys, fallbackVal) {
+    for (let i = ROUNDS_256K_LIVE.length - 1; i >= 0; i--) {
+      const r = ROUNDS_256K_LIVE[i];
+      if (!isAcceptedStatus(r.status)) continue;
+      const m = r.metrics || {};
+      for (const k of keys) {
+        if (isNum(m[k])) return { val: m[k], round: r.round, live: true, roundObj: r };
+      }
+    }
+    return { val: fallbackVal, round: 52, live: false, roundObj: null };
+  }
+
   // ---------------- HEADER & PROGRESS ----------------
   function renderHeader() {
     document.getElementById("campaignTitle").textContent = CAMP.title || ("Inkling-2-Mini " + TARGET_ROUNDS + "-Round Optimization Campaign");
@@ -1018,6 +1206,8 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
 
     const fTitle = document.getElementById("frontiersTitle");
     if (fTitle) fTitle.textContent = "Telemetry Frontiers (R00 Phase 7 Baseline \u2192 " + MAX_ROUND_LABEL + ")";
+    const f256Title = document.getElementById("frontiers256kTitle");
+    if (f256Title) f256Title.textContent = "256K-First Campaign Progress (R52 Cert Baseline \u2192 " + MAX_ROUND_LABEL + ")";
     const fullBtn = document.getElementById("fullAxisBtn");
     if (fullBtn) fullBtn.textContent = "Full R00-" + MAX_ROUND_LABEL + " Axis";
     updateSortBtnLabel();
@@ -1198,6 +1388,152 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     document.getElementById("kpiGrid").innerHTML = cards.join("");
   }
 
+  // ---------------- 256K FILLED-CONTEXT FRONTIER STRIP ----------------
+  function render256kStrip() {
+    const pill = document.getElementById("pill256kState");
+    const grid = document.getElementById("kpi256kGrid");
+    if (!grid) return;
+
+    const liveCount = ROUNDS_256K_LIVE.length;
+    if (pill) {
+      if (liveCount > 0) {
+        const lastR = ROUNDS_256K_LIVE[liveCount - 1].round;
+        pill.textContent = "LIVE R53-R" + String(lastR).padStart(2, "0") + " (" + liveCount + " rounds)";
+        pill.className = "pill em";
+      } else {
+        pill.textContent = "R52 CERT BASELINE";
+        pill.className = "pill cy";
+      }
+    }
+
+    const bCold = best256k(["cold_256k_s"], true, CERT_256K_R52.cold_256k_s);
+    const bInc = best256k(["inc256_256k_ms", "dc256k_inc256_ms"], true, CERT_256K_R52.inc256_256k_ms);
+    const bT1 = best256k(["t1_256k_tok_s"], false, CERT_256K_R52.t1_256k_tok_s);
+    const bDs = best256k(["ds5_256k_tok_s"], false, CERT_256K_R52.ds5_256k_tok_s);
+    const bDcDs = best256k(["dc256k_tok_s"], false, CERT_256K_R52.dc256k_tok_s);
+    const bVb6 = best256k(["vb256k_t6_ms"], true, CERT_256K_R52.vb256k_t6_ms);
+    const bPf512 = best256k(["pf512_256k_ms"], true, null);
+    const bPf1024 = best256k(["pf1024_256k_ms"], true, null);
+    const bRest = best256k(["dc256k_restore_ms"], true, null);
+    const lRes = latest256k(["dc256k_reserve_mib", "ds5_256k_reserve_mib", "t1_256k_reserve_mib"], CERT_256K_R52.reserve_256k_mib);
+
+    let coldVal = bCold.val;
+    let coldRound = bCold.round;
+    let coldLive = bCold.live;
+    let coldSubL = "R52: 227.0 s (1,148 t/s)";
+    if (!bCold.live && isNum(bPf1024.val)) {
+      coldVal = (bPf1024.val * 255.5) / 1000.0;
+      coldRound = bPf1024.round;
+      coldLive = true;
+      coldSubL = "pf1024: " + fmt(bPf1024.val, 0) + " ms/step";
+    } else if (!bCold.live && isNum(bPf512.val)) {
+      coldSubL = "pf512: " + fmt(bPf512.val, 0) + " ms/step";
+    }
+
+    function card256k(o) {
+      const tag = o.live ? ("R" + String(o.round).padStart(2, "0")) : "R52 CERT";
+      const dR52 = o.live ? fmtDelta(pctGain(o.val, o.r52, o.lower)) : { text: "R52 base", cls: "neu" };
+      const valDisp = isNum(o.val) ? (o.prefix || "") + fmt(o.val, o.dec) : "--";
+      return `
+        <div class="kpi-256k-card" style="--accent:${o.accent}">
+          <div class="kpi-head">
+            <span class="kpi-label">${esc(o.label)}</span>
+            <span class="kpi-tag">${esc(tag)}</span>
+          </div>
+          <div class="kpi-val">${valDisp}<span class="kpi-unit">${esc(o.unit)}</span></div>
+          <div class="kpi-deltas">
+            <span class="delta ${dR52.cls}">${o.live ? "vs R52 " + dR52.text : "R52 cert base"}</span>
+            <span style="color:var(--muted);font-size:10.5px;">${esc(o.targetStr)}</span>
+          </div>
+          <div class="kpi-sub">
+            <span>${esc(o.subL)}</span>
+            <strong>${esc(o.subR)}</strong>
+          </div>
+        </div>
+      `;
+    }
+
+    const resOk = isNum(lRes.val) && lRes.val >= 512.0;
+    const recallBadge = lRes.roundObj && lRes.roundObj.metrics && isNum(lRes.roundObj.metrics.dc256k_recall_n)
+      ? (lRes.roundObj.metrics.dc256k_recall_n + "/" + (lRes.roundObj.metrics.dc256k_recall_total || 3) + " needles")
+      : "3/3 needles (R52)";
+
+    const cards256 = [
+      card256k({
+        label: "256K Cold Prefill",
+        accent: "var(--blue)",
+        val: coldVal,
+        round: coldRound,
+        live: coldLive,
+        r52: CERT_256K_R52.cold_256k_s,
+        unit: "s",
+        dec: 1,
+        lower: true,
+        targetStr: "goal < 95 s",
+        subL: coldSubL,
+        subR: isNum(bPf1024.val) ? ("1024: " + fmt(bPf1024.val, 0) + " ms") : "chunk=512->1024"
+      }),
+      card256k({
+        label: "256K inc256 TTFT",
+        accent: "var(--amber)",
+        val: bInc.val,
+        round: bInc.round,
+        live: bInc.live,
+        r52: CERT_256K_R52.inc256_256k_ms,
+        unit: "ms",
+        dec: 0,
+        lower: true,
+        targetStr: "goal < 220 ms",
+        subL: "R52: 600 ms",
+        subR: isNum(bRest.val) ? ("DC read " + fmt(bRest.val, 0) + " ms") : "pos=261,632"
+      }),
+      card256k({
+        label: "256K Plain T=1",
+        accent: "var(--cyan)",
+        val: bT1.val,
+        round: bT1.round,
+        live: bT1.live,
+        r52: CERT_256K_R52.t1_256k_tok_s,
+        unit: "tok/s",
+        dec: 1,
+        lower: false,
+        targetStr: "R52 serve 38.3",
+        subL: "R52: 37.4 tok/s",
+        subR: isNum(bT1.val) ? (fmt(1000 / bT1.val, 1) + " ms/t") : ""
+      }),
+      card256k({
+        label: "256K DSpark Decode",
+        accent: "var(--emerald)",
+        val: bDs.val,
+        round: bDs.round,
+        live: bDs.live,
+        r52: CERT_256K_R52.ds5_256k_tok_s,
+        unit: "tok/s",
+        dec: 1,
+        lower: false,
+        targetStr: "goal 90-120+",
+        subL: "Serve/DC: " + fmt(bDcDs.val, 1) + " tok/s",
+        subR: "VB T=6: " + fmt(bVb6.val, 1) + " ms"
+      }),
+      card256k({
+        label: "256K DXGI Reserve",
+        accent: resOk ? "var(--teal)" : "var(--rose)",
+        val: lRes.val,
+        round: lRes.round,
+        live: lRes.live,
+        r52: CERT_256K_R52.reserve_256k_mib,
+        prefix: "+",
+        unit: "MiB",
+        dec: 1,
+        lower: false,
+        targetStr: resOk ? "gate >=512 OK" : "OVER GATE!",
+        subL: "R52: +870.4 MiB",
+        subR: recallBadge
+      })
+    ];
+    grid.innerHTML = cards256.join("");
+  }
+
   // ---------------- HISTORICAL STRIP ----------------
   function renderHistorical() {
     const preview = [
@@ -1281,12 +1617,50 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         { key: "vram_free_mb", label: "VRAM Free (MiB)", color: "#00d4ff", dec: 0, lower: false, axis: "left", unit: " MB" },
         { key: "_frontier_gain_pct", label: "% Gain vs R00 Frontier", color: "#00e599", dec: 1, lower: false, axis: "right", unit: "%", derived: true }
       ]
+    },
+    {
+      id: "256k-dec",
+      el: "chart-256k-dec",
+      leg: "leg-256k-dec",
+      unit: "tok/s",
+      lower: false,
+      minRound: 52,
+      rows: ROUNDS_256K,
+      baseRef: CERT_256K_R52,
+      baseLabel: "R52",
+      series: [
+        { key: "t1_256k_tok_s", label: "256K Plain T=1", color: "#ffaa00", dec: 1 },
+        { key: "ds5_256k_tok_s", label: "256K DS5 ie-run", color: "#00d4ff", dec: 1 },
+        { key: "dc256k_tok_s", label: "256K DCache DS5", color: "#00e599", dec: 1 }
+      ]
+    },
+    {
+      id: "256k-lat",
+      el: "chart-256k-lat",
+      leg: "leg-256k-lat",
+      unit: "ms",
+      lower: true,
+      dualAxis: true,
+      minRound: 52,
+      rows: ROUNDS_256K,
+      baseRef: CERT_256K_R52,
+      baseLabel: "R52",
+      series: [
+        { key: "vb256k_t6_ms", label: "256K Verify T=6", color: "#00d4ff", dec: 2, lower: true, axis: "left", unit: " ms" },
+        { key: "vb256k_t8_ms", label: "256K Verify T=8", color: "#00e599", dec: 2, lower: true, axis: "left", unit: " ms" },
+        { key: "inc256_256k_ms", fallbackKey: "dc256k_inc256_ms", label: "256K inc256 TTFT", color: "#ffaa00", dec: 0, lower: true, axis: "right", unit: " ms" },
+        { key: "pf1024_256k_ms", label: "256K Prefill pf1024", color: "#ff6b35", dec: 0, lower: true, axis: "right", unit: " ms" },
+        { key: "pf512_256k_ms", label: "256K Prefill pf512", color: "#ff3b30", dec: 0, lower: true, axis: "right", unit: " ms" }
+      ]
     }
   ];
 
   function getMetricVal(r, s) {
     if (s.derived) return r[s.key];
-    return (r.metrics || {})[s.key];
+    const m = r.metrics || {};
+    if (isNum(m[s.key])) return m[s.key];
+    if (s.fallbackKey && isNum(m[s.fallbackKey])) return m[s.fallbackKey];
+    return undefined;
   }
 
   function niceBounds(vals, forceZero) {
@@ -1347,14 +1721,17 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   const tooltipEl = document.getElementById("tooltip");
   function showTooltip(evt, def, roundObj) {
     const statusCls = roundObj.status === "promoted" ? "b-promoted" : (roundObj.status === "rejected" ? "b-rejected" : "b-baseline");
+    const refBase = def.baseRef || BASE_M;
+    const minRefRound = def.minRound || 0;
+    const hasBase = def.baseRef ? true : !!R00;
     const rows = def.series.map((s) => {
       const v = getMetricVal(roundObj, s);
       if (!isNum(v)) return "";
       const lower = s.lower !== undefined ? s.lower : !!def.lower;
-      const baseV = s.derived ? 0 : BASE_M[s.key];
+      const baseV = s.derived ? 0 : refBase[s.key];
       const deltaStr = s.derived
         ? ""
-        : (R00 && isNum(baseV) && roundObj.round > 0 ? " (" + fmtDelta(pctGain(v, baseV, lower)).text + ")" : "");
+        : (hasBase && isNum(baseV) && roundObj.round > minRefRound ? " (" + fmtDelta(pctGain(v, baseV, lower)).text + ")" : "");
       const unit = s.unit !== undefined ? s.unit : (def.unit ? " " + def.unit : "");
       return `<div class="tt-row">
         <span class="tt-key"><span class="tt-dot" style="background:${s.color}"></span>${esc(s.label)}</span>
@@ -1401,15 +1778,20 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
 
+    const chartRows = def.rows || ROUNDS;
+    const minX = def.minRound || 0;
     const activeSeries = def.series.filter((s) => !STATE.hiddenSeries[def.id + ":" + s.key]);
-    const maxObserved = ROUNDS.length ? Math.max.apply(null, ROUNDS.map((r) => r.round || 0)) : 0;
-    const maxX = STATE.axisMode === "full" ? TARGET_ROUNDS : Math.max(4, maxObserved + 1);
-    const xScale = (r) => padL + (maxX === 0 ? 0 : (r / maxX) * plotW);
+    const maxObserved = chartRows.length ? Math.max.apply(null, chartRows.map((r) => r.round || 0)) : minX;
+    const maxX = STATE.axisMode === "full"
+      ? Math.max(TARGET_ROUNDS, minX + 4)
+      : Math.max(minX + 4, maxObserved + 1);
+    const spanX = Math.max(1, maxX - minX);
+    const xScale = (r) => padL + ((r - minX) / spanX) * plotW;
 
     const leftVals = [];
     const rightVals = [];
     for (const s of activeSeries) {
-      for (const r of ROUNDS) {
+      for (const r of chartRows) {
         const v = getMetricVal(r, s);
         if (!isNum(v)) continue;
         if (def.dualAxis && s.axis === "right") rightVals.push(v);
@@ -1417,8 +1799,9 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       }
     }
 
+    const rightIsPct = def.id === "sys";
     const [yMinL, yMaxL] = niceBounds(leftVals, false);
-    const [yMinR, yMaxR] = niceBounds(rightVals, true);
+    const [yMinR, yMaxR] = niceBounds(rightVals, rightIsPct);
     const yScaleL = (v) => padT + plotH - ((v - yMinL) / (yMaxL - yMinL || 1)) * plotH;
     const yScaleR = (v) => padT + plotH - ((v - yMinR) / (yMaxR - yMinR || 1)) * plotH;
 
@@ -1433,14 +1816,16 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       svg += `<text x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" fill="#6f84ab" font-family="var(--font-mono)" font-size="10.5">${fmt(lv, lv >= 100 ? 0 : 1)}</text>`;
       if (def.dualAxis && rightVals.length) {
         const rv = yMinR + f * (yMaxR - yMinR);
-        svg += `<text x="${W - padR + 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="start" fill="#4ade80" font-family="var(--font-mono)" font-size="10.5">${rv >= 0 ? "+" : ""}${fmt(rv, 1)}%</text>`;
+        const rTxt = rightIsPct ? ((rv >= 0 ? "+" : "") + fmt(rv, 1) + "%") : fmt(rv, rv >= 100 ? 0 : 1);
+        const rFill = rightIsPct ? "#4ade80" : "#ffaa00";
+        svg += `<text x="${W - padR + 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="start" fill="${rFill}" font-family="var(--font-mono)" font-size="10.5">${rTxt}</text>`;
       }
     }
 
-    // X-axis ticks (scales cleanly through R52+)
-    const stepX = maxX <= 10 ? 1 : (maxX <= 24 ? 2 : (maxX <= 55 ? 5 : 10));
+    // X-axis ticks (scales cleanly across R00..R87 and R52..R87 with zero overlap)
+    const stepX = spanX <= 10 ? 1 : (spanX <= 24 ? 2 : (spanX <= 50 ? 5 : 10));
     const xTicks = [];
-    for (let x = 0; x <= maxX; x += stepX) xTicks.push(x);
+    for (let x = minX; x <= maxX; x += stepX) xTicks.push(x);
     if (xTicks[xTicks.length - 1] !== maxX) {
       if (maxX - xTicks[xTicks.length - 1] < stepX * 0.45 && xTicks.length > 1) {
         xTicks[xTicks.length - 1] = maxX;
@@ -1455,7 +1840,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     }
     svg += `<line x1="${padL}" y1="${padT + plotH}" x2="${W - padR}" y2="${padT + plotH}" stroke="#2e4370" stroke-width="1.2"/>`;
 
-    if (!ROUNDS.length || (!leftVals.length && !rightVals.length)) {
+    if (!chartRows.length || (!leftVals.length && !rightVals.length)) {
       svg += `<text x="${(padL + plotW / 2).toFixed(1)}" y="${(padT + plotH / 2).toFixed(1)}" text-anchor="middle" fill="#5d7094" font-family="var(--font-mono)" font-size="12">No measurements recorded yet for this chart</text>`;
       svg += "</svg>";
       wrap.innerHTML = svg;
@@ -1469,7 +1854,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     const usedLabelBoxes = [];
     function canPlaceLabel(lx, ly) {
       for (const b of usedLabelBoxes) {
-        if (Math.abs(b.x - lx) < 34 && Math.abs(b.y - ly) < 13) return false;
+        if (Math.abs(b.x - lx) < 38 && Math.abs(b.y - ly) < 14) return false;
       }
       usedLabelBoxes.push({ x: lx, y: ly });
       return true;
@@ -1479,7 +1864,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       const ySc = (def.dualAxis && s.axis === "right") ? yScaleR : yScaleL;
       const lower = s.lower !== undefined ? s.lower : !!def.lower;
       const pts = [];
-      for (const r of ROUNDS) {
+      for (const r of chartRows) {
         const v = getMetricVal(r, s);
         if (isNum(v)) pts.push({ r: r, val: v, x: xScale(r.round), y: ySc(v) });
       }
@@ -1498,7 +1883,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       }
 
       // Markers (slightly tighter when plotting >50 rounds)
-      const compact = maxX > 50;
+      const compact = spanX > 50;
       const baseHalf = compact ? 3.9 : 4.5;
       const baseSize = baseHalf * 2;
       const promR = compact ? 3.7 : 4.6;
@@ -1524,10 +1909,10 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         ? fr.bestPoints
         : [fr.bestPoints[0], fr.bestPoints[fr.bestPoints.length - 1]];
       for (const p of labelTargets) {
-        const lx = Math.max(padL + 14, Math.min(W - padR - 14, p.x));
-        const ly = p.y - 9;
+        const lx = Math.max(padL + 16, Math.min(W - padR - 16, p.x));
+        const ly = Math.max(padT + 10, p.y - 9);
         if (canPlaceLabel(lx, ly)) {
-          svg += `<text x="${lx.toFixed(1)}" y="${Math.max(padT + 9, ly).toFixed(1)}" text-anchor="middle" fill="${s.color}" font-family="var(--font-mono)" font-size="9.5" font-weight="600">R${String(p.r.round).padStart(2, "0")}</text>`;
+          svg += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" fill="${s.color}" font-family="var(--font-mono)" font-size="9.5" font-weight="600">R${String(p.r.round).padStart(2, "0")}</text>`;
         }
       }
     }
@@ -1546,7 +1931,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       const mx = ((evt.clientX - rect.left) / rect.width) * W;
       let nearest = null;
       let bestDist = Infinity;
-      for (const r of ROUNDS) {
+      for (const r of chartRows) {
         const d = Math.abs(xScale(r.round) - mx);
         if (d < bestDist) {
           bestDist = d;
@@ -1574,11 +1959,12 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     for (const def of CHART_DEFS) renderChart(def);
   }
 
-  // ---------------- FILTERABLE 40-ROUND LEDGER TABLE ----------------
+  // ---------------- FILTERABLE CAMPAIGN LEDGER TABLE ----------------
   const FILTERS = [
     { id: "all", label: "All" },
     { id: "promoted", label: "Promoted" },
     { id: "rejected", label: "Rejected" },
+    { id: "256k", label: "256K (R52+)" },
     { id: "Decode", label: "Decode" },
     { id: "Prefill", label: "Prefill" },
     { id: "TTFT", label: "TTFT" }
@@ -1587,6 +1973,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
   function matchesFilter(r, f) {
     if (f === "all") return true;
     if (f === "promoted" || f === "rejected") return r.status === f;
+    if (f === "256k") return r.round >= 52 || has256kMetrics(r.metrics);
     return r.target === f || r.target === "All";
   }
 
@@ -1635,7 +2022,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
     list.sort((a, b) => STATE.sortAsc ? (a.round - b.round) : (b.round - a.round));
 
     if (!list.length) {
-      body.innerHTML = `<tr><td colspan="13" class="empty-state">${
+      body.innerHTML = `<tr><td colspan="14" class="empty-state">${
         ROUNDS.length === 0
           ? "No rounds recorded in results/inkling2/40round-ledger.json yet. Run Round 0 baseline to begin!"
           : "No rounds match the active filter / search query."
@@ -1675,19 +2062,54 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
       if (isNum(m.launches_per_step)) sysParts.push(fmt(m.launches_per_step, 0) + " lnch");
       if (isNum(m.vram_free_mb)) sysParts.push(fmt(m.vram_free_mb, 0) + " MB");
 
+      let cell256Html = `<span class="m-sub dim">--</span>`;
+      if (has256kMetrics(m)) {
+        const top256 = isNum(m.ds5_256k_tok_s)
+          ? ("DS5 " + fmt(m.ds5_256k_tok_s, 1))
+          : (isNum(m.dc256k_tok_s)
+              ? ("DC " + fmt(m.dc256k_tok_s, 1))
+              : (isNum(m.t1_256k_tok_s)
+                  ? ("T1 " + fmt(m.t1_256k_tok_s, 1))
+                  : (isNum(m.inc256_256k_ms)
+                      ? ("inc " + fmt(m.inc256_256k_ms, 0) + "ms")
+                      : (isNum(m.pf1024_256k_ms) ? ("pf1K " + fmt(m.pf1024_256k_ms, 0) + "ms") : "256K"))));
+        const d256 = isNum(m.ds5_256k_tok_s)
+          ? fmtDelta(pctGain(m.ds5_256k_tok_s, CERT_256K_R52.ds5_256k_tok_s, false))
+          : (isNum(m.inc256_256k_ms) ? fmtDelta(pctGain(m.inc256_256k_ms, CERT_256K_R52.inc256_256k_ms, true)) : null);
+        const sub256 = [];
+        if (isNum(m.vb256k_t6_ms)) sub256.push("V6:" + fmt(m.vb256k_t6_ms, 1));
+        if (isNum(m.inc256_256k_ms)) sub256.push("inc:" + fmt(m.inc256_256k_ms, 0));
+        if (isNum(m.pf1024_256k_ms)) sub256.push("1K:" + fmt(m.pf1024_256k_ms, 0));
+        if (isNum(m.dc256k_recall_n)) sub256.push(m.dc256k_recall_n + "/" + (m.dc256k_recall_total || 3));
+        cell256Html = `<span class="m-main">${esc(top256)}</span>` +
+          (d256 && d256.text !== "--" ? `<span class="m-sub ${d256.cls}">${esc(d256.text)} vs R52</span>` : "") +
+          (sub256.length ? `<span class="m-sub dim">${esc(sub256.join(" · "))}</span>` : "");
+      } else if (r.round === 52) {
+        cell256Html = `<span class="badge-256k ok">R52 CERT</span><span class="m-sub dim">46.5/54.5 · 600ms</span>`;
+      }
+
+      const detail256Panel = (has256kMetrics(m) || r.round >= 52) ? `
+              <div class="detail-panel">
+                <h4>256K Filled-Context Telemetry (pos = 261,632)</h4>
+                <div class="detail-kv"><span>T=1 / DS5 256K</span><span>${isNum(m.t1_256k_tok_s) ? fmt(m.t1_256k_tok_s, 1) : (r.round === 52 ? "37.4" : "--")} / ${isNum(m.ds5_256k_tok_s) ? fmt(m.ds5_256k_tok_s, 1) : (r.round === 52 ? "46.5" : "--")} tok/s</span></div>
+                <div class="detail-kv"><span>VBench 256K T1/6/8/16</span><span>${isNum(m.vb256k_t1_ms) ? fmt(m.vb256k_t1_ms, 1) : "--"} / ${isNum(m.vb256k_t6_ms) ? fmt(m.vb256k_t6_ms, 1) : (r.round === 52 ? "51.0" : "--")} / ${isNum(m.vb256k_t8_ms) ? fmt(m.vb256k_t8_ms, 1) : "--"} / ${isNum(m.vb256k_t16_ms) ? fmt(m.vb256k_t16_ms, 1) : "--"} ms</span></div>
+                <div class="detail-kv"><span>inc256 / pf512 / pf1024</span><span>${isNum(m.inc256_256k_ms) ? fmt(m.inc256_256k_ms, 0) : (r.round === 52 ? "600" : "--")} / ${isNum(m.pf512_256k_ms) ? fmt(m.pf512_256k_ms, 0) : "--"} / ${isNum(m.pf1024_256k_ms) ? fmt(m.pf1024_256k_ms, 0) : "--"} ms</span></div>
+                <div class="detail-kv"><span>DCache / DXGI Reserve</span><span>${isNum(m.dc256k_restore_ms) ? fmt(m.dc256k_restore_ms, 0) + " ms (" + (m.dc256k_recall_n || 0) + "/" + (m.dc256k_recall_total || 3) + ")" : "--"} / ${isNum(m.dc256k_reserve_mib) ? "+" + fmt(m.dc256k_reserve_mib, 1) + " MiB" : (isNum(m.ds5_256k_reserve_mib) ? "+" + fmt(m.ds5_256k_reserve_mib, 1) + " MiB" : (r.round === 52 ? "+870.4 MiB" : "--"))}</span></div>
+              </div>` : "";
+
       const openCls = STATE.expanded[r.round] ? "open" : "";
       const maskDisp = formatRoundMask(r) || "--";
       const refTag = isNum(p.ref_round) ? ` (vs R${String(p.ref_round).padStart(2, "0")})` : "";
 
       html.push(`
-        <tr class="main-row status-${esc(r.status)}" data-round="${r.round}">
+        <tr class="main-row status-${esc(r.status)} ${openCls}" data-round="${r.round}">
           <td style="white-space:nowrap;font-family:var(--font-mono)">
             <strong>R${String(r.round).padStart(2, "0")}</strong>
             ${r.wave ? `<span class="m-sub dim">W${esc(r.wave)}</span>` : ""}
           </td>
           <td><span class="badge ${tgtCls}">${esc(r.target || "All")}</span></td>
           <td class="name-cell"><span class="rname">${esc(r.name)}</span>${srcHtml}</td>
-          <td class="hyp-cell">${esc(r.hypothesis || r.notes || "--")}</td>
+          <td class="hyp-cell"><div class="hyp-clamp">${esc(r.hypothesis || r.notes || "--")}</div></td>
           <td><span class="badge ${stCls}">${esc(r.status)}</span></td>
           <td>
             <span class="badge ${pCls}">${esc(pSt)}</span>
@@ -1704,13 +2126,14 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
             ${ttftDelta ? `<span class="m-sub ${ttftDelta.cls}">${esc(ttftDelta.text)}</span>` : ""}
             ${ttftSubParts.length ? `<span class="m-sub dim">${esc(ttftSubParts.join(" · "))}</span>` : ""}
           </td>
+          <td class="num">${cell256Html}</td>
           <td class="num">
             <span class="m-main" style="font-weight:500">${esc(sysParts[0] || "--")}</span>
             ${sysParts.length > 1 ? `<span class="m-sub dim">${esc(sysParts.slice(1).join(" · "))}</span>` : ""}
           </td>
         </tr>
         <tr class="detail-row ${openCls}" data-detail="${r.round}">
-          <td colspan="13">
+          <td colspan="14">
             <div class="detail-grid">
               <div class="detail-panel">
                 <h4>Notes &amp; Config</h4>
@@ -1739,7 +2162,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
                 <div class="detail-kv"><span>Sampling ms/step</span><span>${isNum(m.sampling_ms_step) ? fmt(m.sampling_ms_step, 3) + " ms" : "--"}</span></div>
                 <div class="detail-kv"><span>Multi-req hit TTFT</span><span>${isNum(m.multi_req_hit_ttft_ms) ? fmt(m.multi_req_hit_ttft_ms, 0) + " ms (" + fmt(m.multi_req_cached_tokens, 0) + " tok)" : "--"}</span></div>
                 <div class="detail-kv"><span>Arena / VRAM / Budget</span><span>${isNum(m.arena_mb) ? fmt(m.arena_mb, 1) + " MiB" : "--"} / ${isNum(m.vram_used_gib) ? fmt(m.vram_used_gib, 2) + " GiB" : "--"} / ${isNum(m.vram_budget_gib) ? fmt(m.vram_budget_gib, 2) + " GiB" : "--"}</span></div>
-              </div>
+              </div>${detail256Panel}
             </div>
           </td>
         </tr>
@@ -1752,6 +2175,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
         STATE.expanded[rn] = !STATE.expanded[rn];
         const det = body.querySelector(`tr.detail-row[data-detail="${rn}"]`);
         if (det) det.classList.toggle("open", !!STATE.expanded[rn]);
+        tr.classList.toggle("open", !!STATE.expanded[rn]);
       });
     });
   }
@@ -1781,6 +2205,7 @@ table.ledger tr.detail-row td { padding: 12px 16px; border-bottom: 1px solid var
 
   renderHeader();
   renderKPIs();
+  render256kStrip();
   renderHistorical();
   renderAllCharts();
   renderFilterPills();
@@ -1813,7 +2238,7 @@ def render_dashboard(in_path=DEFAULT_IN, out_path=DEFAULT_OUT):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Render Inkling-2 40-round HTML dashboard from ledger JSON")
+    ap = argparse.ArgumentParser(description="Render the Inkling-2 telemetry HTML dashboard from ledger JSON")
     ap.add_argument("--in", dest="in_path", default=DEFAULT_IN)
     ap.add_argument("--out", dest="out_path", default=DEFAULT_OUT)
     args = ap.parse_args()
