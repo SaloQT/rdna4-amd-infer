@@ -298,13 +298,24 @@ static inline __attribute__((always_inline)) void ink_r16_er_down_1row(
       const u32x4 w1 = ink_r16_er_ld4(wp + 4u);
       const float sw = (float)row_qs[b];
       const G u8 *xbase = (b < nb_half) ? xq_lo : xq;
-      for (u32 j = 0u; j < T; j++) {
+      /* Two tokens per pass so the second token's loads are in flight under the first token's
+       * dots: this grid is at most 64 workgroups, so no other wave fills the wait. Both stores are
+       * unconditional (a guard on the second makes the compiler sink its loads back behind the
+       * first token's dots); for odd T the last pass recomputes and rewrites the same token. */
+      for (u32 j = 0u; j < T; j += 2u) {
+        const u32 jn = (j + 1u < T) ? (j + 1u) : j;
         const G u8 *xj = xbase + (unsigned long)j * (unsigned long)xs;
+        const G u8 *xn = xbase + (unsigned long)jn * (unsigned long)xs;
         const G u32 *aw = (const G u32 *)xj;
+        const G u32 *nw = (const G u32 *)xn;
         const u32x4 a0 = ink_r16_er_ld4(aw + (unsigned long)b * 8ul);
         const u32x4 a1 = ink_r16_er_ld4(aw + (unsigned long)b * 8ul + 4ul);
         const float da = ((const G float *)(xj + (unsigned long)nb * 32ul))[b];
+        const u32x4 n0 = ink_r16_er_ld4(nw + (unsigned long)b * 8ul);
+        const u32x4 n1 = ink_r16_er_ld4(nw + (unsigned long)b * 8ul + 4ul);
+        const float dnx = ((const G float *)(xn + (unsigned long)nb * 32ul))[b];
         dn[j][w][l] = (sw * da) * (float)ink_r16_er_dot8(w0, w1, a0, a1);
+        dn[jn][w][l] = (sw * dnx) * (float)ink_r16_er_dot8(w0, w1, n0, n1);
       }
     }
     lbarrier();
