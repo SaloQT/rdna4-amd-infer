@@ -36,10 +36,10 @@ Unedited 1x screen recording of `Inkling-2-Mini` (`26B IQ3_XXS`, `Q4_K` DSpark, 
 
 <p align="center">
   <a href="https://saloqt.github.io/rdna4-amd-infer/">
-    <img src="docs/progress-chart.svg" alt="AMD Radeon RX 9070 XT RDNA4 Inkling-2-Mini 26B IQ3_XXS 52-Round Optimization Benchmarks" width="100%"/>
+    <img src="docs/progress-chart.svg" alt="AMD Radeon RX 9070 XT RDNA4 Inkling-2-Mini 26B IQ3_XXS R00-R88 Optimization Benchmarks" width="100%"/>
   </a>
   <br/>
-  <sub><i>Click chart to open the full-screen interactive 52-round telemetry dashboard</i></sub>
+  <sub><i>Click chart to open the full-screen interactive 52-round telemetry dashboard (plus R53-R88 promoted highlights)</i></sub>
 </p>
 
 ---
