@@ -1,14 +1,16 @@
 """The loops of one kernel in a hsaco (llvm-objdump): each backward branch's body with its instruction count by kind
 (dot4, other VALU, LDS, global loads, scalar, waits). Lists the loops, longest first.
-usage: python tools/kernel_isa.py FILE.hsaco KERNEL [--dump N] (--dump: print loop N's instructions)"""
+usage: python tools/kernel_isa.py FILE.hsaco KERNEL [--dump N] (--dump: print loop N's instructions)
+The LLVM tools come from $LLVM_BIN, or from the .rocm-venv next to engine/ (as in the build scripts)."""
 import collections
 import os
 import re
 import subprocess
 import sys
 
-llvm = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '.rocm-venv', 'Lib', 'site-packages',
-                    '_rocm_sdk_core', 'lib', 'llvm', 'bin', 'llvm-objdump.exe')
+llvm_bin = os.environ.get('LLVM_BIN') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '.rocm-venv',
+                                                      'Lib', 'site-packages', '_rocm_sdk_core', 'lib', 'llvm', 'bin')
+llvm = os.path.join(llvm_bin, 'llvm-objdump.exe')
 args = sys.argv[1:]
 dump = None
 if '--dump' in args:

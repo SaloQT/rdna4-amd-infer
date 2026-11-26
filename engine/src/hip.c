@@ -3258,7 +3258,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       const char *mcse = getenv("IE_MOE_CACHE_SLOTS");
       if (mcse && *mcse && (strcmp(mcse, "auto") == 0 || strcmp(mcse, "AUTO") == 0 || atoi(mcse) > 0))
         ink_mask2 |= (1ULL << (91u - 64u));
-      /* Wave 14 + Wave 15 strictly opt-in kernel bits (ALL default OFF when env vars unset). */
+      /* Wave 14 + Wave 15 kernel bits: each follows its own switch (ink_*_want() and ink_h*_exact() hold the defaults). */
       if (ink_h17_exact()) ink_mask3 |= (1ULL << (142u - 128u));
       if (ink_h21_exact()) ink_mask3 |= (1ULL << (143u - 128u));
       if (ink_iq4_repack_want()) ink_mask3 |= (1ULL << (144u - 128u));
@@ -3271,7 +3271,7 @@ backend *gpu_open(const model *m, const graph *g, const char *hsaco) {
       if (ink_attn_poly_r13_want()) ink_mask3 |= (1ULL << (152u - 128u));
       if (ink_dcache_unshuf_want()) ink_mask3 |= (1ULL << (160u - 128u));
       if (ink_ephem_fast_want()) ink_mask3 |= (1ULL << (161u - 128u));
-      /* Round 17 256K kernels strictly opt-in OFF by default (bits 166..171). */
+      /* Round 17 256K kernels (bits 166..171): 166, 170 and 171 are on unless their switch is 0; 167..169 are opt-in. */
       if (ink_r17_ds_qkv_want()) ink_mask3 |= (1ULL << (166u - 128u));
       if (ink_r17_flute_ver_want()) ink_mask3 |= (1ULL << (167u - 128u));
       if (ink_r17_q4_ver_want() && req_glob_kv_mode == 2) ink_mask3 |= (1ULL << (168u - 128u));
