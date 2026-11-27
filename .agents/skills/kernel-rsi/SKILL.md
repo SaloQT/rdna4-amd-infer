@@ -181,9 +181,30 @@ Everything lives under `runsDir` from `scripts/rsi.config.json`:
 - `kernels/KERNEL/state.json`, `claim.json`, `captures/`, `best-src/`, `best.hsaco`, `baseline.hsaco`,
   `best.diff`, `attempts/NNN.diff`, `work/`, `core-src/`. When a kernel lands or is done, its builds, captures and
   working copy are deleted (several GB per kernel); the ledger, state, `best-src/`, `best.diff` and attempt diffs stay.
-- `.build-broken` / `.gate-broken`: `engine/build` may not match the checked-out code (the next claim rebuilds it), or
-  `main` itself did not match the reference hashes (landing waits; fix `main` or `docs/40round-ledger.json`).
+- `engine/build/.rsi-build-broken` and `.rsi-build-head`: whether `engine/build` matches the checked-out code (the
+  next claim rebuilds it when not).
+- `.gate-broken`: `main` itself did not match the reference hashes (landing waits; fix `main` or
+  `docs/40round-ledger.json`, then delete it).
 
 `node .agents/skills/kernel-rsi/scripts/report.mjs` merges every ledger into `all.jsonl` and `summary.csv` and writes
 `report.html`: speedup and milliseconds saved per kernel, and per kernel every attempt coloured by decision over the
 best-so-far line.
+
+## Tests
+
+Run these after changing `scripts/rsi.mjs`, `engine/tools/kbench.c` or the capture hook. The first two need no GPU and
+touch nothing outside `%TEMP%\kernel-rsi-tests` (a throwaway clone of this repository, a local bare `origin`, and stubs
+for the build, the benchmark harness and `gh`, all in `tests/`):
+
+- `node .agents/skills/kernel-rsi/tests/run_tests.mjs`: every landing path, each forced by the stubs. Success; keeping
+  another kernel's landing in the same file; a dirty repository, a user's branch, a person's `rsi/...` branch; a
+  patch that no longer applies; build failures (patched only, and on `main` too); a gate mismatch with and without
+  `main` matching, missing hashes, a one-off mismatch, a whole-model slowdown, the GPU fault marker, `main` known not
+  to match; push, PR and merge failures and resuming after them; a PR that will not merge; `main` moving with engine
+  and with docs-only changes; a merge whose status cannot be read; recovery from a crashed landing; a stale lock. About
+  a minute.
+- `node .agents/skills/kernel-rsi/tests/run_claim_tests.mjs`: six workers claiming at once, what is never handed out,
+  re-claims, stale claims, `busy` / `wait` / `none`, and claim ownership. About 20 seconds.
+- `sh .agents/skills/kernel-rsi/tests/e2e.sh`: the real flow on the GPU (preflight, discovery, loop setup, an eval that
+  must come back `no_gain`, an out-of-scope edit, status, release), in its own runs directory so real loops are
+  untouched. About 10 minutes the first time, a few after.
