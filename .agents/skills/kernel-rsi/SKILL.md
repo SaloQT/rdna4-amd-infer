@@ -89,7 +89,7 @@ changes the repository at a time. Locks of crashed or killed workers are taken o
 - **Timing.** Cold (rotating copies of the captured memory, so each launch reads DRAM as inside the model), 15
   interleaved rounds; the noise floor is about ±0.5%. An attempt is kept only if it is at least 1% faster twice in a
   row and not over 1% slower on any held-out capture.
-- **Scope.** Only kernel sources change. An edit to the working copy's `core/` or generated headers is rejected
+- **Scope.** Only kernel sources change. An edit to the working copy's `core/`, `prof/` or generated headers is rejected
   (`out_of_scope`) and reset.
 
 Decisions in the ledger: `accepted`, `no_gain`, `slower`, `not_exact`, `not_confirmed` (the gain did not repeat),
