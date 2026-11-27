@@ -132,6 +132,13 @@ function appendLedger(k, rec) {
   fs.appendFileSync(p, lead + JSON.stringify(rec) + '\n');
 }
 function copyDir(src, dst) { fs.rmSync(dst, { recursive: true, force: true }); fs.cpSync(src, dst, { recursive: true }); }
+// engine directories outside kernels/ that the kernel sources include (../core/ie_core.h, ../prof/sm_profiler.h): a
+// working copy needs them to build every code object, and an edit to them is out of scope (they are the whole engine's)
+const SHARED = ['core', 'prof'];
+// the shared directories and the generated headers (build/) from one root to another
+function copyShared(from, to) {
+  for (const s of [...SHARED, 'build']) if (fs.existsSync(path.join(from, s))) copyDir(path.join(from, s), path.join(to, s));
+}
 function sameTree(a, b) {
   if (!fs.existsSync(a) || !fs.existsSync(b)) return fs.existsSync(a) === fs.existsSync(b);
   const la = fs.readdirSync(a).sort(), lb = fs.readdirSync(b).sort();
@@ -289,7 +296,7 @@ function buildStale() {
     return same && !dirtyEngine() ? null : 'the engine code changed since engine/build was built';
   }
   const built = Math.min(...outs.map((p) => fs.statSync(p).mtimeMs));
-  const src = Math.max(...['src', 'kernels', 'core'].map((d) => newestMtime(path.join(ENGINE, d))));
+  const src = Math.max(...['src', 'kernels', ...SHARED].map((d) => newestMtime(path.join(ENGINE, d))));
   return src > built + 2000 ? 'engine sources are newer than engine/build' : null;
 }
 function ensureKbench() {
@@ -798,15 +805,14 @@ function cmdInit(k, o) {
     linkCapture(k, sc);
     for (const h of holdouts) if (fs.existsSync(capPath(h, k))) { linkCapture(k, h); hold.push(h); }
     const work = path.join(d, 'work');
-    for (const sub of ['kernels', 'core']) fs.cpSync(path.join(ENGINE, sub), path.join(work, sub), { recursive: true });
+    for (const sub of ['kernels', ...SHARED]) if (fs.existsSync(path.join(ENGINE, sub))) fs.cpSync(path.join(ENGINE, sub), path.join(work, sub), { recursive: true });
     fs.mkdirSync(path.join(work, 'build'), { recursive: true });
     for (const f of fs.readdirSync(path.join(ENGINE, 'build')).filter((f) => f.endsWith('.h'))) fs.copyFileSync(path.join(ENGINE, 'build', f), path.join(work, 'build', f));
     copyDir(path.join(work, 'kernels'), path.join(d, 'best-src'));
     /* base-src: the sources the loop started from; the patch that lands is base-src -> best-src, so it carries only
      * this loop's changes, never the reverse of what landed on main since */
     copyDir(path.join(work, 'kernels'), path.join(d, 'base-src'));
-    copyDir(path.join(work, 'core'), path.join(d, 'core-src', 'core'));
-    copyDir(path.join(work, 'build'), path.join(d, 'core-src', 'build'));
+    copyShared(work, path.join(d, 'core-src'));
     console.log(`building the baseline ${UNITS[unit].hsaco} from a copy of engine/ ...`);
     const c = compile(work, unit, path.join(d, 'baseline.hsaco'));
     if (!c.ok) die('the baseline does not build:\n' + c.log.slice(-2500), 'env');
@@ -860,8 +866,7 @@ function cmdEval(k, o) {
     const t0 = Date.now();
     const revert = () => {
       copyDir(best, path.join(work, 'kernels'));
-      copyDir(path.join(d, 'core-src', 'core'), path.join(work, 'core'));
-      copyDir(path.join(d, 'core-src', 'build'), path.join(work, 'build'));
+      copyShared(path.join(d, 'core-src'), work);
     };
     // decision: counted attempts end here; 'noisy' and 'busy' are not attempts and leave the edit in place
     const finish = (decision, extra = {}) => {
@@ -905,15 +910,14 @@ function cmdEval(k, o) {
       console.log(s.stop ? `STOP: ${s.why}; run finish ${k}` : `continue: ${s.why}`);
     };
     // only kernel sources may change: core/ and the generated headers are shared with the whole engine
-    if (!sameTree(path.join(work, 'core'), path.join(d, 'core-src', 'core')) || !sameTree(path.join(work, 'build'), path.join(d, 'core-src', 'build')))
-      return finish('out_of_scope', { reason: 'the edit changed work/core or work/build; only work/kernels may change (both were reset)' });
+    if ([...SHARED, 'build'].some((s) => !sameTree(path.join(work, s), path.join(d, 'core-src', s))))
+      return finish('out_of_scope', { reason: 'the edit changed the working copy outside kernels/ (core/, prof/ or build/); only kernels/ may change (reset)' });
     keepLineEndings(best, path.join(work, 'kernels'));
     // the attempt is this snapshot of the work copy: it is what gets built, measured, kept and diffed, so an edit made
     // while the eval waits for the GPU cannot slip into the best version unmeasured
     const stage = path.join(d, 'stage');
     copyDir(path.join(work, 'kernels'), path.join(stage, 'kernels'));
-    copyDir(path.join(d, 'core-src', 'core'), path.join(stage, 'core'));
-    copyDir(path.join(d, 'core-src', 'build'), path.join(stage, 'build'));
+    copyShared(path.join(d, 'core-src'), stage);
     const diff = run('git', ['diff', '--no-index', '--no-color', '--', best, path.join(stage, 'kernels')]).stdout;
     if (!diff.trim()) die('no change in work/kernels against the best version');
     rec.files = [...new Set([...diff.matchAll(/^\+\+\+ (?:"?b\/)?(.*?)"?$/gm)].map((m) => path.basename(m[1].trim())).filter((f) => f !== '/dev/null'))];
@@ -947,14 +951,16 @@ function cmdEval(k, o) {
       if (dl && !rec.files.some((f) => dl.includes(f))) continue; /* does not read a touched file (unknown: build it) */
       const candV = `${ap}.${v.name}.hsaco`, baseV = path.join(d, 'variants', `${v.name}-${st.best.attempt}.hsaco`);
       console.log(`#${n}: ${rec.files.join(', ')} ${dl ? 'is also built into' : 'may also be built into'} ${v.name}: building it ...`);
-      const cv = compile(stage, v, candV);
-      if (!cv.ok) return finish('compile_fail', { reason: `${v.name}: ` + (cv.log.split('\n').filter((l) => /error/.test(l)).slice(0, 4).join(' | ') || cv.log.slice(-300)).slice(0, 500) });
+      /* the best version's build of this variant first: if even that does not build here, the problem is the working
+       * copy's environment, not this edit, so the variant is noted and skipped rather than charged to the attempt */
       if (!fs.existsSync(baseV)) {
         const root = path.join(d, 'bestroot');
-        copyDir(best, path.join(root, 'kernels')); copyDir(path.join(d, 'core-src', 'core'), path.join(root, 'core')); copyDir(path.join(d, 'core-src', 'build'), path.join(root, 'build'));
+        copyDir(best, path.join(root, 'kernels')); copyShared(path.join(d, 'core-src'), root);
         fs.mkdirSync(path.dirname(baseV), { recursive: true });
-        if (!compile(root, v, baseV).ok) { noted.push(`${v.name} (its best build failed to compile, not compared)`); continue; }
+        if (!compile(root, v, baseV).ok) { noted.push(`${v.name} (does not build from the best version either: not compared)`); continue; }
       }
+      const cv = compile(stage, v, candV);
+      if (!cv.ok) return finish('compile_fail', { reason: `${v.name}: ` + (cv.log.split('\n').filter((l) => /error/.test(l)).slice(0, 4).join(' | ') || cv.log.slice(-300)).slice(0, 500) });
       for (const s of changedIn(baseV, candV)) {
         const rc = resources(candV, s), rb = resources(baseV, s);
         if (rc && (rc.vspill > (rb?.vspill || 0) || rc.sspill > (rb?.sspill || 0) || rc.priv > (rb?.priv || 0)))
