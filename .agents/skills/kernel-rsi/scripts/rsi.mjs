@@ -560,7 +560,8 @@ function cmdDiscover(sc, o = {}) {
   if (!s) die(`unknown scenario ${sc}`);
   return withRepo(`discover ${sc}`, () => {
     const hash = buildHash();
-    if (o.fresh) { fs.rmSync(capDir(sc), { recursive: true, force: true }); fs.rmSync(capDir(sc + '@mid'), { recursive: true, force: true }); }
+    /* a fresh discovery (the build changed) re-captures this scenario and its held-out ones; running loops keep their links */
+    if (o.fresh) for (const h of [sc, sc + '@mid', ...(C.defaultHoldouts[sc] || [])]) fs.rmSync(capDir(h), { recursive: true, force: true });
     const csv = path.join(RUNS, 'discover', sc + '.csv');
     fs.mkdirSync(path.dirname(csv), { recursive: true });
     fs.rmSync(csv, { force: true });
@@ -599,6 +600,18 @@ function cmdDiscover(sc, o = {}) {
     }
     /* no capture replaying at all is a fault in the tools (kbench, the capture hook), not in every kernel at once */
     if (rows.length && !rows.some((r) => r.replay || r.nondet)) die(`no capture of ${sc} replays (${rows.length} tried): kbench or the capture is broken; the queue was not written`, 'env');
+    // the held-out launches of every kernel worth a loop, one engine run per held-out scenario, so setting a loop up
+    // later needs no engine run of its own
+    const total0 = rows.reduce((a, r) => a + r.msPerStep, 0) || 1;
+    const worth = rows.filter((r) => r.replay && (100 * r.msPerStep) / total0 >= C.minSharePct);
+    const per = Object.fromEntries(rows.map((r) => [r.kernel, r.perStep]));
+    const holds = [...(C.defaultHoldouts[sc] || []), sc + '@mid'];
+    holds.forEach((h, i) => {
+      const need = worth.map((r) => r.kernel).filter((k) => !fs.existsSync(capPath(h, k)) && (!h.endsWith('@mid') || per[k] >= 2));
+      if (!need.length) return;
+      console.log(`4/4 capturing the held-out launches (${i + 1}/${holds.length}: ${h}, ${need.length} kernels) ...`);
+      capture(h, need, per);
+    });
     rows.sort((a, b) => b.msPerStep - a.msPerStep);
     const total = rows.reduce((a, r) => a + r.msPerStep, 0) || 1;
     for (const r of rows) r.share = +((100 * r.msPerStep) / total).toFixed(1);
@@ -667,10 +680,12 @@ function printQueue(sc) {
 // what a kernel needs: 'optimise', 'finish', or null (finished, waiting, needs a person, or not judgeable)
 const waitingNow = (st) => st?.blockedUntil && Date.parse(st.blockedUntil) > Date.now();
 const needsPerson = (st) => !!st && !st.landed && !st.done && ((st.blockCount || 0) >= (C.maxBlocks || 8) || (C.requireApproval && st.verified?.ok && !st.approved && !st.landing && stopCheck(st).stop));
+// with autoLand off, a stopped loop whose best is verified is as far as the swarm goes: it waits for "rsi land"
+const readyToLand = (st) => !C.autoLand && !!st?.best && st.verified?.ok && st.verified.attempt === st.best.attempt && !st.landed && !st.done && stopCheck(st).stop;
 function need(r) {
   if (!r.replay || r.nondet) return null;
   const st = r.st;
-  if (st?.landed || st?.done || waitingNow(st) || needsPerson(st)) return null;
+  if (st?.landed || st?.done || waitingNow(st) || needsPerson(st) || readyToLand(st)) return null;
   if (!st || st.needsReinit) return 'optimise';
   if (st.landing) return 'finish';
   return stopCheck(st).stop ? 'finish' : 'optimise';
@@ -704,10 +719,11 @@ function cmdClaim(sc, o) {
       const busy = rows.filter((r) => need(r) && claimOf(r.kernel)).map((r) => `${r.kernel} @${claimOf(r.kernel).worker}`);
       const waiting = live.filter((r) => waitingNow(r.st) && !needsPerson(r.st));
       const person = live.filter((r) => needsPerson(r.st)).map((r) => `${r.kernel} (${C.requireApproval && r.st.verified?.ok && !r.st.approved ? 'waits for rsi approve' : r.st.blockedWhy})`);
+      const ready = live.filter((r) => readyToLand(r.st)).map((r) => `${r.kernel} x${r.st.speedup.toFixed(3)}`);
       /* other workers still active: they claim again when they finish and pick the waiting kernels up then */
       if (busy.length) { console.log(`busy: the rest of ${sc} is claimed by live workers: ${busy.join(', ')}${waiting.length ? `; ${waiting.length} waiting to retry` : ''}`); return null; }
       if (waiting.length) { soonest = Math.min(...waiting.map((r) => Date.parse(r.st.blockedUntil))); return null; }
-      console.log(`none: nothing left to do in ${sc}${person.length ? `; needs a person: ${person.join(', ')}` : ` (every kernel above ${C.minSharePct}% is finished)`}`);
+      console.log(`none: nothing left to do in ${sc}${ready.length ? `; verified, ready to land with rsi land KERNEL: ${ready.join(", ")}` : ""}${person.length ? `; needs a person: ${person.join(", ")}` : ""}${!ready.length && !person.length ? ` (every kernel above ${C.minSharePct}% is finished)` : ""}`);
       return null;
     }, { waitMin: 120, maxHours: 0.5 });
     if (pick || soonest === null) break;

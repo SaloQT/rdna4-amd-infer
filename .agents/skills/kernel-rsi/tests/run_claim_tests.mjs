@@ -97,6 +97,21 @@ const r = spawnSync(process.execPath, [RSI, 'finish', ka, '--worker', 'bob'], { 
 check("finish refuses another worker's claim", /claimed by alice/.test(r.stdout + r.stderr), r.stdout + r.stderr);
 const f2 = spawnSync(process.execPath, [RSI, 'claim', SC], { encoding: 'utf8', env });
 check('claim without --worker is refused', /needs --worker/.test(f2.stdout + f2.stderr), f2.stdout + f2.stderr);
+// landing off: a stopped loop with a verified best is finished for the swarm and listed as ready to land
+setup();
+for (const k of K.slice(0, 4)) {
+  const sp = path.join(runs, 'kernels', k, 'state.json'), st = JSON.parse(fs.readFileSync(sp, 'utf8'));
+  st.attempts = 9; st.lastAccept = 1; st.best = { ...st.best, attempt: 1 }; st.speedup = 1.05; st.verified = { ok: true, attempt: 1 };
+  fs.writeFileSync(sp, JSON.stringify(st));
+}
+{ /* the fixture's waiting kernel would make claim answer "wait": finish it for this case */
+  const sp = path.join(runs, 'kernels', K[5], 'state.json'), st = JSON.parse(fs.readFileSync(sp, 'utf8'));
+  st.done = { reason: 'test' }; fs.writeFileSync(sp, JSON.stringify(st));
+}
+const cfg2 = JSON.parse(fs.readFileSync(path.join(T, 'config.json'), 'utf8'));
+fs.writeFileSync(path.join(T, 'config.json'), JSON.stringify({ ...cfg2, autoLand: false }));
+const ready = claimSync('w20');
+check('landing off: verified, stopped kernels are not handed out and are listed as ready to land', /^none:/m.test(ready) && /ready to land/.test(ready) && K.slice(0, 4).every((k) => ready.includes(k)), ready);
 
 console.log(`\n${results.filter(Boolean).length}/${results.length} passed`);
 process.exit(results.every(Boolean) ? 0 : 1);

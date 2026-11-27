@@ -1,14 +1,20 @@
 ---
 name: kernel-rsi
-description: Optimise this engine's gfx1201 GPU kernels automatically, one at a time, in a measured improve-until-it-stops loop that lands each result on main. Each edit is built, checked bit-identical against the best version so far on a captured real launch, timed cold on the GPU, kept or reverted, and logged to a JSONL ledger that report.mjs turns into charts; a finished kernel is verified, rebuilt, gated on the exact output hashes and merged. Use when asked to optimise, tune or speed up kernels, run the kernel RSI loop, find the slowest kernels, or split kernel work across a /swarm or subagents.
+description: Optimise this engine's gfx1201 GPU kernels automatically, one at a time, in a measured improve-until-it-stops loop. Each edit is built, checked bit-identical against the best version so far on a captured real launch replayed alone on the GPU, timed cold, kept or reverted, and logged to a JSONL ledger that report.mjs turns into charts; a finished kernel ends as a verified patch, landed on main through the full benchmark gate only on request (rsi land) or with autoLand on. Use when asked to optimise, tune or speed up kernels, run the kernel RSI loop, find the slowest kernels, or split kernel work across a /swarm or subagents.
 ---
 
 # Kernel RSI loop
 
-Make the engine's kernels faster through many small measured attempts, each built on the best version so far, stop
-each kernel when its attempts stop paying, and land every gain on `main`. The script `scripts/rsi.mjs` does all the
-measuring, bookkeeping, ranking and landing. You supply the ideas and the edits, one idea per attempt, so that every
-gain and every failure is attributable to a single change.
+Make the engine's kernels faster through many small measured attempts, each built on the best version so far, and
+stop each kernel when its attempts stop paying. Every measurement replays the kernel alone on the GPU from captured
+inputs; the full model runs only to record those captures (a few engine runs when the queue is made) and, when a gain
+is landed on `main`, for the exact-output gate. The script `scripts/rsi.mjs` does all the measuring, bookkeeping,
+ranking and landing. You supply the ideas and the edits, one idea per attempt, so that every gain and every failure is
+attributable to a single change.
+
+Landing is off by default (`"autoLand": false` in `scripts/rsi.config.json`): a finished kernel ends as a verified
+patch, and `rsi land KERNEL` lands it (full rebuild, benchmark gate, PR, merge) when you choose. With `autoLand` on,
+`finish` lands it straight away.
 
 All commands run from the repository root: `node .agents/skills/kernel-rsi/scripts/rsi.mjs <command>`, written
 `rsi` below. `rsi` with no command prints its usage.
@@ -51,8 +57,10 @@ Use one worker name throughout (`--worker NAME`), different from every other wor
    or a kernel found not to be deterministic; thresholds in `scripts/rsi.config.json`).
 4. `rsi finish KERNEL --worker NAME` ends the kernel and releases it:
    - no gain: marked done;
-   - otherwise it re-measures baseline against best on every capture (once more if only the timing missed) and lands
-     it: on a fresh branch from an up-to-date `main` it applies the patch, rebuilds everything with
+   - otherwise it re-measures baseline against best on every capture (once more if only the timing missed) and writes
+     the verified patch (`best.diff`). With landing off that is the end: claim no longer hands the kernel out and lists
+     it as ready to land. `rsi land KERNEL` (or `finish` with `autoLand` on) lands it as follows.
+   - landing: on a fresh branch from an up-to-date `main` it applies the patch, rebuilds everything with
      `engine/build-win.sh`, checks the gain again against `main`'s own build, runs the four exact-output stages of the
      benchmark harness against the latest promoted round's hashes, commits, pushes, opens a PR and rebase-merges it.
      If `main` moves at any point before the merge, the PR is closed and the landing starts again on the new `main`,
@@ -154,13 +162,16 @@ roles:
   and landing always go through the repository set in `scripts/rsi.config.json`. When every worker has stopped,
   runs `rsi queue vb16k_t6`: a kernel still `running` or `stopped` with no worker (its worker died; its claim
   expires after 2 hours of silence) gets a new worker. Then runs `node .agents/skills/kernel-rsi/scripts/report.mjs`
-  and posts the summary from `summary.csv` with the PR links and any kernels waiting to land with the reason.
+  and posts the summary from `summary.csv`: the verified kernels ready to land (with landing off) or the PR links,
+  and any kernels waiting with the reason. It does not land anything itself; that is `rsi land KERNEL`, run when
+  asked.
 - **Worker `@worker-N`**: runs the cycle above with `--worker worker-N`, kernel after kernel, until claim prints
   `none` or `busy`. Posts one board line per attempt (`@coordinator KERNEL #N DECISION DELTA% best X us xSPEEDUP`) and
-  one per finish (landed with the PR link, or why not). Edits only the working copy claim printed; never edits
-  `engine/` in the repository. On exit code 3 (machine or tool) it posts the message and stops.
+  one per finish (verified with its speedup, landed with the PR link, or why not). Edits only the working copy claim
+  printed; never edits `engine/` in the repository. On exit code 3 (machine or tool) it posts the message and stops.
 - **Verifier `@verifier`**: reviews each kernel a worker finishes: reads every accepted `attempts/NNN.diff` for
-  shortcuts and input-specific behaviour (the rules above) and looks at any `suspect` attempt. A landed change that
+  shortcuts and input-specific behaviour (the rules above) and looks at any `suspect` attempt, and posts which
+  verified kernels are fit to land. A landed change that
   breaks the rules is reverted with a PR of its own (after `rsi reopen KERNEL`), and the board says why. A verifier on
   a different model than the workers catches more. With `requireApproval: true` in `scripts/rsi.config.json`, nothing
   lands until the verifier has read the kernel's diffs and run `rsi approve KERNEL`; claim lists the kernels waiting
