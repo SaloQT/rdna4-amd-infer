@@ -1913,6 +1913,7 @@ void gpu_trace_flush(void) {
 }
 /* Start a run of the trace: phase, first position, tokens. */
 static void tr_run(const char *phase, uint32_t pos, uint32_t T) {
+  tr_phase = phase; /* IE_KCAP_PHASE reads it without a trace */
   if (!tr_f) return;
   if (tr_gpu) tr_drain();
   tr_phase = phase, tr_pos = pos, tr_T = T, tr_call++;
@@ -4730,20 +4731,24 @@ static inline void hip_launch_raw(gpu_backend *b, int k,
     HIP(H.ModuleLaunchKernel(b->k[k], gx, gy, gz, bx, by, bz, lds_bytes, st, args, NULL));
   }
 }
-/* IE_KCAP=NAME writes one launch of the kernel NAME (its symbol name) to a file that tools/kbench.c replays, then
- * exits. IE_KCAP_SKIP=N skips the first N launches of it, IE_KCAP_OUT=FILE names the file (default kcap.bin),
- * IE_KCAP_EXIT=0 keeps running, IE_KCAP_MAX_MB caps the bytes kept per allocation (default 4096).
+/* IE_KCAP=NAME[,NAME...] writes one launch of each named kernel (symbol name) to a file that tools/kbench.c replays,
+ * and exits once every name is captured. IE_KCAP_SKIP=N skips the first N launches of each, IE_KCAP_PHASE=P counts
+ * only launches in trace phase P (verify, decode, prefill, ds_draft, ...), IE_KCAP_OUT=FILE names the file of a
+ * single name (default kcap.bin), IE_KCAP_DIR=DIR writes DIR/NAME.kcap per name instead, IE_KCAP_EXIT=0 keeps
+ * running, IE_KCAP_MAX_MB caps the bytes kept per allocation (default 4096).
  * Format (little endian): "IEKCAP01"; u32 name length, name; u32 gx gy gz bx by bz lds; u32 argument count, then per
  * argument u32 size, u32 allocation (~0: a plain value), u64 offset in it, 8 value bytes. An 8-byte argument that
  * hipMemGetAddressRange resolves is a pointer. Then u32 allocation count and, per allocation, its bytes from the
  * lowest argument pointer to its end as pieces (u32 length + bytes, a 0 length ends it; a range mapped on demand,
  * like the KV cache, ends at the first piece that does not read). Last, per allocation, the FNV-1a hash of its bytes
  * after the launch, so a replay can check that it reproduces the engine's result. */
-enum { KCAP_MAX_REG = 64, KCAP_PIECE = 4u << 20 };
+enum { KCAP_MAX_REG = 64, KCAP_PIECE = 4u << 20, KCAP_MAX_NAMES = 64 };
 static struct {
   int state; /* 0: env not read, 1: armed, 2: off or done */
-  const char *name;
-  long skip;
+  char *names[KCAP_MAX_NAMES];
+  long skip[KCAP_MAX_NAMES];
+  u32 n_names, n_left;
+  const char *phase;
   FILE *f;
   u32 nreg;
   uint8_t *lo[KCAP_MAX_REG];
@@ -4764,23 +4769,39 @@ static void kcap_u32(u32 v) { kcap_w(&v, 4); }
 static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned lds, void **args) {
   if (kc.state == 2) return 0;
   if (!kc.state) {
-    kc.name = getenv("IE_KCAP");
-    kc.state = (kc.name && kc.name[0]) ? 1 : 2;
+    const char *e = getenv("IE_KCAP");
+    kc.state = (e && e[0]) ? 1 : 2;
     if (kc.state == 2) return 0;
-    kc.skip = getenv("IE_KCAP_SKIP") ? atol(getenv("IE_KCAP_SKIP")) : 0;
     if (!H.MemGetAddressRange) ie_die("IE_KCAP: the HIP runtime has no hipMemGetAddressRange");
+    const long skip = getenv("IE_KCAP_SKIP") ? atol(getenv("IE_KCAP_SKIP")) : 0;
+    char *list = strdup(e);
+    for (char *t = strtok(list, ","); t; t = strtok(NULL, ",")) {
+      if (kc.n_names == KCAP_MAX_NAMES) ie_die("IE_KCAP: more than %d names", KCAP_MAX_NAMES);
+      kc.skip[kc.n_names] = skip;
+      kc.names[kc.n_names++] = t;
+    }
+    kc.n_left = kc.n_names;
+    kc.phase = (getenv("IE_KCAP_PHASE") && getenv("IE_KCAP_PHASE")[0]) ? getenv("IE_KCAP_PHASE") : NULL;
+    if (!kc.n_names) kc.state = 2;
   }
+  if (b->ink_graph_cap || (kc.phase && strcmp(tr_phase, kc.phase) != 0)) return 0;
   const char *ln = kmeta_loaded_name(b->m, k);
-  if (strcmp(ln, kc.name) != 0 || b->ink_graph_cap) return 0;
-  if (kc.skip-- > 0) return 0;
-  kc.state = 2;
+  u32 ni = 0;
+  while (ni < kc.n_names && (!kc.names[ni] || strcmp(ln, kc.names[ni]) != 0)) ni++;
+  if (ni == kc.n_names || kc.skip[ni]-- > 0) return 0;
+  kc.names[ni] = NULL; /* captured */
   const k_arg_meta *km = &b->kmeta[k];
   if (!km->ok) ie_die("IE_KCAP: no argument metadata for %s", ln);
-  const char *out = (getenv("IE_KCAP_OUT") && getenv("IE_KCAP_OUT")[0]) ? getenv("IE_KCAP_OUT") : "kcap.bin";
+  char path[1024];
+  const char *dir = getenv("IE_KCAP_DIR");
+  if (dir && dir[0]) snprintf(path, sizeof path, "%s/%s.kcap", dir, ln);
+  else snprintf(path, sizeof path, "%s", (getenv("IE_KCAP_OUT") && getenv("IE_KCAP_OUT")[0]) ? getenv("IE_KCAP_OUT") : "kcap.bin");
+  const char *out = path;
   const size_t cap = (getenv("IE_KCAP_MAX_MB") ? (size_t)atol(getenv("IE_KCAP_MAX_MB")) : 4096u) << 20;
   HIP(H.DeviceSynchronize());
   uint8_t *base[KCAP_MAX_REG], *end[KCAP_MAX_REG];
   int reg[KMETA_MAX_ARGS];
+  kc.nreg = 0;
   for (u32 i = 0; i < km->n_args; i++) {
     reg[i] = -1;
     if (km->sz[i] != 8u) continue;
@@ -4838,7 +4859,7 @@ static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned ld
   fprintf(stderr, "kcap: %s grid %u x %u, %u arguments, %u allocations -> %s\n", ln, gx, gy, km->n_args, kc.nreg, out);
   return 1;
 }
-/* After the captured launch: the hashes of the output bytes; exit unless IE_KCAP_EXIT=0. */
+/* After a captured launch: the hashes of the output bytes; once every name is captured, exit unless IE_KCAP_EXIT=0. */
 static void kcap_post(void) {
   HIP(H.DeviceSynchronize());
   for (u32 r = 0; r < kc.nreg; r++) {
@@ -4853,6 +4874,8 @@ static void kcap_post(void) {
   }
   fclose(kc.f);
   free(kc.buf);
+  if (--kc.n_left) return;
+  kc.state = 2;
   fprintf(stderr, "kcap: done\n");
   if (!getenv("IE_KCAP_EXIT") || strcmp(getenv("IE_KCAP_EXIT"), "0") != 0) exit(0);
 }
