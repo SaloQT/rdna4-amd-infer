@@ -206,19 +206,19 @@ KERNEL_CALL ie_inkling_rel_attn_ver_r4(const G float *q, const G kvt *kc, const 
         }
 
         const float mn0 = __builtin_fmaxf(m0, d0);
-        const float c0 = (sum0 > 0.0f) ? __builtin_expf(m0 - mn0) : 0.0f;
+        const float c0 = (sum0 > 0.0f) ? ((mn0 == m0) ? 1.0f : __builtin_expf(m0 - mn0)) : 0.0f;
         const float e0 = __builtin_expf(d0 - mn0);
         sum0 = sum0 * c0 + e0;
         m0 = mn0;
 
         const float mn1 = __builtin_fmaxf(m1, d1);
-        const float c1 = (sum1 > 0.0f) ? __builtin_expf(m1 - mn1) : 0.0f;
+        const float c1 = (sum1 > 0.0f) ? ((mn1 == m1) ? 1.0f : __builtin_expf(m1 - mn1)) : 0.0f;
         const float e1 = __builtin_expf(d1 - mn1);
         sum1 = sum1 * c1 + e1;
         m1 = mn1;
 
         const float mn2 = __builtin_fmaxf(m2, d2);
-        const float c2 = (sum2 > 0.0f) ? __builtin_expf(m2 - mn2) : 0.0f;
+        const float c2 = (sum2 > 0.0f) ? ((mn2 == m2) ? 1.0f : __builtin_expf(m2 - mn2)) : 0.0f;
         const float e2 = __builtin_expf(d2 - mn2);
         sum2 = sum2 * c2 + e2;
         m2 = mn2;
