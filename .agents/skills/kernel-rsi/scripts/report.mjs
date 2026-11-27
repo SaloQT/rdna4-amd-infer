@@ -41,17 +41,24 @@ kernels.sort((a, b) => (b.savedMs ?? 0) - (a.savedMs ?? 0) || b.st.speedup - a.s
 all.sort((a, b) => (a.ts < b.ts ? -1 : 1));
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'all.jsonl'), all.map((r) => JSON.stringify(r)).join('\n') + '\n');
-const csvRows = [['kernel', 'unit', 'scenario', 'attempts', 'accepted', 'baseline_us', 'best_us', 'speedup', 'launches_per_run', 'saved_ms_per_run', 'verified']];
+const csvRows = [['kernel', 'unit', 'scenario', 'attempts', 'accepted', 'baseline_us', 'best_us', 'speedup', 'launches_per_run', 'saved_ms_per_run', 'state', 'pr']];
 for (const x of kernels)
   csvRows.push([x.k, x.st.unit, x.st.scenario, x.st.attempts, x.st.accepts.length, x.st.baseline.us.toFixed(3), (x.st.baseline.us / x.st.speedup).toFixed(3),
-    x.st.speedup.toFixed(4), x.perStep ?? '', x.savedMs != null ? x.savedMs.toFixed(4) : '', x.st.verified ? (x.st.verified.ok ? 'yes' : 'failed') : 'no']);
+    x.st.speedup.toFixed(4), x.perStep ?? '', x.savedMs != null ? x.savedMs.toFixed(4) : '', stateOf(x.st), x.st.landed?.pr || '']);
 fs.writeFileSync(path.join(OUT, 'summary.csv'), csvRows.map((r) => r.join(',')).join('\n') + '\n');
 
 // ---- charts
+function stateOf(st) {
+  if (st.landed) return 'landed';
+  if (st.done) return 'done: ' + st.done.reason.replace('_', ' ');
+  if (st.verified?.ok && st.verified.attempt === st.best.attempt) return 'verified';
+  return st.attempts - st.lastAccept >= C.stop.patience || st.attempts >= C.stop.maxAttempts ? 'stopped' : 'running';
+}
 function kernelChart(x) {
   const W = 360, H = 170, L = 46, R = 8, T = 10, B = 24;
-  const pts = x.led.filter((r) => r.attempt > 0 && r.cand_us);
-  const base = x.st.baseline.us;
+  const pts = x.led.filter((r) => r.tag && r.cand_us);
+  const first = x.led.find((r) => r.decision === 'baseline' || r.decision === 'rebase');
+  const base = first ? first.best_us : x.st.baseline.us;
   const ys = [base, ...pts.map((r) => r.cand_us), ...x.led.map((r) => r.best_us).filter(Boolean)];
   let lo = Math.min(...ys), hi = Math.max(...ys);
   if (hi - lo < base * 0.02) { lo -= base * 0.01; hi += base * 0.01; }
@@ -66,12 +73,13 @@ function kernelChart(x) {
   s += `<text x="${L}" y="${H - 6}" class="ax">attempt</text><text x="${W - R}" y="${H - 6}" class="ax" text-anchor="end">${n}</text>`;
   // best-so-far step line
   let best = base, d = `M${sx(0)},${sy(best)}`;
-  for (const r of x.led.filter((r) => r.attempt > 0 && r.decision !== 'verified' && r.decision !== 'verify_fail')) {
-    if (r.decision === 'accepted') { d += ` H${sx(r.attempt)} V${sy(r.best_us)}`; best = r.best_us; }
+  for (const r of x.led.filter((r) => r.tag || r.decision === 'rebase')) {
+    /* accepted: the best steps down; rebase: the loop restarted on newer engine code from a new baseline */
+    if (r.decision === 'accepted' || r.decision === 'rebase') { d += ` H${sx(r.attempt)} V${sy(r.best_us)}`; best = r.best_us; }
   }
   d += ` H${sx(n)}`;
   s += `<path d="${d}" class="best"/>`;
-  for (const r of x.led.filter((r) => r.attempt > 0 && !r.cand_us && r.decision !== 'verified' && r.decision !== 'verify_fail'))
+  for (const r of x.led.filter((r) => r.tag && !r.cand_us))
     s += `<path d="M${sx(r.attempt) - 3},${T + 3} l6,6 m0,-6 l-6,6" stroke="${COLORS[r.decision] || '#555'}" stroke-width="1.5"><title>#${r.attempt} ${esc(r.decision)}: ${esc(r.idea)}</title></path>`;
   for (const r of pts)
     s += `<circle cx="${sx(r.attempt)}" cy="${sy(r.cand_us)}" r="${r.decision === 'accepted' ? 4 : 3}" fill="${COLORS[r.decision] || '#555'}"><title>#${r.attempt} [${esc(r.tag)}] ${esc(r.decision)} ${r.delta_pct?.toFixed?.(2) ?? ''}%: ${esc(r.idea)}</title></circle>`;
@@ -84,7 +92,7 @@ function overview() {
   kernels.forEach((x, i) => {
     const y = 14 + i * rowH, w = ((W - L - 120) * (x.st.speedup - 1)) / (maxSp - 1);
     s += `<text x="${L - 6}" y="${y + 10}" class="lab" text-anchor="end">${esc(x.k.replace(/^ie_inkling_/, ''))}</text>`;
-    s += `<rect x="${L}" y="${y}" width="${Math.max(0, w)}" height="${rowH - 5}" fill="${x.st.verified?.ok ? '#1a9850' : '#66bd63'}"/>`;
+    s += `<rect x="${L}" y="${y}" width="${Math.max(0, w)}" height="${rowH - 5}" fill="${x.st.landed ? '#1a9850' : '#66bd63'}"/>`;
     s += `<text x="${L + Math.max(0, w) + 4}" y="${y + 10}" class="lab">x${x.st.speedup.toFixed(3)}${x.savedMs != null ? ` · ${(x.savedMs).toFixed(3)} ms` : ''}</text>`;
   });
   return s + '</svg>';
@@ -95,9 +103,10 @@ const legend = Object.entries(COLORS).map(([k, c]) => `<span><i style="backgroun
 const cards = kernels.map((x) => {
   const tags = {};
   for (const r of x.led.filter((r) => r.attempt > 0 && r.tag)) { tags[r.tag] ??= [0, 0]; tags[r.tag][1]++; if (r.decision === 'accepted') tags[r.tag][0]++; }
-  const stop = x.st.attempts - x.st.lastAccept >= C.stop.patience || x.st.attempts >= C.stop.maxAttempts;
+  const state = stateOf(x.st);
+  const link = x.st.landed?.pr ? ` <a href="${esc(x.st.landed.pr)}">PR</a>` : '';
   return `<section class="card"><h3 title="${esc(x.k)}">${esc(x.k.replace(/^ie_inkling_/, ''))}</h3>
-<p>${esc(x.st.scenario)} · ${x.st.baseline.us.toFixed(1)} → ${(x.st.baseline.us / x.st.speedup).toFixed(1)} µs · <b>x${x.st.speedup.toFixed(3)}</b> · ${x.st.attempts} tries, ${x.st.accepts.length} kept · ${x.st.verified?.ok ? 'verified' : stop ? 'stopped' : 'running'}</p>
+<p>${esc(x.st.scenario)} · ${x.st.baseline.us.toFixed(1)} → ${(x.st.baseline.us / x.st.speedup).toFixed(1)} µs · <b>x${x.st.speedup.toFixed(3)}</b> · ${x.st.attempts} tries, ${x.st.accepts.length} kept · ${esc(state)}${link}</p>
 ${kernelChart(x)}<p class="tags">${Object.entries(tags).map(([t, [a, n]]) => `${t} ${a}/${n}`).join(' · ') || 'no attempts yet'}</p></section>`;
 }).join('\n');
 const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
