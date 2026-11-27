@@ -5,8 +5,8 @@
  *    replay reproduced the bytes the engine produced (it checks the capture, not the kernel). If it does not, kbench
  *    stops there with exit code 3. REF runs twice first: if the two runs differ (atomics deciding an order), the
  *    kernel cannot be judged byte for byte and kbench stops with exit code 4.
- * 2. CAND (if given) must match REF byte for byte on the same inputs, including the 1 MiB past each allocation (a
- *    write past the captured memory), give the same bytes on a second run (no race), and leave the same state after
+ * 2. CAND (if given) must match REF byte for byte on the same inputs, including the 1 MiB before and after each
+ *    allocation (a write outside the captured memory), give the same bytes on a second run (no race), and leave the same state after
  *    two launches back to back without a restore (counters and buffers a kernel resets for its next launch).
  *    Otherwise kbench prints why and stops with exit code 5, untimed.
  *    Exit codes: 0 ok, 1 usage or files, 3 replay does not match the engine, 4 REF not deterministic, 5 CAND
@@ -128,11 +128,12 @@ static uint64_t fnv(uint64_t h, const uint8_t *p, size_t n) {
   for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ull;
   return h;
 }
-/* the captured inputs back in every copy, and the slack past each allocation zero again */
+/* the captured inputs back in every copy, and the slack before and after each allocation zero again */
 static void restore(void) {
   for (unsigned c = 0; c < ncopy; c++)
     for (unsigned r = 0; r < nreg; r++) {
       if (rlen[r]) CK(H.Memcpy(dev[c][r], init[r], rlen[r], H2D));
+      CK(H.Memset(dev[c][r] - SLACK, 0, SLACK));
       CK(H.Memset(dev[c][r] + rlen[r], 0, SLACK));
     }
   CK(H.DeviceSynchronize());
@@ -159,12 +160,13 @@ static hipFunction_t load_fn(const char *path, const char *name) {
   }
   return fn;
 }
-/* the bytes of copy 0, each allocation with its slack (a write past the captured end shows up there) */
+/* the bytes of copy 0, each allocation with its slack on both sides (a write outside the captured memory shows up
+ * there): SLACK bytes before the allocation, the allocation, SLACK bytes after */
 static uint8_t **download(void) {
   uint8_t **o = calloc(nreg, sizeof *o);
   for (unsigned r = 0; r < nreg; r++) {
-    if (!(o[r] = malloc(rlen[r] + SLACK))) die("out of memory");
-    CK(H.Memcpy(o[r], dev[0][r], rlen[r] + SLACK, D2H));
+    if (!(o[r] = malloc(rlen[r] + 2 * SLACK))) die("out of memory");
+    CK(H.Memcpy(o[r], dev[0][r] - SLACK, rlen[r] + 2 * SLACK, D2H));
   }
   return o;
 }
@@ -185,7 +187,7 @@ static uint8_t **run_out(hipFunction_t fn, int count) {
 static int compare(uint8_t **a, uint8_t **b, const char *label) {
   int bad = 0;
   for (unsigned r = 0; r < nreg; r++) {
-    const size_t len = rlen[r] + SLACK;
+    const size_t len = rlen[r] + 2 * SLACK;
     if (!memcmp(a[r], b[r], len)) continue;
     size_t nd = 0, first = 0;
     for (size_t i = 0; i < len; i++)
@@ -195,8 +197,9 @@ static int compare(uint8_t **a, uint8_t **b, const char *label) {
     size_t w = first & ~(size_t)3;
     float x = 0, y = 0;
     if (w + 4 <= len) memcpy(&x, a[r] + w, 4), memcpy(&y, b[r] + w, 4);
-    printf("  %s: allocation %u: %zu bytes differ, first at byte %zu%s (as f32: %.9g vs %.9g)\n", label, r, nd, first,
-           first >= rlen[r] ? " (past the captured end)" : "", x, y);
+    const long long at = (long long)first - (long long)SLACK; /* relative to the captured start */
+    printf("  %s: allocation %u: %zu bytes differ, first at byte %lld%s (as f32: %.9g vs %.9g)\n", label, r, nd, at,
+           at < 0 ? " (before the captured start)" : at >= (long long)rlen[r] ? " (past the captured end)" : "", x, y);
   }
   return bad;
 }
@@ -296,9 +299,10 @@ int main(int argc, char **argv) {
   for (unsigned c = 0; c < ncopy; c++) {
     for (unsigned r = 0; r < nreg; r++) {
       void *p;
-      CK(H.Malloc(&p, rlen[r] + SLACK)); /* zeroed slack: a kernel may read a tile past the captured end */
-      CK(H.Memset(p, 0, rlen[r] + SLACK));
-      dev[c][r] = p;
+      /* zeroed slack on both sides: a kernel may read a tile past the captured end; a write outside shows up there */
+      CK(H.Malloc(&p, rlen[r] + 2 * SLACK));
+      CK(H.Memset(p, 0, rlen[r] + 2 * SLACK));
+      dev[c][r] = (uint8_t *)p + SLACK;
     }
     for (unsigned i = 0; i < nargs; i++) {
       vals[c][i] = areg[i] == ~0u ? aval[i] : (uint64_t)(uintptr_t)(dev[c][areg[i]] + aoff[i]);
@@ -320,7 +324,7 @@ int main(int argc, char **argv) {
   free_out(out_ref2);
   int match = 1;
   for (unsigned r = 0; r < nreg; r++)
-    if (fnv(1469598103934665603ull, out_ref[r], rlen[r]) != want_hash[r]) {
+    if (fnv(1469598103934665603ull, out_ref[r] + SLACK, rlen[r]) /* the captured bytes, after the front slack */ != want_hash[r]) {
       printf("  allocation %u differs from the engine's output\n", r);
       match = 0;
     }
