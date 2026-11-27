@@ -2,7 +2,9 @@
  * and time the kernel alone, with the real arguments and the real input bytes of the engine run it came from.
  *   kbench CAPTURE REF.hsaco [CAND.hsaco] [-n LAUNCHES] [-r ROUNDS] [-k CAND_KERNEL_NAME] [--cold COPIES]
  * 1. REF is launched once on the captured inputs and every allocation is hashed: "replay matches engine" says the
- *    replay reproduced the bytes the engine produced (it checks the capture, not the kernel).
+ *    replay reproduced the bytes the engine produced (it checks the capture, not the kernel). If it does not, kbench
+ *    stops there with exit code 3. REF runs twice first: if the two runs differ (atomics deciding an order), the
+ *    kernel cannot be judged byte for byte and kbench stops with exit code 4.
  * 2. CAND (if given) is launched once on the same inputs and its outputs are compared with REF's byte for byte.
  * 3. Timing: ROUNDS rounds (default 7), REF and CAND alternating (the order flips every round); each block restores
  *    the inputs, runs 3 warm-up launches and then LAUNCHES launches (default 50) back to back between two events,
@@ -272,6 +274,23 @@ int main(int argc, char **argv) {
   launch(fr, 0);
   CK(H.DeviceSynchronize());
   uint8_t **out_ref = download();
+  restore(); /* a second REF run: bytes that differ between two runs of the same code cannot judge a candidate */
+  launch(fr, 0);
+  CK(H.DeviceSynchronize());
+  uint8_t **out_ref2 = download();
+  int det = 1;
+  for (unsigned r = 0; r < nreg; r++)
+    if (memcmp(out_ref[r], out_ref2[r], rlen[r])) {
+      size_t nd = 0;
+      for (size_t i = 0; i < rlen[r]; i++) nd += out_ref[r][i] != out_ref2[r][i];
+      printf("  allocation %u: %zu bytes differ between two runs of REF\n", r, nd);
+      det = 0;
+    }
+  if (!det) {
+    printf("REF is not deterministic (atomics or a race decide some output bytes), so a byte comparison cannot judge "
+           "this kernel\n");
+    return 4;
+  }
   int match = 1;
   for (unsigned r = 0; r < nreg; r++)
     if (fnv(1469598103934665603ull, out_ref[r], rlen[r]) != want_hash[r]) {
@@ -279,6 +298,7 @@ int main(int argc, char **argv) {
       match = 0;
     }
   printf("replay matches engine: %s\n", match ? "yes" : "NO (the capture or replay is not faithful)");
+  if (!match) return 3; /* wrong inputs: the kernel may read past the captured memory, so no candidate run or timing */
 
   if (fc) {
     restore();

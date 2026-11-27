@@ -4799,6 +4799,9 @@ static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned ld
   const char *out = path;
   const size_t cap = (getenv("IE_KCAP_MAX_MB") ? (size_t)atol(getenv("IE_KCAP_MAX_MB")) : 4096u) << 20;
   HIP(H.DeviceSynchronize());
+  /* The memory of each pointer argument. hipMemGetAddressRange gives one physical chunk of a range mapped on demand
+   * (the KV caches: 4 MiB chunks), so a range grows over the chunks of the same size mapped right after it. Ranges that
+   * overlap merge, so arguments that share memory still share it in the replay. */
   uint8_t *base[KCAP_MAX_REG], *end[KCAP_MAX_REG];
   int reg[KMETA_MAX_ARGS];
   kc.nreg = 0;
@@ -4810,14 +4813,45 @@ static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned ld
     void *ab = NULL;
     size_t as = 0;
     if (!p || H.MemGetAddressRange(&ab, &as, p) != 0 || !ab || !as) continue;
+    uint8_t *b0 = (uint8_t *)ab, *e0 = b0 + as;
+    if (as <= (64u << 20)) {
+      for (;;) {
+        void *nb = NULL;
+        size_t ns = 0;
+        if ((size_t)(e0 - b0) >= cap || H.MemGetAddressRange(&nb, &ns, e0) != 0 || (uint8_t *)nb != e0 || ns != as) break;
+        e0 += ns;
+      }
+    }
+    reg[i] = 0;
     u32 r = 0;
-    while (r < kc.nreg && base[r] != (uint8_t *)ab) r++;
+    while (r < kc.nreg && (e0 <= base[r] || b0 >= end[r])) r++;
     if (r == kc.nreg) {
       if (kc.nreg == KCAP_MAX_REG) ie_die("IE_KCAP: more than %d allocations", KCAP_MAX_REG);
-      base[r] = (uint8_t *)ab, end[r] = (uint8_t *)ab + as, kc.lo[r] = p, kc.nreg++;
+      base[r] = b0, end[r] = e0, kc.nreg++;
+    } else {
+      if (b0 < base[r]) base[r] = b0;
+      if (e0 > end[r]) end[r] = e0;
     }
-    if (p < kc.lo[r]) kc.lo[r] = p;
+  }
+  for (int merged = 1; merged;) { /* a grown range may now overlap others */
+    merged = 0;
+    for (u32 a = 0; a < kc.nreg && !merged; a++)
+      for (u32 c = a + 1; c < kc.nreg && !merged; c++)
+        if (base[c] < end[a] && base[a] < end[c]) {
+          if (base[c] < base[a]) base[a] = base[c];
+          if (end[c] > end[a]) end[a] = end[c];
+          base[c] = base[kc.nreg - 1], end[c] = end[kc.nreg - 1], kc.nreg--, merged = 1;
+        }
+  }
+  for (u32 r = 0; r < kc.nreg; r++) kc.lo[r] = end[r];
+  for (u32 i = 0; i < km->n_args; i++) {
+    if (reg[i] < 0) continue;
+    uint8_t *p;
+    memcpy(&p, args[i], 8);
+    u32 r = 0;
+    while (!(p >= base[r] && p < end[r])) r++;
     reg[i] = (int)r;
+    if (p < kc.lo[r]) kc.lo[r] = p;
   }
   if (!(kc.f = fopen(out, "wb"))) ie_die("IE_KCAP: cannot write %s", out);
   kcap_w("IEKCAP01", 8);
