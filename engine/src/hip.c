@@ -63,6 +63,7 @@ static struct {
   hipError_t (*EventCreateWithFlags)(hipEvent_t *, unsigned);
   hipError_t (*EventRecord)(hipEvent_t, hipStream_t);
   hipError_t (*EventQuery)(hipEvent_t);
+  hipError_t (*MemGetAddressRange)(void **, size_t *, void *); /* optional: IE_KCAP only */
   hipError_t (*EventSynchronize)(hipEvent_t);
   hipError_t (*EventElapsedTime)(float *, hipEvent_t, hipEvent_t);
   hipError_t (*EventDestroy)(hipEvent_t);
@@ -237,6 +238,7 @@ static void hip_load(void) {
 #undef SYM
   *(void **)&H.EventCreateWithFlags = dlsym(H.lib, "hipEventCreateWithFlags");
   *(void **)&H.EventQuery = dlsym(H.lib, "hipEventQuery");
+  *(void **)&H.MemGetAddressRange = dlsym(H.lib, "hipMemGetAddressRange");
   *(void **)&H.MemAddressReserve = dlsym(H.lib, "hipMemAddressReserve");
   *(void **)&H.MemAddressFree = dlsym(H.lib, "hipMemAddressFree");
   *(void **)&H.MemCreate = dlsym(H.lib, "hipMemCreate");
@@ -4728,11 +4730,140 @@ static inline void hip_launch_raw(gpu_backend *b, int k,
     HIP(H.ModuleLaunchKernel(b->k[k], gx, gy, gz, bx, by, bz, lds_bytes, st, args, NULL));
   }
 }
+/* IE_KCAP=NAME writes one launch of the kernel NAME (its symbol name) to a file that tools/kbench.c replays, then
+ * exits. IE_KCAP_SKIP=N skips the first N launches of it, IE_KCAP_OUT=FILE names the file (default kcap.bin),
+ * IE_KCAP_EXIT=0 keeps running, IE_KCAP_MAX_MB caps the bytes kept per allocation (default 4096).
+ * Format (little endian): "IEKCAP01"; u32 name length, name; u32 gx gy gz bx by bz lds; u32 argument count, then per
+ * argument u32 size, u32 allocation (~0: a plain value), u64 offset in it, 8 value bytes. An 8-byte argument that
+ * hipMemGetAddressRange resolves is a pointer. Then u32 allocation count and, per allocation, its bytes from the
+ * lowest argument pointer to its end as pieces (u32 length + bytes, a 0 length ends it; a range mapped on demand,
+ * like the KV cache, ends at the first piece that does not read). Last, per allocation, the FNV-1a hash of its bytes
+ * after the launch, so a replay can check that it reproduces the engine's result. */
+enum { KCAP_MAX_REG = 64, KCAP_PIECE = 4u << 20 };
+static struct {
+  int state; /* 0: env not read, 1: armed, 2: off or done */
+  const char *name;
+  long skip;
+  FILE *f;
+  u32 nreg;
+  uint8_t *lo[KCAP_MAX_REG];
+  size_t len[KCAP_MAX_REG];
+  uint8_t *buf;
+} kc;
+
+static uint64_t kcap_hash(uint64_t h, const uint8_t *p, size_t n) {
+  for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ull;
+  return h;
+}
+static void kcap_w(const void *p, size_t n) {
+  if (fwrite(p, 1, n, kc.f) != n) ie_die("IE_KCAP: write failed");
+}
+static void kcap_u32(u32 v) { kcap_w(&v, 4); }
+
+/* Before a launch: 1 if this is the launch to capture (its arguments and input bytes are written). */
+static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned lds, void **args) {
+  if (kc.state == 2) return 0;
+  if (!kc.state) {
+    kc.name = getenv("IE_KCAP");
+    kc.state = (kc.name && kc.name[0]) ? 1 : 2;
+    if (kc.state == 2) return 0;
+    kc.skip = getenv("IE_KCAP_SKIP") ? atol(getenv("IE_KCAP_SKIP")) : 0;
+    if (!H.MemGetAddressRange) ie_die("IE_KCAP: the HIP runtime has no hipMemGetAddressRange");
+  }
+  const char *ln = kmeta_loaded_name(b->m, k);
+  if (strcmp(ln, kc.name) != 0 || b->ink_graph_cap) return 0;
+  if (kc.skip-- > 0) return 0;
+  kc.state = 2;
+  const k_arg_meta *km = &b->kmeta[k];
+  if (!km->ok) ie_die("IE_KCAP: no argument metadata for %s", ln);
+  const char *out = (getenv("IE_KCAP_OUT") && getenv("IE_KCAP_OUT")[0]) ? getenv("IE_KCAP_OUT") : "kcap.bin";
+  const size_t cap = (getenv("IE_KCAP_MAX_MB") ? (size_t)atol(getenv("IE_KCAP_MAX_MB")) : 4096u) << 20;
+  HIP(H.DeviceSynchronize());
+  uint8_t *base[KCAP_MAX_REG], *end[KCAP_MAX_REG];
+  int reg[KMETA_MAX_ARGS];
+  for (u32 i = 0; i < km->n_args; i++) {
+    reg[i] = -1;
+    if (km->sz[i] != 8u) continue;
+    uint8_t *p;
+    memcpy(&p, args[i], 8);
+    void *ab = NULL;
+    size_t as = 0;
+    if (!p || H.MemGetAddressRange(&ab, &as, p) != 0 || !ab || !as) continue;
+    u32 r = 0;
+    while (r < kc.nreg && base[r] != (uint8_t *)ab) r++;
+    if (r == kc.nreg) {
+      if (kc.nreg == KCAP_MAX_REG) ie_die("IE_KCAP: more than %d allocations", KCAP_MAX_REG);
+      base[r] = (uint8_t *)ab, end[r] = (uint8_t *)ab + as, kc.lo[r] = p, kc.nreg++;
+    }
+    if (p < kc.lo[r]) kc.lo[r] = p;
+    reg[i] = (int)r;
+  }
+  if (!(kc.f = fopen(out, "wb"))) ie_die("IE_KCAP: cannot write %s", out);
+  kcap_w("IEKCAP01", 8);
+  kcap_u32((u32)strlen(ln));
+  kcap_w(ln, strlen(ln));
+  const u32 geo[7] = {gx, gy, 1u, 256u, 1u, 1u, lds};
+  kcap_w(geo, sizeof geo);
+  kcap_u32(km->n_args);
+  for (u32 i = 0; i < km->n_args; i++) {
+    uint8_t v[8] = {0};
+    uint64_t off = 0;
+    memcpy(v, args[i], km->sz[i]);
+    if (reg[i] >= 0) {
+      uint8_t *p;
+      memcpy(&p, args[i], 8);
+      off = (uint64_t)(p - kc.lo[reg[i]]);
+    }
+    kcap_u32(km->sz[i]);
+    kcap_u32(reg[i] >= 0 ? (u32)reg[i] : ~0u);
+    kcap_w(&off, 8);
+    kcap_w(v, 8);
+  }
+  if (!(kc.buf = malloc(KCAP_PIECE))) ie_die("out of memory");
+  kcap_u32(kc.nreg);
+  for (u32 r = 0; r < kc.nreg; r++) {
+    size_t want = (size_t)(end[r] - kc.lo[r]), got = 0;
+    if (want > cap) want = cap;
+    while (got < want) {
+      size_t n = want - got < KCAP_PIECE ? want - got : KCAP_PIECE;
+      if (H.Memcpy(kc.buf, kc.lo[r] + got, n, hipMemcpyDeviceToHost) != 0) break;
+      kcap_u32((u32)n);
+      kcap_w(kc.buf, n);
+      got += n;
+    }
+    kcap_u32(0u);
+    kc.len[r] = got;
+    fprintf(stderr, "kcap: allocation %u: %.1f MB\n", r, got / 1048576.0);
+  }
+  fprintf(stderr, "kcap: %s grid %u x %u, %u arguments, %u allocations -> %s\n", ln, gx, gy, km->n_args, kc.nreg, out);
+  return 1;
+}
+/* After the captured launch: the hashes of the output bytes; exit unless IE_KCAP_EXIT=0. */
+static void kcap_post(void) {
+  HIP(H.DeviceSynchronize());
+  for (u32 r = 0; r < kc.nreg; r++) {
+    uint64_t h = 1469598103934665603ull;
+    for (size_t got = 0; got < kc.len[r];) {
+      size_t n = kc.len[r] - got < KCAP_PIECE ? kc.len[r] - got : KCAP_PIECE;
+      HIP(H.Memcpy(kc.buf, kc.lo[r] + got, n, hipMemcpyDeviceToHost));
+      h = kcap_hash(h, kc.buf, n);
+      got += n;
+    }
+    kcap_w(&h, 8);
+  }
+  fclose(kc.f);
+  free(kc.buf);
+  fprintf(stderr, "kcap: done\n");
+  if (!getenv("IE_KCAP_EXIT") || strcmp(getenv("IE_KCAP_EXIT"), "0") != 0) exit(0);
+}
+
 static uint64_t launch_n; /* kernel launches issued so far */
 static void launch_grid(gpu_backend *b, int k, unsigned groups, unsigned T, unsigned lds_bytes, void **args) {
   if (mk_put(k, groups, T, lds_bytes, args)) { tr_mk_add(mk.n); return; }
   tr_event *event = tr_begin();
+  const int kcap = kcap_pre(b, k, groups, T, lds_bytes, args);
   hip_launch_raw(b, k, groups, T, 1, 256, 1, 1, lds_bytes, cur_stream, args);
+  if (kcap) kcap_post();
   launch_n++;
   tr_launch(kname[k], groups, T, &tr_op, 1, event);
   if (dbg_twice(k)) {
