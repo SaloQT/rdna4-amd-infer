@@ -1,5 +1,6 @@
 {
   "lab": "C:/Users/SaloQT/src/rdna4-kernel-lab",
+  "repo": "C:/Users/SaloQT/src/rdna4-amd-infer",
   "rocmBin": "{lab}/.rocm-venv/Lib/site-packages/_rocm_sdk_core/bin",
   "llvmBin": "{lab}/.rocm-venv/Lib/site-packages/_rocm_sdk_core/lib/llvm/bin",
   "model": "{lab}/models/Inkling-2-Mini-Uncensored-IQ3_XXS-fast.gguf",
@@ -11,11 +12,20 @@
   },
   "runsDir": "{lab}/results/inkling2/rsi",
   "labGpuLock": "{lab}/ref/.gpu-lock",
+  "labLocks": ["{lab}/ref/.gpu-lock", "{lab}/research/q4-attention/state/lock.json"],
+  "labFaultMarker": "{lab}/ref/.gpu-fault",
+  "requireApproval": false,
+  "gateMinSpeedPct": 93,
   "sh": "C:/Program Files/Git/bin/sh.exe",
+  "gcc": "gcc",
   "harness": "{lab}/bench/inkling2_40r_harness.py",
   "autoLand": true,
   "minSharePct": 0.5,
+  "minFreeGB": 20,
   "claimStaleHours": 2,
+  "blockedRetryMinutes": 30,
+  "maxLandTries": 3,
+  "gpuBusyProcesses": ["ie-serve.exe", "ie-run.exe", "ie-lab.exe", "llama-server.exe", "kbench.exe"],
   "scenarios": {
     "vb16k_t6": { "prompt": "16k", "T": 6, "phase": "verify", "about": "DSpark verify of 6 distinct tokens at 16K (the common verify width)" },
     "vb16k_t8": { "prompt": "16k", "T": 8, "phase": "verify", "about": "verify of 8 tokens at 16K" },
@@ -32,8 +42,8 @@
     "t1_4k": ["t1_16k"],
     "pf4k": []
   },
-  "kbench": { "cold": 8, "rounds": 15, "launches": 50 },
-  "accept": { "minGainPct": 1.0, "holdoutTolPct": 1.0, "suspectSpeedup": 2.0 },
+  "kbench": { "cold": 8, "rounds": 15, "launches": 50, "vramBudgetMB": 6000, "timeoutSec": 300 },
+  "accept": { "minGainPct": 1.0, "holdoutTolPct": 1.0, "suspectSpeedup": 2.0, "noiseGuardPct": 5.0 },
   "stop": { "patience": 8, "maxAttempts": 40, "diminishingPct": 1.5 },
   "tags": ["memory", "alu", "parallelism", "sync", "schedule", "occupancy", "algorithm"]
 }
