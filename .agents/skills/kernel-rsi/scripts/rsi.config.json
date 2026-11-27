@@ -19,7 +19,7 @@
   "sh": "C:/Program Files/Git/bin/sh.exe",
   "gcc": "gcc",
   "harness": "{lab}/bench/inkling2_40r_harness.py",
-  "autoLand": true,
+  "autoLand": false,
   "minSharePct": 0.5,
   "minFreeGB": 20,
   "claimStaleHours": 2,
