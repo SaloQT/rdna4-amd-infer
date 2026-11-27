@@ -5,7 +5,12 @@
  *    replay reproduced the bytes the engine produced (it checks the capture, not the kernel). If it does not, kbench
  *    stops there with exit code 3. REF runs twice first: if the two runs differ (atomics deciding an order), the
  *    kernel cannot be judged byte for byte and kbench stops with exit code 4.
- * 2. CAND (if given) is launched once on the same inputs and its outputs are compared with REF's byte for byte.
+ * 2. CAND (if given) must match REF byte for byte on the same inputs, including the 1 MiB past each allocation (a
+ *    write past the captured memory), give the same bytes on a second run (no race), and leave the same state after
+ *    two launches back to back without a restore (counters and buffers a kernel resets for its next launch).
+ *    Otherwise kbench prints why and stops with exit code 5, untimed.
+ *    Exit codes: 0 ok, 1 usage or files, 3 replay does not match the engine, 4 REF not deterministic, 5 CAND
+ *    differs, 6 no valid timing from the events, 7 HIP error (a fault or failed launch).
  * 3. Timing: ROUNDS rounds (default 7), REF and CAND alternating (the order flips every round); each block restores
  *    the inputs, runs 3 warm-up launches and then LAUNCHES launches (default 50) back to back between two events,
  *    and gives microseconds per launch. It prints the median and the minimum over the rounds. A block whose events
@@ -53,7 +58,7 @@ static struct {
     hipError_t e_ = (x);                                                                                   \
     if (e_) {                                                                                              \
       fprintf(stderr, "HIP error %d (%s) at line %d: %s\n", e_, H.GetErrorString(e_), __LINE__, #x);      \
-      exit(1);                                                                                             \
+      exit(7); /* a GPU fault or launch failure: often the candidate */                                    \
     }                                                                                                      \
   } while (0)
 
@@ -123,10 +128,13 @@ static uint64_t fnv(uint64_t h, const uint8_t *p, size_t n) {
   for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ull;
   return h;
 }
+/* the captured inputs back in every copy, and the slack past each allocation zero again */
 static void restore(void) {
   for (unsigned c = 0; c < ncopy; c++)
-    for (unsigned r = 0; r < nreg; r++)
+    for (unsigned r = 0; r < nreg; r++) {
       if (rlen[r]) CK(H.Memcpy(dev[c][r], init[r], rlen[r], H2D));
+      CK(H.Memset(dev[c][r] + rlen[r], 0, SLACK));
+    }
   CK(H.DeviceSynchronize());
 }
 static void launch(hipFunction_t fn, unsigned c) {
@@ -151,14 +159,46 @@ static hipFunction_t load_fn(const char *path, const char *name) {
   }
   return fn;
 }
-/* the bytes of copy 0 after a launch */
+/* the bytes of copy 0, each allocation with its slack (a write past the captured end shows up there) */
 static uint8_t **download(void) {
   uint8_t **o = calloc(nreg, sizeof *o);
   for (unsigned r = 0; r < nreg; r++) {
-    if (!(o[r] = malloc(rlen[r] ? rlen[r] : 1))) die("out of memory");
-    if (rlen[r]) CK(H.Memcpy(o[r], dev[0][r], rlen[r], D2H));
+    if (!(o[r] = malloc(rlen[r] + SLACK))) die("out of memory");
+    CK(H.Memcpy(o[r], dev[0][r], rlen[r] + SLACK, D2H));
   }
   return o;
+}
+static void free_out(uint8_t **o) {
+  if (!o) return;
+  for (unsigned r = 0; r < nreg; r++) free(o[r]);
+  free(o);
+}
+static void launch(hipFunction_t fn, unsigned c);
+/* copy 0 after `count` launches back to back from the restored inputs */
+static uint8_t **run_out(hipFunction_t fn, int count) {
+  restore();
+  for (int i = 0; i < count; i++) launch(fn, 0);
+  CK(H.DeviceSynchronize());
+  return download();
+}
+/* the allocations where a and b differ (slack included), one line each when `label` is set */
+static int compare(uint8_t **a, uint8_t **b, const char *label) {
+  int bad = 0;
+  for (unsigned r = 0; r < nreg; r++) {
+    const size_t len = rlen[r] + SLACK;
+    if (!memcmp(a[r], b[r], len)) continue;
+    size_t nd = 0, first = 0;
+    for (size_t i = 0; i < len; i++)
+      if (a[r][i] != b[r][i] && !nd++) first = i;
+    bad++;
+    if (!label) continue;
+    size_t w = first & ~(size_t)3;
+    float x = 0, y = 0;
+    if (w + 4 <= len) memcpy(&x, a[r] + w, 4), memcpy(&y, b[r] + w, 4);
+    printf("  %s: allocation %u: %zu bytes differ, first at byte %zu%s (as f32: %.9g vs %.9g)\n", label, r, nd, first,
+           first >= rlen[r] ? " (past the captured end)" : "", x, y);
+  }
+  return bad;
 }
 
 static hipEvent_t e0, e1;
@@ -181,8 +221,8 @@ static double block(hipFunction_t fn, int n) {
     if (t > 0) return t;
     n_retry++;
   }
-  die("the events gave no valid time in 5 tries");
-  return 0;
+  fprintf(stderr, "kbench: the events gave no valid time in 5 tries\n");
+  exit(6); /* the timing is unavailable (WDDM), not a verdict on the kernel */
 }
 static int cmpd(const void *a, const void *b) {
   double x = *(const double *)a, y = *(const double *)b;
@@ -270,27 +310,14 @@ int main(int argc, char **argv) {
   printf(ncopy > 1 ? ", %u copies)\n" : ")\n", ncopy);
 
   hipFunction_t fr = load_fn(refp, kname), fc = candp ? load_fn(candp, cname) : NULL;
-  restore();
-  launch(fr, 0);
-  CK(H.DeviceSynchronize());
-  uint8_t **out_ref = download();
-  restore(); /* a second REF run: bytes that differ between two runs of the same code cannot judge a candidate */
-  launch(fr, 0);
-  CK(H.DeviceSynchronize());
-  uint8_t **out_ref2 = download();
-  int det = 1;
-  for (unsigned r = 0; r < nreg; r++)
-    if (memcmp(out_ref[r], out_ref2[r], rlen[r])) {
-      size_t nd = 0;
-      for (size_t i = 0; i < rlen[r]; i++) nd += out_ref[r][i] != out_ref2[r][i];
-      printf("  allocation %u: %zu bytes differ between two runs of REF\n", r, nd);
-      det = 0;
-    }
-  if (!det) {
+  uint8_t **out_ref = run_out(fr, 1);
+  uint8_t **out_ref2 = run_out(fr, 1); /* bytes that differ between two runs of the same code cannot judge a candidate */
+  if (compare(out_ref, out_ref2, "REF run 1 vs run 2")) {
     printf("REF is not deterministic (atomics or a race decide some output bytes), so a byte comparison cannot judge "
            "this kernel\n");
     return 4;
   }
+  free_out(out_ref2);
   int match = 1;
   for (unsigned r = 0; r < nreg; r++)
     if (fnv(1469598103934665603ull, out_ref[r], rlen[r]) != want_hash[r]) {
@@ -301,25 +328,30 @@ int main(int argc, char **argv) {
   if (!match) return 3; /* wrong inputs: the kernel may read past the captured memory, so no candidate run or timing */
 
   if (fc) {
-    restore();
-    launch(fc, 0);
-    CK(H.DeviceSynchronize());
-    uint8_t **out_c = download();
-    int same = 1;
-    for (unsigned r = 0; r < nreg; r++) {
-      size_t nd = 0, first = 0;
-      for (size_t i = 0; i < rlen[r]; i++)
-        if (out_ref[r][i] != out_c[r][i] && !nd++) first = i;
-      if (!nd) continue;
-      same = 0;
-      size_t w = first & ~(size_t)3;
-      float a = 0, c = 0;
-      if (w + 4 <= rlen[r]) memcpy(&a, out_ref[r] + w, 4), memcpy(&c, out_c[r] + w, 4);
-      printf("  allocation %u: %zu bytes differ, first at byte %zu (as f32: ref %.9g cand %.9g)\n", r, nd, first, a,
-             c);
+    /* the candidate must match REF byte for byte (slack included: no write past the captured memory), give the
+     * same bytes on a second run (no race), and leave the same state for a following launch (two launches back to
+     * back without a restore: counters and partial buffers a kernel resets for the next launch) */
+    uint8_t **c1 = run_out(fc, 1);
+    int bad = compare(out_ref, c1, "REF vs CAND");
+    const char *why = bad ? "output differs" : NULL;
+    if (!bad) {
+      uint8_t **c2 = run_out(fc, 1);
+      if (compare(c1, c2, "CAND run 1 vs run 2")) bad = 1, why = "CAND is not deterministic";
+      free_out(c2);
     }
-    printf("candidate output: %s\n", same ? "bit-identical to REF" : "DIFFERS from REF");
+    if (!bad) {
+      uint8_t **rb = run_out(fr, 2), **cb = run_out(fc, 2);
+      if (compare(rb, cb, "two launches back to back, REF vs CAND")) bad = 1, why = "state left for the next launch differs";
+      free_out(rb), free_out(cb);
+    }
+    free_out(c1);
+    if (bad) {
+      printf("candidate output: DIFFERS from REF (%s)\n", why);
+      return 5; /* not judged on speed */
+    }
+    printf("candidate output: bit-identical to REF\n");
   }
+  free_out(out_ref);
 
   CK(H.EventCreate(&e0));
   CK(H.EventCreate(&e1));

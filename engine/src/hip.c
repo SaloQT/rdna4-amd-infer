@@ -4731,8 +4731,9 @@ static inline void hip_launch_raw(gpu_backend *b, int k,
     HIP(H.ModuleLaunchKernel(b->k[k], gx, gy, gz, bx, by, bz, lds_bytes, st, args, NULL));
   }
 }
-/* IE_KCAP=NAME[,NAME...] writes one launch of each named kernel (symbol name) to a file that tools/kbench.c replays,
- * and exits once every name is captured. IE_KCAP_SKIP=N skips the first N launches of each, IE_KCAP_PHASE=P counts
+/* IE_KCAP=NAME[@N][,NAME[@N]...] writes one launch of each named kernel (symbol name) to a file that tools/kbench.c
+ * replays, and exits once every name is captured. NAME@N takes that kernel's launch N (0-based), otherwise
+ * IE_KCAP_SKIP=N skips the first N launches of each. IE_KCAP_PHASE=P counts
  * only launches in trace phase P (verify, decode, prefill, ds_draft, ...), IE_KCAP_OUT=FILE names the file of a
  * single name (default kcap.bin), IE_KCAP_DIR=DIR writes DIR/NAME.kcap per name instead, IE_KCAP_EXIT=0 keeps
  * running, IE_KCAP_MAX_MB caps the bytes kept per allocation (default 4096).
@@ -4754,6 +4755,7 @@ static struct {
   uint8_t *lo[KCAP_MAX_REG];
   size_t len[KCAP_MAX_REG];
   uint8_t *buf;
+  char path[1024], tmp[1040]; /* written to tmp, renamed to path when complete: a crash leaves no truncated capture */
 } kc;
 
 static uint64_t kcap_hash(uint64_t h, const uint8_t *p, size_t n) {
@@ -4777,7 +4779,9 @@ static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned ld
     char *list = strdup(e);
     for (char *t = strtok(list, ","); t; t = strtok(NULL, ",")) {
       if (kc.n_names == KCAP_MAX_NAMES) ie_die("IE_KCAP: more than %d names", KCAP_MAX_NAMES);
-      kc.skip[kc.n_names] = skip;
+      char *at = strchr(t, '@'); /* NAME@N: that kernel's launch N (0-based) instead of IE_KCAP_SKIP */
+      kc.skip[kc.n_names] = at ? atol(at + 1) : skip;
+      if (at) *at = '\0';
       kc.names[kc.n_names++] = t;
     }
     kc.n_left = kc.n_names;
@@ -4853,7 +4857,9 @@ static int kcap_pre(gpu_backend *b, int k, unsigned gx, unsigned gy, unsigned ld
     reg[i] = (int)r;
     if (p < kc.lo[r]) kc.lo[r] = p;
   }
-  if (!(kc.f = fopen(out, "wb"))) ie_die("IE_KCAP: cannot write %s", out);
+  snprintf(kc.path, sizeof kc.path, "%s", out);
+  snprintf(kc.tmp, sizeof kc.tmp, "%s.tmp", out);
+  if (!(kc.f = fopen(kc.tmp, "wb"))) ie_die("IE_KCAP: cannot write %s", kc.tmp);
   kcap_w("IEKCAP01", 8);
   kcap_u32((u32)strlen(ln));
   kcap_w(ln, strlen(ln));
@@ -4906,7 +4912,9 @@ static void kcap_post(void) {
     }
     kcap_w(&h, 8);
   }
-  fclose(kc.f);
+  if (fclose(kc.f) != 0) ie_die("IE_KCAP: write failed");
+  remove(kc.path);
+  if (rename(kc.tmp, kc.path) != 0) ie_die("IE_KCAP: cannot rename %s", kc.tmp);
   free(kc.buf);
   if (--kc.n_left) return;
   kc.state = 2;
