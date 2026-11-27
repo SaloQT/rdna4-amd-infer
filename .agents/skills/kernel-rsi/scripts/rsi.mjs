@@ -440,6 +440,20 @@ function stopCheck(st, led) {
   return { stop: false, why: `${since}/${C.stop.patience} attempts since the last gain, ${st.attempts}/${C.stop.maxAttempts} in all` };
 }
 
+// An editor on Windows may save a file with CRLF; the repository's sources use LF. A file whose line endings changed
+// gets the original ones back, so the diff (and the commit that lands) holds only the real change.
+function keepLineEndings(bestDir, workDir) {
+  for (const f of fs.readdirSync(workDir)) {
+    const w = path.join(workDir, f), b = path.join(bestDir, f);
+    if (!fs.existsSync(b) || !fs.statSync(w).isFile()) continue;
+    const wt = fs.readFileSync(w, 'latin1'), bt = fs.readFileSync(b, 'latin1');
+    if (wt === bt) continue;
+    const bCrlf = bt.includes('\r\n'), wCrlf = wt.includes('\r\n');
+    if (!bCrlf && wCrlf) fs.writeFileSync(w, wt.replace(/\r\n/g, '\n'), 'latin1');
+    else if (bCrlf && !wCrlf) fs.writeFileSync(w, wt.replace(/\n/g, '\r\n'), 'latin1');
+  }
+}
+
 function cmdEval(k, o) {
   if (!k || !o.idea || !o.tag) die('usage: eval KERNEL --idea "TEXT" --tag TAG [--worker NAME]');
   if (!C.tags.includes(o.tag)) die(`tag must be one of ${C.tags.join(', ')}`);
@@ -451,6 +465,7 @@ function cmdEval(k, o) {
   if (cl && o.worker && cl.worker !== o.worker) die(`${k} is claimed by ${cl.worker}`);
   const work = path.join(d, 'work'), best = path.join(d, 'best-src');
   const n = st.attempts + 1;
+  keepLineEndings(best, path.join(work, 'kernels'));
   const diff = run('git', ['diff', '--no-index', '--no-color', '--', best, path.join(work, 'kernels')]).out;
   if (!diff.trim()) die('no change in work/kernels against the best version');
   const files = [...diff.matchAll(/^\+\+\+ b?(.*)$/gm)].map((m) => path.basename(m[1].trim().replace(/^"|"$/g, "")));
