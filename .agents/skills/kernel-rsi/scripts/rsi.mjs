@@ -285,7 +285,7 @@ function buildStale() {
   if (outs.some((p) => !fs.existsSync(p))) return 'engine/build is missing outputs';
   const b = readJson(BUILT(), null);
   if (b?.sha && git(['cat-file', '-e', b.sha + '^{commit}']).code === 0) {
-    const same = git(['diff', '--quiet', b.sha, 'HEAD', '--', 'engine/src', 'engine/kernels', 'engine/core', 'engine/build-win.sh', 'engine/tools']).code === 0;
+    const same = git(['diff', '--quiet', b.sha, 'HEAD', '--', 'engine/src', 'engine/kernels', 'engine/core', 'engine/build-win.sh', 'engine/tools/mk_gen.py', 'engine/tools/build-inkling-kernels.sh', 'engine/tools/build-saluki-kernels.sh', 'engine/tools/build-vision-kernels.sh', 'engine/Makefile']).code === 0;
     return same && !dirtyEngine() ? null : 'the engine code changed since engine/build was built';
   }
   const built = Math.min(...outs.map((p) => fs.statSync(p).mtimeMs));
@@ -585,6 +585,8 @@ function cmdDiscover(sc, o = {}) {
       else if (!ok) console.log(`  ${k}: ${r.kind === 'replay' ? 'the replay does not match the engine' : 'kbench ' + r.kind}; skipped`);
       rows.push({ kernel: k, unit, perStep: +perStep.toFixed(2), grid: groups[k], us: ok ? r.ref[0] : 0, msPerStep: ok ? +((r.ref[0] * perStep) / 1000).toFixed(4) : 0, replay: ok, nondet });
     }
+    /* no capture replaying at all is a fault in the tools (kbench, the capture hook), not in every kernel at once */
+    if (rows.length && !rows.some((r) => r.replay || r.nondet)) die(`no capture of ${sc} replays (${rows.length} tried): kbench or the capture is broken; the queue was not written`, 'env');
     rows.sort((a, b) => b.msPerStep - a.msPerStep);
     const total = rows.reduce((a, r) => a + r.msPerStep, 0) || 1;
     for (const r of rows) r.share = +((100 * r.msPerStep) / total).toFixed(1);
