@@ -258,7 +258,11 @@ function withLock(lockPath, what, fn, { waitMin = 90, maxHours = 8, gpu = false 
 }
 const withGpu = (what, fn) => withLock(path.join(RUNS, '.gpu-lock'), what, fn, { gpu: true, maxHours: 6 });
 const withRepo = (what, fn) => withLock(path.join(RUNS, '.repo-lock'), what, fn, { waitMin: 240, maxHours: 12 });
-const withKernel = (k, what, fn) => withLock(path.join(kdir(k), '.lock'), what, fn, { waitMin: 240, maxHours: 12 });
+// only init creates a kernel's folder: anything else on a kernel with no loop is a mistake, not a new loop
+const withKernel = (k, what, fn) => {
+  if (!fs.existsSync(kdir(k))) die(`no loop for ${k}: claim it (or init it)`);
+  return withLock(path.join(kdir(k), '.lock'), what, fn, { waitMin: 240, maxHours: 12 });
+};
 
 // ---------------------------------------------------------------- git and builds
 const git = (argv, o = {}) => run('git', argv, { cwd: REPO, timeout: 300000, ...o });
@@ -270,8 +274,9 @@ function mustGit(argv, what, kind = 'error') {
 const branchNow = () => git(['rev-parse', '--abbrev-ref', 'HEAD']).out.trim();
 const dirtyEngine = () => git(['status', '--porcelain', '--untracked-files=no', '--', 'engine']).out.trim();
 const dirtyAll = () => git(['status', '--porcelain', '--untracked-files=no']).out.trim();
-const BROKEN = () => path.join(RUNS, '.build-broken');
-const BUILT = () => path.join(RUNS, '.build-head'); /* the commit engine/build was built from */
+// both describe engine/build itself, so they live there (ignored by git), shared by every runs directory
+const BROKEN = () => path.join(ENGINE, 'build', '.rsi-build-broken');
+const BUILT = () => path.join(ENGINE, 'build', '.rsi-build-head'); /* the commit engine/build was built from */
 const headSha = () => git(['rev-parse', 'HEAD']).out.trim();
 // the whole engine (host + every code object) with build-win.sh; while it runs, and if it fails, .build-broken says
 // that engine/build may not match the checked-out source. On success .build-head records the commit (null when the
@@ -765,6 +770,7 @@ function cmdReopen(k) {
 // ---------------------------------------------------------------- init
 function cmdInit(k, o) {
   if (!k) die('usage: init KERNEL [--scenario S] [--holdout S1,S2] [--force]');
+  fs.mkdirSync(kdir(k), { recursive: true }); /* init is what creates a loop */
   return withKernel(k, `init ${k}`, () => withRepo(`init ${k}`, () => {
     const unit = unitOf(k);
     if (!unit) die(`${k} is in no code object under engine/build`);
@@ -1485,7 +1491,8 @@ function cmdDoctor(sc) {
   const notes = doctor({ scenario: sc, quiet: true });
   for (const n of notes) console.log(n);
   console.log(`ok: tools, models, disk (${freeGB(RUNS).toFixed(0)} GB free), engine/build ${buildStale() ? 'STALE' : 'current'}, repository on ${branchNow()}${dirtyAll() ? ' (uncommitted changes)' : ''}, kbench current`);
-  for (const f of ['.gate-broken', '.build-broken']) if (fs.existsSync(path.join(RUNS, f))) console.log(`warning: ${f}: ${fs.readFileSync(path.join(RUNS, f), 'utf8')}`);
+  if (fs.existsSync(path.join(RUNS, '.gate-broken'))) console.log(`warning: .gate-broken: ${fs.readFileSync(path.join(RUNS, '.gate-broken'), 'utf8')}`);
+  if (fs.existsSync(BROKEN())) console.log(`warning: engine/build may not match the source: ${fs.readFileSync(BROKEN(), 'utf8')}`);
 }
 // options that always take a value (so an idea that starts with "--" is still the idea); the rest are flags unless a
 // value follows; --name=value works for any
