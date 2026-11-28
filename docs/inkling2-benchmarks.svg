@@ -17,7 +17,7 @@
   <rect x="1" y="1" width="838" height="3" rx="1" fill="url(#radeonBar)"/>
   <g transform="translate(24.0,21.0) scale(0.7917)" fill="none" stroke="#ff3b30" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></g>
   <text x="50" y="37" fill="#f5f7fa" font-size="18" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">Inkling-2-Mini (26B IQ3_XXS MoE · 96K-256K ctx · DSpark)</text>
-  <text x="24" y="58" fill="#8c95a6" font-size="11.5" font-family="ui-monospace,Consolas,monospace">218 zero-spill Inkling-2 kernels · 192-bit mask + R53-R89 · chunk 1024 · 73.4ms ViT</text>
+  <text x="24" y="58" fill="#8c95a6" font-size="11.5" font-family="ui-monospace,Consolas,monospace">218 zero-spill Inkling-2 kernels · 192-bit mask + R53-R89 · chunk 1024 · 73.4ms ViT · label = best round</text>
   <rect x="18" y="76" width="804" height="590" rx="4" fill="#111318" stroke="#232732"/>
   <rect x="18" y="86" width="3" height="18" rx="1" fill="#ffaa00"/>
   <g transform="translate(34.0,89.0) scale(0.6250)" fill="none" stroke="#ffaa00" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></g>
@@ -143,8 +143,8 @@
   <text x="574" y="932.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">1,574 launches</text>
   <rect x="98" y="942" width="462" height="12" rx="2" fill="#1a1e28"/>
   <rect x="98" y="942" width="119.2" height="12" rx="2" fill="url(#g_crimson)"/>
-  <text x="88" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R89</text>
-  <text x="574" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">585 launches (577 at 256K)</text>
+  <text x="88" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R72</text>
+  <text x="574" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">585 launches (577 at 256K, R89)</text>
   <line x1="34" y1="970" x2="806" y2="970" stroke="#1b1f29" stroke-width="1"/>
   <text x="34" y="988" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">16K Context T=8 Verify Latency</text>
   <text x="806" y="988" fill="#ffaa00" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">-25.0% (-5.84 ms)</text>
