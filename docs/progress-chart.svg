@@ -142,7 +142,7 @@
 
   <rect x="34" y="759" width="14" height="3" fill="#ff3b30"/>
   <text x="56" y="765" fill="#cbd2df" font-size="12" font-family="ui-monospace,Consolas,monospace">Plain T=1 Launches / Step</text>
-  <text x="806" y="765" fill="#ff3b30" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">2,222 (v0) -&gt; 1,574 (R00) -&gt; 753 (R52) -&gt; 585 (R72-R89, -73.7%)</text>
+  <text x="806" y="765" fill="#ff3b30" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">2,222 (v0) -&gt; 1,574 (R00) -&gt; 753 (R52) -&gt; 585 (R72-R89, -73.7%) | 256K: 577 (R89)</text>
 
   <line x1="34" y1="776" x2="806" y2="776" stroke="#1d212b" stroke-width="1"/>
   <line x1="76" y1="920.4" x2="798" y2="920.4" stroke="#1d212b" stroke-width="1" stroke-dasharray="3,4"/>
