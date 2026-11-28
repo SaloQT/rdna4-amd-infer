@@ -1,6 +1,6 @@
 # <img src="docs/icons/chip.svg" width="24" height="24" align="absmiddle" alt=""/> rdna4-amd-infer: Local LLM Inference on the AMD Radeon RX 9070 XT (RDNA4 / gfx1201)
 
-**Run 26B-27B language models on a single 16 GB RX 9070 XT, on Windows 11 with no system ROCm install.** Inkling-2-Mini 26B decodes at up to **189 tok/s** and Saluki-27B (Qwen3.8) at **142 tok/s**, behind an OpenAI-compatible API.
+**Inkling-2-Mini 26B IQ3_XXS / Saluki-27B Qwen3.8 IQ2-mix using a 16 GB RX 9070 XT, No ROCm install.** Inkling-2-Mini 26B decodes at up to **189 tok/s** and Saluki-27B (Qwen3.8) at **142 tok/s**, behind an OpenAI-compatible API.
 
 [**Live dashboard**](https://saloqt.github.io/rdna4-amd-infer/) · [Watch the demo](#live-demo) · [Quick start](#quick-start-windows--linux) · [Benchmarks](#rx-9070-xt-benchmarks) · [FAQ](#faq)
 
