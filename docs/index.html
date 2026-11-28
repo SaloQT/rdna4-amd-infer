@@ -513,6 +513,7 @@ html, body {
   margin-bottom: 22px;
 }
 @media (max-width: 1040px) { .charts-grid { grid-template-columns: 1fr; } }
+@media (min-width: 2200px) { .charts-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 .chart-card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -1643,20 +1644,40 @@ tr.main-row.open .hyp-clamp { display: block; -webkit-line-clamp: unset; line-cl
     return undefined;
   }
 
-  function niceBounds(vals, forceZero) {
-    if (!vals.length) return [0, 100];
+  // Pad the data range, then snap it outward to a "nice" step so gridlines land on
+  // round numbers (100, 150, 200 ... not 64.9, 123, 181). The interval count is
+  // chosen (4-7) to keep the snapped range as tight as possible.
+  function paddedRange(vals, forceZero) {
     let mn = Math.min.apply(null, vals);
     let mx = Math.max.apply(null, vals);
     if (mn === mx) {
       const pad = Math.max(Math.abs(mx) * 0.15, 5);
-      mn = forceZero ? Math.min(0, mn - pad) : mn - pad;
-      mx = mx + pad;
-    } else {
-      const span = mx - mn;
-      mn = forceZero ? Math.min(0, mn - span * 0.08) : Math.max(0, mn - span * 0.14);
-      mx = mx + span * 0.16;
+      return [forceZero ? Math.min(0, mn - pad) : mn - pad, mx + pad];
+    }
+    const span = mx - mn;
+    return [forceZero ? Math.min(0, mn - span * 0.08) : Math.max(0, mn - span * 0.14), mx + span * 0.16];
+  }
+
+  function snapBounds(mn, mx, intervals) {
+    const raw = (mx - mn) / intervals;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    for (const step of [1, 2, 2.5, 5, 10].map((m) => m * mag)) {
+      const lo = Math.floor(mn / step + 1e-9) * step;
+      if (lo + step * intervals >= mx - 1e-9) return [lo, lo + step * intervals];
     }
     return [mn, mx];
+  }
+
+  // Returns [min, max, intervals].
+  function niceBounds(vals, forceZero) {
+    if (!vals.length) return [0, 100, 5];
+    const [mn, mx] = paddedRange(vals, forceZero);
+    let best = null;
+    for (let n = 4; n <= 7; n++) {
+      const [lo, hi] = snapBounds(mn, mx, n);
+      if (!best || hi - lo < best[1] - best[0] - 1e-9) best = [lo, hi, n];
+    }
+    return best;
   }
 
   function buildFrontierStepPath(points, xScale, yScale, lower) {
@@ -1780,14 +1801,16 @@ tr.main-row.open .hyp-clamp { display: block; -webkit-line-clamp: unset; line-cl
     }
 
     const rightIsPct = def.id === "sys";
-    const [yMinL, yMaxL] = niceBounds(leftVals, false);
-    const [yMinR, yMaxR] = niceBounds(rightVals, rightIsPct);
+    const [yMinL, yMaxL, nTicks] = niceBounds(leftVals, false);
+    const [yMinR, yMaxR] = rightVals.length
+      ? snapBounds(...paddedRange(rightVals, rightIsPct), nTicks)
+      : [0, 100];
     const yScaleL = (v) => padT + plotH - ((v - yMinL) / (yMaxL - yMinL || 1)) * plotH;
     const yScaleR = (v) => padT + plotH - ((v - yMinR) / (yMaxR - yMinR || 1)) * plotH;
 
     let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
-    // Gridlines (5 ticks)
-    const ticks = 5;
+    // Gridlines (nTicks intervals, round values)
+    const ticks = nTicks;
     for (let i = 0; i <= ticks; i++) {
       const f = i / ticks;
       const y = padT + plotH - f * plotH;
