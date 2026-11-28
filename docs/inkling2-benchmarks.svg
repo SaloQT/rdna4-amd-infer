@@ -143,8 +143,8 @@
   <text x="574" y="932.5" fill="#8c95a6" font-size="12" font-weight="500" font-family="ui-monospace,Consolas,monospace">1,574 launches</text>
   <rect x="98" y="942" width="462" height="12" rx="2" fill="#1a1e28"/>
   <rect x="98" y="942" width="119.2" height="12" rx="2" fill="url(#g_crimson)"/>
-  <text x="88" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R72+</text>
-  <text x="574" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">585 launches (0.453 ms)</text>
+  <text x="88" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">R89</text>
+  <text x="574" y="952.5" fill="#f5f7fa" font-size="12" font-weight="700" font-family="ui-monospace,Consolas,monospace">585 launches (577 at 256K)</text>
   <line x1="34" y1="970" x2="806" y2="970" stroke="#1b1f29" stroke-width="1"/>
   <text x="34" y="988" fill="#f5f7fa" font-size="13.5" font-weight="700" font-family="system-ui,Segoe UI,sans-serif">16K Context T=8 Verify Latency</text>
   <text x="806" y="988" fill="#ffaa00" font-size="12.5" font-weight="700" text-anchor="end" font-family="ui-monospace,Consolas,monospace">-25.0% (-5.84 ms)</text>
